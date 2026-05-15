@@ -123,7 +123,7 @@ scan_layer_env() {
       c=$(grep -cF "$SECRET_VALUE" "$p" 2>/dev/null || true)
       if [[ "$c" -gt 0 ]]; then
         printf "  %-20s %-40s %s\n" "Layer 1" "$p" "${RED}${c} hits${NC}"
-        ((hits += c))
+        ((hits += c)) || true
       fi
     fi
   done
@@ -135,7 +135,7 @@ scan_layer_env() {
       c=$(grep -cF "$SECRET_VALUE" "$f" 2>/dev/null || true)
       if [[ "$c" -gt 0 ]]; then
         printf "  %-20s %-40s %s\n" "Layer 1" "$f" "${RED}${c} hits${NC}"
-        ((hits += c))
+        ((hits += c)) || true
       fi
     done < <(find "$HOME/IWE" -type f \( -name ".env*" -o -name "secrets*" \) \
       ! -path "*/node_modules/*" ! -path "*/.venv/*" ! -path "*/venv/*" \
@@ -175,7 +175,7 @@ scan_layer_env() {
       warn "tsekh-1 недоступен по ssh (Layer 1 incomplete)"
       ((INFRA_ERRORS++)) || true
     fi
-    ((hits += ssh_hits))
+    ((hits += ssh_hits)) || true
   else
     warn "ssh не установлен (Layer 1 tsekh-1 skipped)"
     ((INFRA_ERRORS++)) || true
@@ -289,7 +289,7 @@ scan_layer_cloud() {
           done
         done
 
-        ((hits += railway_hits))
+        ((hits += railway_hits)) || true
       fi
     fi
   else
@@ -355,7 +355,7 @@ scan_layer_pg() {
 
     if [[ "$c" =~ ^[0-9]+$ && "$c" -gt 0 ]]; then
       printf "  %-20s %-40s %s\n" "Layer 3" "${db_url##*/} pg_user_mapping" "${RED}${c} hits${NC}"
-      ((hits += c))
+      ((hits += c)) || true
     fi
     any_db_ok=1
   done
