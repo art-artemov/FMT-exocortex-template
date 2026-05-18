@@ -1,5 +1,5 @@
 {
-  "version": "0.32.0",
+  "version": "0.33.0",
   "description": "Манифест платформенных файлов FMT-exocortex-template. Используется update.sh для доставки обновлений.",
   "files": [
     {
@@ -22,6 +22,12 @@
     },
     {
       "path": ".claude/detectors/detector_pattern_awareness.sh"
+    },
+    {
+      "path": ".claude/hooks/agent-trace-recorder.sh"
+    },
+    {
+      "path": ".claude/hooks/agent-trace-uploader.sh"
     },
     {
       "path": ".claude/hooks/capture-bus.sh"
@@ -297,6 +303,12 @@
       "path": "extensions/agent-inbox/templates/soak-verify.md"
     },
     {
+      "path": "extensions/protocol-close.checks.fault.md"
+    },
+    {
+      "path": "extensions/protocol-open.after.fault.md"
+    },
+    {
       "path": "memory/MEMORY.md"
     },
     {
@@ -543,6 +555,12 @@
       "path": "scripts/active-wp-sweep.sh"
     },
     {
+      "path": "scripts/agent_fault_remind.py"
+    },
+    {
+      "path": "scripts/agent_fault_remind.sh"
+    },
+    {
       "path": "scripts/archive-done-wp.sh"
     },
     {
@@ -622,6 +640,9 @@
     },
     {
       "path": "scripts/skill-promote.sh"
+    },
+    {
+      "path": "scripts/sync_feedback_to_memory.py"
     },
     {
       "path": "scripts/template-sync.sh"

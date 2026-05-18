@@ -99,7 +99,7 @@ python3 scripts/sync_feedback_to_memory.py
 - Сканирует все `feedback_*.md` в `exocortex/` и `memory/`
 - Извлекает правила и журналы
 - Считает частоту повторений (trust_score)
-- Пишет в SQLite: `inbox/WP-316-f2-poc/iwe_memory.db`
+- Пишет в SQLite: `exocortex/agent-fault-profile/iwe_memory.db`
 
 **Идемпотентность:** повторный запуск не дублирует записи.
 
