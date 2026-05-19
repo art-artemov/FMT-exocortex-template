@@ -29,7 +29,6 @@
 set -eu
 
 IWE_ROOT="${IWE_ROOT:-$HOME/IWE}"
-GOVERNANCE_REPO="${GOVERNANCE_REPO:-${IWE_GOVERNANCE_REPO:-DS-strategy}}"
 DRIFT_CRITICAL=""
 
 while [ $# -gt 0 ]; do
@@ -182,20 +181,22 @@ fi
 # params.yaml — конфиг
 emit_inventory_row "params.yaml" 1 ""
 
-# Governance repo — директория с .git (имя из $GOVERNANCE_REPO, default DS-strategy)
-DS_DIR="$IWE_ROOT/$GOVERNANCE_REPO"
+# Governance-репо (DS-strategy или переопределённый через GOVERNANCE_DIR)
+GOVERNANCE_DIR="${GOVERNANCE_DIR:-$IWE_ROOT/DS-strategy}"
+GOVERNANCE_NAME="$(basename "$GOVERNANCE_DIR")"
+DS_DIR="$GOVERNANCE_DIR"
 TOTAL=$((TOTAL + 1))
 if [ -d "$DS_DIR" ]; then
     if [ -d "$DS_DIR/.git" ]; then
         FOUND=$((FOUND + 1))
-        printf "| \`%s\` | %s | %s |\n" "$GOVERNANCE_REPO/" "✅" "git-репо (is_git=true)"
+        printf "| \`%s\` | %s | %s |\n" "${GOVERNANCE_NAME}/" "✅" "git-репо (is_git=true)"
     else
         OPTIONAL_MISSING=$((OPTIONAL_MISSING + 1))
-        printf "| \`%s\` | %s | %s |\n" "$GOVERNANCE_REPO/" "⚠️" "директория есть, но не git-репо"
+        printf "| \`%s\` | %s | %s |\n" "${GOVERNANCE_NAME}/" "⚠️" "директория есть, но не git-репо"
     fi
 else
     CRITICAL_MISSING=$((CRITICAL_MISSING + 1))
-    printf "| \`%s\` | %s | %s |\n" "$GOVERNANCE_REPO/" "❌" "директория не найдена"
+    printf "| \`%s\` | %s | %s |\n" "${GOVERNANCE_NAME}/" "❌" "директория не найдена"
 fi
 
 echo ""
@@ -232,13 +233,13 @@ else
 fi
 echo ""
 
-# ---------- Раздел 3: governance repo ----------
+# ---------- Раздел 3: DS-strategy ----------
 
-echo "## 3. $GOVERNANCE_REPO"
+echo "## 3. DS-strategy"
 echo ""
 
 if [ ! -d "$DS_DIR/.git" ]; then
-    echo "❌ \`$GOVERNANCE_REPO\` не git-репо (или директория отсутствует)"
+    echo "❌ \`DS-strategy\` не git-репо (или директория отсутствует)"
 else
     set +e
     DS_STATUS=$(git -C "$DS_DIR" status --short 2>&1)
