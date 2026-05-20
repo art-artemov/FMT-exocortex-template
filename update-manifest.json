@@ -782,38 +782,6 @@
       "reason": "consolidated into protocol-work.md, removed in v0.27"
     },
     {
-      "path": "roles/strategist/prompts/day-close.md",
-      "reason": "strategist role removed; use .claude/skills/day-close/"
-    },
-    {
-      "path": "roles/strategist/prompts/day-plan.md",
-      "reason": "strategist role removed"
-    },
-    {
-      "path": "roles/strategist/prompts/note-review.md",
-      "reason": "strategist role removed"
-    },
-    {
-      "path": "roles/strategist/prompts/session-prep.md",
-      "reason": "strategist role removed"
-    },
-    {
-      "path": "roles/strategist/prompts/strategy-session.md",
-      "reason": "strategist role removed; use .claude/skills/strategy-session/"
-    },
-    {
-      "path": "roles/strategist/prompts/week-review.md",
-      "reason": "strategist role removed"
-    },
-    {
-      "path": "roles/strategist/scripts/cleanup-processed-notes.py",
-      "reason": "strategist role removed"
-    },
-    {
-      "path": "roles/strategist/scripts/cleanup-processed-notes.sh",
-      "reason": "strategist role removed"
-    },
-    {
       "path": "strategist-agent/README.md",
       "reason": "strategist-agent directory removed in v0.24"
     },

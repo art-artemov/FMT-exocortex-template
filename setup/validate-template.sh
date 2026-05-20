@@ -275,6 +275,65 @@ else
     [ "$CHECK7_FAIL" -eq 0 ] && [ "$ORPHAN_WARN" -eq 0 ] && echo "PASS"
 fi
 
+# 8. deprecated_files cross-ref: не должен ссылаться активный runner + не должен дублироваться в files
+# Причина: WP-??? — update.sh удалял roles/strategist/prompts/*.md, которые scheduler.sh и strategist.sh
+# всё ещё читали. Баг пропущен: нет было теста «файл deprecated → нет ссылок в runners».
+echo -n "[8/8] Manifest deprecated_files cross-ref... "
+CHECK8_FAIL=0
+MANIFEST_FILE="$TEMPLATE_DIR/update-manifest.json"
+if [ ! -f "$MANIFEST_FILE" ]; then
+    echo "SKIP (update-manifest.json not found)"
+else
+    # Извлекаем пути из files[] и deprecated_files[]
+    FILES_LIST=$(python3 -c "
+import json, sys
+with open('$MANIFEST_FILE') as f:
+    data = json.load(f)
+for e in data.get('files', []):
+    print(e.get('path', ''))
+" 2>/dev/null || true)
+
+    DEPRECATED_LIST=$(python3 -c "
+import json, sys
+with open('$MANIFEST_FILE') as f:
+    data = json.load(f)
+for e in data.get('deprecated_files', []):
+    print(e.get('path', ''))
+" 2>/dev/null || true)
+
+    while IFS= read -r dep_path; do
+        [ -z "$dep_path" ] && continue
+
+        # (a) путь в deprecated_files И в files одновременно — противоречие
+        if echo "$FILES_LIST" | grep -qxF "$dep_path"; then
+            [ "$CHECK8_FAIL" -eq 0 ] && echo "FAIL"
+            echo "  CONTRADICTION: '$dep_path' присутствует и в files[], и в deprecated_files[]"
+            CHECK8_FAIL=1
+            FAIL=1
+        fi
+
+        # (b) путь в deprecated_files (только из roles/, не из legacy-директорий), но на него
+        #     ссылается активный runner в roles/*/scripts/ — проверяем полное имя файла с расширением
+        #     чтобы исключить ложные срабатывания от strategist-agent/ (удалена с v0.24)
+        if [[ "$dep_path" == roles/* ]]; then
+            fname=$(basename "$dep_path")  # с расширением: day-plan.md, cleanup-processed-notes.py
+            fname_noext=$(basename "$dep_path" .md)
+            # Ищем run_claude "<name>" или прямое упоминание имени файла
+            if grep -rqE "run_claude \"$fname_noext\"|\"$fname\"|'$fname_noext'" "$TEMPLATE_DIR/roles" \
+                    --include="*.sh" --include="*.py" 2>/dev/null; then
+                [ "$CHECK8_FAIL" -eq 0 ] && echo "FAIL"
+                echo "  RUNNER REFERENCE: '$dep_path' помечен deprecated, но используется в roles/*/scripts/:"
+                grep -rnE "run_claude \"$fname_noext\"|\"$fname\"|'$fname_noext'" "$TEMPLATE_DIR/roles" \
+                    --include="*.sh" --include="*.py" 2>/dev/null | head -3 || true
+                CHECK8_FAIL=1
+                FAIL=1
+            fi
+        fi
+    done <<< "$DEPRECATED_LIST"
+
+    [ "$CHECK8_FAIL" -eq 0 ] && echo "PASS"
+fi
+
 echo ""
 if [ "$FAIL" -eq 0 ]; then
     echo "=== ALL CHECKS PASSED ==="
