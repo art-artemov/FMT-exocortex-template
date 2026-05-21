@@ -35,7 +35,7 @@ log() { echo "$*" >&2; }
 # Проверить есть ли поле в frontmatter
 has_field() {
     local file="$1" field="$2"
-    sed -n "/^---$/,/^---$/p" "$file" 2>/dev/null | grep -q "^${field}:"
+    sed -n "/^---$/,/^---$/p" "$file" 2>/dev/null | grep "^${field}:" > /dev/null
 }
 
 # Определить layer по наличию скилла в FMT
