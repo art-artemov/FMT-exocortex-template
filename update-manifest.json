@@ -758,22 +758,6 @@
   ],
   "deprecated_files": [
     {
-      "path": "roles/strategist/prompts/day-plan.md",
-      "reason": "migrated to /day-open skill; strategist.sh now calls run_skill day-open"
-    },
-    {
-      "path": "roles/strategist/prompts/day-close.md",
-      "reason": "migrated to /day-close skill; strategist.sh now calls run_skill day-close"
-    },
-    {
-      "path": "roles/strategist/prompts/week-review.md",
-      "reason": "migrated to /week-close skill; strategist.sh now calls run_skill week-close"
-    },
-    {
-      "path": "roles/strategist/prompts/strategy-session.md",
-      "reason": "migrated to /strategy-session skill; strategist.sh now calls run_skill strategy-session"
-    },
-    {
       "path": "LEARNING-PATH.md",
       "reason": "moved to docs/LEARNING-PATH.md"
     },
