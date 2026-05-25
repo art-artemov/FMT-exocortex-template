@@ -120,12 +120,14 @@ run_script() {
     fi
 
     echo "[router] skill=$skill_name executor=script path=$script_path"
+    local script_exit=0
     if [[ -n "$args" ]]; then
-        bash "$script_path" "$args"
+        bash "$script_path" "$args" || script_exit=$?
     else
-        bash "$script_path"
+        bash "$script_path" || script_exit=$?
     fi
-    log_audit "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$skill_name" "script" "0"
+    log_audit "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$skill_name" "script" "$script_exit"
+    return $script_exit
 }
 
 run_llm() {
