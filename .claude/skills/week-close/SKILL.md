@@ -3,6 +3,9 @@ name: week-close
 description: "Протокол закрытия недели (Week Close). Ретро 7 дней + carry-over в новую неделю + платформенные шаги (бэкап, dirty repos)."
 argument-hint: ""
 version: 1.2.0
+routing:
+  executor: sonnet
+  deterministic: false
 ---
 
 # Week Close (протокол закрытия недели)

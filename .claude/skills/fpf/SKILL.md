@@ -2,6 +2,9 @@
 name: fpf
 description: Загрузка применимых принципов для задачи из иерархии Pack → SPF → FPF. Используй когда нужно найти релевантные принципы перед принятием решения.
 argument-hint: "<запрос или тема>"
+routing:
+  executor: haiku
+  deterministic: false
 ---
 
 # Загрузка принципов

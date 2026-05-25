@@ -3,6 +3,9 @@ name: month-close
 description: "Протокол закрытия месяца (Month Close). Стадия 7 каскада ВДВ v9 (PD.METHOD.008). Запускается в первый Пн месяца, до Strategy Session."
 argument-hint: ""
 version: 1.0.0
+routing:
+  executor: opus
+  deterministic: false
 ---
 
 # Month Close (протокол закрытия месяца)

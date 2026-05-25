@@ -5,6 +5,9 @@ argument-hint: "[необязательно: override домена — knowledge
 experimental: true
 sunset: "после DONE WP-222 (Портной, ~июнь 2026) и WP-149 Ф6 (книга ЛР v3)"
 related: [personal-guide-render, WP-245, WP-222, WP-149, PD.FORM.089, PD.CAT.003]
+routing:
+  executor: sonnet
+  deterministic: false
 ---
 
 # Bootstrap персонального руководства

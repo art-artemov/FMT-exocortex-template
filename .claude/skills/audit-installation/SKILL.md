@@ -8,6 +8,9 @@ status: active
 triggers:
   slash: [/audit-installation]
   phrases: []
+routing:
+  executor: haiku
+  deterministic: false
 ---
 
 # Аудит инсталляции IWE

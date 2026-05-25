@@ -2,6 +2,9 @@
 name: verify
 description: Верификация артефакта по эталону из Pack. Загружает роль VR.R.001 (Верификатор) с context isolation — проверяет результат, а не процесс создания.
 argument-hint: "[code|archgate|capture|wp|chain|adversarial|subsection|section|guide|auto] [путь или id]"
+routing:
+  executor: sonnet
+  deterministic: false
 ---
 
 # Верификация артефакта

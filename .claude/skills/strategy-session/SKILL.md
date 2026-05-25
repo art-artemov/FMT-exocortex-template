@@ -1,6 +1,9 @@
 ---
 name: strategy-session
 description: Стратегическая сессия — диспетчер. День-0 (skeleton-marker в Strategy.md ИЛИ явный intent «первая/initial/c нуля» ИЛИ нет файлов) → initial flow (цели, неудовлетворённости, первый WeekPlan). День-1+ → weekly flow (требует черновик от session-prep). Триггеры вызова skill — «проведём/запустим/начнём/откроем стратегическую сессию», «стратсессия», «strategy session», «strategy planning», «давай стратегировать», «помоги со стратегией», «постратегируем». Initial-режим внутри skill включается отдельно (см. Шаг 1).
+routing:
+  executor: opus
+  deterministic: false
 ---
 
 # Strategy Session — диспетчер

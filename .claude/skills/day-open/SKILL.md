@@ -3,6 +3,9 @@ name: day-open
 description: "Протокол открытия дня (Day Open). Собирает вчерашние коммиты, issues, заметки, календарь, бота QA, Scout, мир — формирует DayPlan и compact dashboard."
 argument-hint: ""
 version: 1.1.0
+routing:
+  executor: sonnet
+  deterministic: false
 ---
 
 # Day Open (протокол открытия дня)

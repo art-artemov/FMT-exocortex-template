@@ -3,6 +3,9 @@ name: day-close
 description: "Протокол закрытия дня (Day Close). Алиас для /run-protocol close day — симметрия с /day-open."
 argument-hint: ""
 version: 1.0.0
+routing:
+  executor: haiku
+  deterministic: false
 ---
 
 # Day Close (протокол закрытия дня)

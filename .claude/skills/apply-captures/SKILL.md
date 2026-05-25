@@ -8,6 +8,9 @@ status: active
 triggers:
   slash: [/apply-captures]
   phrases: []
+routing:
+  executor: sonnet
+  deterministic: false
 ---
 
 # /apply-captures — разбор кандидатов экстрактора

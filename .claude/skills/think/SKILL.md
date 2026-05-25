@@ -2,6 +2,9 @@
 name: think
 description: ADI-цикл структурированного рассуждения (Abduction-Deduction-Induction-Audit-Decide). Используй для сложных решений, когда нужно рассмотреть несколько гипотез.
 argument-hint: "[задача или вопрос]"
+routing:
+  executor: opus
+  deterministic: false
 ---
 
 # ADI-цикл рассуждения

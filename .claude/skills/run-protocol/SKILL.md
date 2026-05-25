@@ -2,6 +2,9 @@
 name: run-protocol
 description: Пошаговое выполнение протокола ОРЗ с обязательной отметкой каждого шага. Предотвращает пропуск шагов (включая верификацию).
 argument-hint: "[open|close] [day|session]"
+routing:
+  executor: sonnet
+  deterministic: false
 ---
 
 # Выполнение протокола
