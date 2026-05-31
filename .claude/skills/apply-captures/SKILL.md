@@ -15,13 +15,13 @@ routing:
 
 # /apply-captures — разбор кандидатов экстрактора
 
-Полная ВДВ-карта цикла: `{{GOVERNANCE_REPO}}/inbox/WP-247-ke-pipeline-vdv.md`
+Полная ВДВ-карта цикла: `${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/WP-247-ke-pipeline-vdv.md`
 Контракт скилла взят из шагов 5, 6, 6.5, 7 этой карты.
 
 ## Scope
 
 **Этот скилл делает:**
-- Читает `{{GOVERNANCE_REPO}}/inbox/extraction-reports/*.md` со `status: pending-review`.
+- Читает `${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/extraction-reports/*.md` со `status: pending-review`.
 - Для каждого кандидата в отчёте — запрашивает решение R15 (accept / reject / defer).
 - Accept → опциональная редактура → валидация → запись файла в Pack → обновление MAP → коммит.
 - Reject → запись причины + паттерна в `feedback-log.md`.
@@ -36,7 +36,7 @@ routing:
 ## ВДВ-контракт (шаги 5–7 из ke-pipeline-vdv.md)
 
 ```
-Вход:   {{GOVERNANCE_REPO}}/inbox/extraction-reports/*.md  со  status: pending-review
+Вход:   ${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/extraction-reports/*.md  со  status: pending-review
 Роль:   R15 Валидатор (accept/reject/defer)
         R4 Автор (conditional: редактура при edits_needed: yes)
         Скилл (автоматика записи, валидации, коммита)
@@ -52,7 +52,7 @@ routing:
   Обновить status отчёта по итогам.
 Выход:
   - Обновлённый Pack (новые файлы сущностей).
-  - Обновлённый `{{GOVERNANCE_REPO}}/inbox/feedback-log.md` (reject-паттерны).
+  - Обновлённый ${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/feedback-log.md (reject-паттерны).
   - Отчёт со финальным status (applied / partially-applied / rejected / deferred).
   - Коммит в PACK-* (при accept).
 ```
@@ -72,13 +72,15 @@ reason: "дубликат PD.METHOD.006"
 pattern: "проверять существующие METHOD перед предложением нового"
 # --- при defer ---
 reason: "ждёт ArchGate WP-245"
-defer_until: "после WP-245 Ф22"
+defer_until: "после WP-245 Ф22"     # ОБЯЗАТЕЛЬНО — дата YYYY-MM-DD или событие
 ```
+
+**Инвариант defer (peer-session 2026-05-31-22):** `defer_until` — обязательное поле при `decision: defer`. Без него решение invalid. Reason: `deferred` без `defer_until` = masked cancel (см. `memory/lessons_defer_with_explicit_triggers.md`). Формат: дата `YYYY-MM-DD` ИЛИ привязка к событию («после WP-NNN Ф{N}», «при следующем Week Close»).
 
 ## Шаг 1. Найти pending-review отчёты
 
 ```bash
-find "${IWE_WORKSPACE:-$HOME/IWE}/{{GOVERNANCE_REPO}}/inbox/extraction-reports" -name "*.md" \
+find ~/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/extraction-reports -name "*.md" \
   -exec grep -l "^status: pending-review" {} \; | sort
 ```
 
@@ -154,7 +156,7 @@ Pack-реестры обычно в:
 
 ### 5в. Записать в feedback-log (при reject)
 
-Файл: `{{GOVERNANCE_REPO}}/inbox/feedback-log.md` (создать если нет).
+Файл: `${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/feedback-log.md` (создать если нет).
 Формат записи:
 
 ```markdown
@@ -176,6 +178,7 @@ git add <target_path> [MAP если был] && git commit -m "feat(KE apply): <i
 Правила:
 - Все кандидаты resolved (accept/reject/defer) → `applied` если ≥1 applied, иначе `rejected` если все reject, `deferred` если есть defer без applied.
 - Часть кандидатов pending → `partially-applied`.
+- **Validation gate (peer-session 2026-05-31-22):** если хотя бы один кандидат имеет `decision: defer` без поля `defer_until` — отчёт НЕ может получить финальный статус `deferred`. Остаётся `partially-applied`. В тело отчёта добавить блок `## Unresolved candidates` со списком `candidate_id` + причиной (отсутствует `defer_until`). Следующий `/apply-captures`-запуск начинает с unresolved-блока. Это закрывает дыру «masked cancel» — отложенные кандидаты без триггера возврата.
 
 Обновить `status:` в frontmatter отчёта и сохранить файл.
 
