@@ -519,6 +519,16 @@ if os.path.exists(outcome_path):
     with open(outcome_path, encoding='utf-8') as f:
         outcome_text = f.read()
 
+# Consistency guard: _outcome.md отсутствует, но meta говорит implementation_pipeline: true
+if not outcome_text and meta.get('implementation_pipeline', 'false').lower() == 'true':
+    import re as _re
+    with open(meta_path, encoding='utf-8') as _f:
+        _mc = _f.read()
+    _mc = _re.sub(r'^implementation_pipeline:.*$', 'implementation_pipeline: false', _mc, flags=_re.MULTILINE)
+    with open(meta_path, 'w', encoding='utf-8') as _f:
+        _f.write(_mc)
+    meta['implementation_pipeline'] = 'false'
+
 synth_prompt = f"""Ты — синтезатор итогов диалога двух агентов (DP.SC.154).
 Задача сессии: {task_desc}
 
@@ -627,7 +637,8 @@ with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False, encoding
     tmp_path = tmp.name
 
 report_file = os.path.join(session_dir, 'report-draft.md')
-adapter = os.path.expanduser('~/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/claude-peer-adapter.sh')
+gov_repo = os.environ.get('IWE_GOVERNANCE_REPO', 'DS-strategy')
+adapter = os.path.expanduser(f'~/IWE/{gov_repo}/scripts/claude-peer-adapter.sh')
 
 try:
     with open(tmp_path, 'r', encoding='utf-8') as stdin_f, open(report_file, 'w', encoding='utf-8') as stdout_f:
@@ -670,8 +681,13 @@ PYEOF
 
 **При консенсусе (turn ≤ 10):**
 - Не переименовывать в `report.md`.
-- Спросить пилота: «Консенсус достигнут. Закрываем сессию или нужно дозакрытие?»
-- Если пилот говорит «закрываем» → переименовать `report-draft.md → report.md` (шаг 4.3).
+- **Close-signal detector:** если в последнем сообщении пилота встречается одно из: `закрывай`, `закрываем`, `всё`, `close`, `закрой` — считать Close-сигналом и сразу переходить к финализации БЕЗ choice-question.
+- Иначе — спросить пилота: «Консенсус достигнут. Закрываем сессию или нужно дозакрытие?»
+- Если пилот говорит «закрываем» (или Close-signal) → выполнить:
+  ```bash
+  mv "$SESSION_DIR/report-draft.md" "$SESSION_DIR/report.md"
+  ```
+  затем перейти к шагу 4.3.
 - Если пилот запрашивает дозакрытие → продолжить turn-loop, а при финальном Close дописать `## Дополнение (turns N–M, <timestamp>)` в тот же `report-draft.md`, затем переименовать.
 
 **При дозакрытии:**
@@ -729,6 +745,19 @@ wp: <WP-NNN или unknown>
 
 ```bash
 cd "$HOME/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}"
+
+# Pre-commit guard
+test ! -f "$SESSION_DIR/report-draft.md" \
+  || { echo "FAIL: report-draft.md существует — mv к report.md не выполнен"; exit 1; }
+test -f "$SESSION_DIR/report.md" \
+  || { echo "FAIL: report.md отсутствует"; exit 1; }
+CLOSE_FILE="sessions/$MONTH/${TODAY}-${SESSION_SLUG}.md"
+test -f "$CLOSE_FILE" \
+  || { echo "FAIL: close-файл $CLOSE_FILE отсутствует"; exit 1; }
+INDEX_COUNT=$(grep -cF "| $SESSION_ID |" "sessions/00-index.md" || echo 0)
+test "$INDEX_COUNT" -eq 1 \
+  || { echo "FAIL: 00-index.md: ожидается 1 запись для $SESSION_ID, найдено $INDEX_COUNT"; exit 1; }
+
 git add "sessions/$MONTH/$SESSION_ID/"
 git add "sessions/00-index.md"
 git add "sessions/$MONTH/${TODAY}-${SESSION_SLUG}.md"
