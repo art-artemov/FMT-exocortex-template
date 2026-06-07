@@ -357,6 +357,31 @@ gh repo create $(gh api user -q .login)/DS-strategy --private --source=. --push
 
 </details>
 <details>
+<summary><b>Восстановление на новом устройстве (из exocortex-бэкапа)</b></summary>
+
+Если IWE уже настроен на одном устройстве, на новом **не нужно** инициализировать память с нуля. `day-close.sh --backup` и хук `memory-exocortex-sync.sh` держат зеркало памяти в `DS-strategy/exocortex/`, и оно уезжает на GitHub вместе с governance-репо. `restore-from-exocortex.sh` разворачивает его обратно.
+
+**Шаги на новом устройстве:**
+
+```bash
+# 1. Этап 0 (бинарники, gh auth, claude CLI) — как обычно
+# 2. Рабочая папка + клонировать шаблон и governance-репо (он несёт exocortex/)
+mkdir -p ~/IWE && cd ~/IWE
+gh repo fork TserenTserenov/FMT-exocortex-template --clone
+git clone https://github.com/<твой-логин>/DS-strategy.git
+
+# 3. Восстановить память из бэкапа (вместо инициализации с нуля)
+bash ~/IWE/FMT-exocortex-template/scripts/restore-from-exocortex.sh ~/IWE/DS-strategy
+#    --dry-run  — превью без изменений
+#    --force    — перезаписать уже населённую memory/
+
+# 4. Перезапустить Claude Code → память на месте
+```
+
+Скрипт: копирует `exocortex/*.md|*.yaml` → auto-memory (`~/.claude/projects/<slug>-IWE/memory/`), `exocortex/CLAUDE.md` → `~/IWE/CLAUDE.md`, создаёт симлинк `~/IWE/memory → auto-memory`. Непустую `memory/` без `--force` не трогает (защита от случайной перезаписи рабочей инсталляции).
+
+</details>
+<details>
 <summary><b>Этап 2: Первая стратегическая сессия (~30 мин)</b></summary>
 
 Это самый важный шаг — ты настроишь свои цели и первый план.
