@@ -1,6 +1,6 @@
 ---
 name: week-close
-description: "Протокол закрытия недели (Week Close). Ретро 7 дней + carry-over в новую неделю + платформенные шаги (бэкап, dirty repos)."
+description: "Week Close protocol. 7-day retrospective + carry-over to new week + platform steps (backup, dirty repos)."
 argument-hint: ""
 version: 1.2.0
 layer: L1

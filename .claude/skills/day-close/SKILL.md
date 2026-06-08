@@ -1,6 +1,6 @@
 ---
 name: day-close
-description: "Протокол закрытия дня (Day Close). Алиас для /run-protocol close day — симметрия с /day-open."
+description: "Day Close protocol. Alias for /run-protocol close day — symmetric with /day-open."
 argument-hint: ""
 version: 1.0.0
 layer: L1

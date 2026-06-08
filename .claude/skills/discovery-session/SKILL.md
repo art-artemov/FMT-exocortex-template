@@ -1,7 +1,7 @@
 # see DP.SC.030, DP.ROLE.012, DP.METHOD.053
 ---
 name: discovery-session
-description: Разговор-распаковка неудовлетворённостей (discovery-стратегирование). Сократический разбор сырой рефлексии и заметок на триаду Проблема/Неудовлетворённость/Эмоция → состояние пилота → приоритеты месяца (WHAT/WHY). Роль R1 Стратег, метод DP.METHOD.053. Триггеры — «разбери неудовлетворённости», «помоги со стратегией месяца», «что для меня сейчас важно», «/discovery-session».
+description: Conversation to unpack dissatisfactions (discovery strategizing). Socratic analysis of raw reflections and notes into the Problem/Dissatisfaction/Emotion triad → pilot state → monthly priorities (WHAT/WHY). R1 Strategist role, DP.METHOD.053 method. Triggers: 'analyze dissatisfactions', 'help with monthly strategy', 'what matters to me now', '/discovery-session'.
 version: 1.0.0
 layer: L1
 status: active

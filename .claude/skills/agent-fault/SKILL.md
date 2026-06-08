@@ -1,6 +1,6 @@
 ---
 name: agent-fault
-description: Регистрация косяка агента в системе учёта WP-316 L1. Без LLM — детерминированный скрипт.
+description: Register an agent fault in the WP-316 tracking system (L1). No LLM — deterministic script.
 argument-hint: "record --severity {critical|major|minor} --fault '<description>'"
 routing:
   executor: script

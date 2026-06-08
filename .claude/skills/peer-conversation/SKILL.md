@@ -1,6 +1,6 @@
 ---
 name: peer-conversation
-description: Многотуровый диалог писателя (Claude) с напарником (Kimi) по задаче пилота (DP.SC.154). Ведёт turn-loop, обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool.
+description: Multi-turn dialog between writer (Claude) and partner (Kimi) on the pilot's task (DP.SC.154). Manages turn-loop, detects CONSENSUS/ESCALATE, after consensus — Decision Gate (record vs implement → review → verify → deploy), synthesizes report.md via Agent tool.
 argument-hint: "<описание задачи> | --list | --interrupt <session_id> | --finalize <session_id>"
 version: 1.2.0
 layer: L3

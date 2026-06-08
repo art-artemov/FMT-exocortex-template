@@ -1,6 +1,6 @@
 ---
 name: day-open
-description: "Протокол открытия дня (Day Open). Собирает вчерашние коммиты, issues, заметки, календарь, бота QA, Scout, мир — формирует DayPlan и compact dashboard."
+description: "Day Open protocol. Collects yesterday's commits, issues, notes, calendar, bot QA, Scout, world events — builds DayPlan and compact dashboard."
 argument-hint: ""
 version: 1.1.0
 routing:

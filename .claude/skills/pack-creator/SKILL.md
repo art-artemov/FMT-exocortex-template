@@ -1,9 +1,6 @@
 ---
 name: pack-creator
-description: |
-  Сопровождение автора PACK-X через SPF-цикл наполнения 01-11. Вызывает R28 Диагност
-  для выбора режима (assembly/hybrid/full SPF) и ведёт по фазам. Защищает инвариант
-  read-only upstream через PreToolUse hook.
+description: Guide a PACK-X author through the SPF fill cycle 01-11. Calls R28 Diagnostician to select mode (assembly/hybrid/full SPF) and leads through phases. Protects the read-only upstream invariant via PreToolUse hook.
 trigger_phrases:
   - "Создатель паков, "
   - "Pack Creator, "

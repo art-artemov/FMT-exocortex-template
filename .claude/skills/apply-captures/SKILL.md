@@ -1,6 +1,6 @@
 ---
 name: apply-captures
-description: Разбор extraction-reports со status pending-review — решение R15 (accept/reject/defer), запись в Pack, обновление статуса, коммит. Вызывать при Close при наличии N>0 pending-review отчётов.
+description: Process extraction reports with pending-review status — R15 decision (accept/reject/defer), write to Pack, update status, commit. Call during Close when N>0 pending-review reports exist.
 argument-hint: "[путь к конкретному отчёту | пусто = все pending-review]"
 version: 1.0.0
 layer: L1

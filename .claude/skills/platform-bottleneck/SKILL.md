@@ -1,6 +1,6 @@
 ---
 name: platform-bottleneck
-description: "Alias для /bottleneck-pick --layer platform. Deprecated — используйте /bottleneck-pick напрямую."
+description: "Alias for /bottleneck-pick --layer platform. Deprecated — use /bottleneck-pick directly."
 version: 1.0.0
 layer: L3
 status: active

@@ -1,6 +1,6 @@
 ---
 name: check-secret
-description: Проверка фрагмента текста на возможные секреты (API keys, tokens, passwords) ПЕРЕД отправкой в чат / коммитом / публикацией. Третий слой защиты поверх pre-commit hook (B7.7a) и PostToolUse redact (B7.7b). Manual gate — пользователь явно вызывает на потенциально чувствительный текст.
+description: Check a text fragment for potential secrets (API keys, tokens, passwords) BEFORE sending to chat / committing / publishing. Third protection layer on top of pre-commit hook (B7.7a) and PostToolUse redact (B7.7b). Manual gate — user explicitly calls on potentially sensitive text.
 argument-hint: "<text-or-file-path>"
 version: 1.0.0
 layer: L1

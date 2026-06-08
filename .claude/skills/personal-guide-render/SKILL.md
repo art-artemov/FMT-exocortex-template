@@ -1,6 +1,6 @@
 ---
 name: personal-guide-render
-description: Собирает (или пересобирает) персональное руководство в УЖЕ существующем репо `personal-guide` (плоское имя, один на пилота) — читает RCS из Память.Derived, выбирает заготовки stage×domain, пишет 6 файлов через personal_write. Используй когда пилот просит «пересобери руководство», «обнови мой план», «обнови methods» — или когда репо создан, а контента ещё нет.
+description: Builds (or rebuilds) the personal guide in an EXISTING personal-guide repo (flat name, one per pilot) — reads RCS from Memory.Derived, selects stage×domain templates, writes 6 files via personal_write. Use when pilot asks 'rebuild guide', 'update my plan', 'update methods' — or when repo is created but has no content yet.
 argument-hint: "[необязательно: override домена — knowledge-worker / generic] [необязательно: first-run — пропустить Шаг 5 архивации, используется при делегировании из /personal-guide-start]"
 experimental: true
 sunset: "после DONE WP-222 (Портной, ~июнь 2026) и WP-149 Ф6 (книга ЛР v3)"

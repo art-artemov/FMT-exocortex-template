@@ -1,6 +1,6 @@
 ---
 name: w-reflection
-description: Записать W-рефлексию (мировоззренческий слот RCS) в learning.w_reflections. Используется Диагностом R28 (MIM.R.009) или вызывается пользователем после рефлексивной сессии. Влияет на gate Д→П (FORM.089 §5.2).
+description: Record a W-reflection (worldview slot of RCS) in learning.w_reflections. Used by Diagnostician R28 (MIM.R.009) or called by the user after a reflective session. Affects the D→P gate (FORM.089 §5.2).
 argument-hint: "<quality 1..5> [depth 1..3]"
 version: 1.0.0
 layer: L1

@@ -1,6 +1,6 @@
 ---
 name: wp-new
-description: Создание нового рабочего продукта (РП) с записью в 5 мест атомарно. Используй когда появляется новая задача, которой нет в плане недели.
+description: Create a new Work Product (WP) with atomic registration in 5 places. Use when a new task appears that is not in the week plan.
 argument-hint: "[название РП]"
 version: 1.0.0
 layer: L1

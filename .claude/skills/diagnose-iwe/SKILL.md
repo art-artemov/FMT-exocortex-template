@@ -1,6 +1,6 @@
 ---
 name: diagnose-iwe
-description: "Диагностика ступени мастерства (Диагност R28, FORM.089 §6.1) прямо в VS Code / claude.ai. До 7 вопросов, ~7 мин. Сохраняет cp-профиль в цифровой двойник (browser) или Neon (VS Code). Запускай когда: пилот говорит «пройди диагностику», «какая моя ступень», «/diagnose-iwe» — или ПРОАКТИВНО когда видишь пустой cp_profile или нового пользователя без данных."
+description: "Diagnose mastery level (Diagnostician R28, FORM.089 §6.1) directly in VS Code / claude.ai. Up to 7 questions, ~7 min. Saves cp-profile to digital twin (browser) or Neon (VS Code). Launch when pilot says 'run diagnostics', 'what is my level', '/diagnose-iwe' — or PROACTIVELY when you see an empty cp_profile or a new user without data."
 argument-hint: "[необязательно: --check для просмотра профиля без нового опроса]"
 related: [WP-318, DP.ROLE.042, DP.SC.132, PD.FORM.089]
 version: 1.0.0

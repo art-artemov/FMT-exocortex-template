@@ -1,6 +1,6 @@
 ---
 name: archgate
-description: Оценка архитектурного решения по 7 характеристикам ЭМОГССБ (v3 — профиль без агрегатного балла, conjunctive screening). Используй когда пользователь предлагает архитектурное решение, новый инструмент или системное изменение.
+description: Evaluate an architectural decision against 7 ECOGSSS characteristics (v3 — profile without aggregate score, conjunctive screening). Use when the pilot proposes an architectural decision, new tool, or system change.
 argument-hint: "[описание решения]"
 routing:
   executor: opus

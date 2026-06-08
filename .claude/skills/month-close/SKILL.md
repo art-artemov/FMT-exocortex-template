@@ -1,6 +1,6 @@
 ---
 name: month-close
-description: "Протокол закрытия месяца (Month Close). Стадия 7 каскада ВДВ v9 (PD.METHOD.008). Запускается в первый Пн месяца, до Strategy Session."
+description: "Month Close protocol. Stage 7 of the OWC v9 cascade (PD.METHOD.008). Runs on the first Monday of the month, before Strategy Session."
 argument-hint: ""
 version: 1.0.0
 routing:

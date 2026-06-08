@@ -2,7 +2,7 @@
 # see DP.SC.153, DP.ROLE.057
 # SKILL.md v2 — обязательные поля (без них validate-skill.sh провалится)
 name: skill-id                    # kebab-case, уникален в skills-catalog.yaml
-description: "Одна строка — используется в CLAUDE.md system-reminder и каталоге."
+description: "One line — used in CLAUDE.md system-reminder and the skill catalog."
 version: 1.0.0                    # semver; увеличивать при изменении обещания
 layer: L3                         # L1 = платформенный (FMT); L3 = авторский (личный)
 status: active                    # active | experimental | deprecated

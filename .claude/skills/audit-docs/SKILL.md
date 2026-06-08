@@ -1,6 +1,6 @@
 ---
 name: audit-docs
-description: "Аудит документации репо: детекция drift'а между кодом и docs, отчёт coverage по категориям. Запускается вручную или по triggered drift critical."
+description: "Audit repository documentation: detect drift between code and docs, report coverage by category. Run manually or on triggered drift critical."
 argument-hint: "--repo <path> | ."
 version: 0.1.0
 layer: L3

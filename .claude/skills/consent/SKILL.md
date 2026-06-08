@@ -1,6 +1,6 @@
 ---
 name: consent
-description: Управление consent в learning.tracking_consent — opt-in / opt-out / status / revoke. Обязательное условие для работы stage_evaluator worker (WP-253 Блок 2). GDPR-совместимо.
+description: Manage consent in learning.tracking_consent — opt-in / opt-out / status / revoke. Required for the stage_evaluator worker (WP-253 Block 2). GDPR-compliant.
 argument-hint: "status | opt-in [scope] | opt-out | revoke"
 version: 1.0.0
 layer: L1

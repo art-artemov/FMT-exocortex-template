@@ -1,6 +1,6 @@
 ---
 name: decompose
-description: Декомпозиция деятельности на этапы с физическими артефактами и чеклистами приёмки. Детектор разрывов. Используй при открытии РП ≥3h (open-loop/problem-framing) или явном запросе «разложи на этапы». Носитель роли R29 Декомпозитор.
+description: Decompose work into stages with physical artifacts and acceptance checklists. Gap detector. Use when opening a WP ≥3h (open-loop/problem-framing) or on explicit request to break into stages. Executes R29 Decomposer role.
 version: 1.0.0
 layer: L3
 status: active

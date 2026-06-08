@@ -1,6 +1,6 @@
 ---
 name: week-close-pilot
-description: "Скилл IWE — см. тело файла"
+description: "Run the pilot-facing Week Close protocol with progress review and carry-over."
 version: 1.0.0
 layer: L3
 status: active

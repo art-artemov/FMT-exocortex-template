@@ -1,6 +1,6 @@
 ---
 name: kimi-peer-writer
-description: Peer-сессия DP.SC.154 где Kimi = писатель, Claude = напарник. Запускается простой фразой. Включает ОРЗ Opening и Closing, turn-loop, эскалации, Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), отложенную финализацию и верификацию.
+description: Peer session DP.SC.154 where Kimi = writer, Claude = partner. Launched with a simple phrase. Includes OWC Opening and Closing, turn-loop, escalations, Decision Gate (record vs implement → review → verify → deploy), deferred finalization and verification.
 argument-hint: "<описание задачи> | --list | --interrupt <session_id> | --finalize <session_id>"
 version: 1.2.0
 layer: L1

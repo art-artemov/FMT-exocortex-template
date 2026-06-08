@@ -1,6 +1,6 @@
 ---
 name: lesson-close
-description: Закрыть занятие, открытое скиллом /lesson. Финализирует workbook/YYYY-MM-DD.md (frontmatter status, метаданные времени, длительность), делает commit + push в репо personal-guide. Триггерит замкнутый контур доставки — после push → GitHub webhook → bot oauth_server.py:/webhook/github/workbook → sync_one_user_to_dt → ЦД обновляется в Neon. Используй когда пилот говорит «закрываем», «всё», «закончили», «закрой урок» — или после явного завершения задания в /lesson.
+description: Close a lesson opened with /lesson. Finalizes workbook/YYYY-MM-DD.md (frontmatter status, time metadata, duration), commits + pushes to the personal-guide repo. Triggers the closed delivery loop: push → GitHub webhook → sync_one_user_to_dt → Digital Twin updates in Neon. Use when pilot says 'close', 'done', 'finish', 'close lesson' — or after explicit task completion in /lesson.
 argument-hint: "[необязательно: дата урока YYYY-MM-DD; по умолчанию сегодня; либо --skipped если урок был пропущен; --no-push для локального commit без push]"
 experimental: true
 sunset: "после WP-301 Ф6 (E2E smoke) и WP-149 Block D (ИИ-агент-носитель Портного)"

@@ -1,7 +1,7 @@
 ---
 # see DP.SC.153 (родительский), #125
 name: restore-exocortex
-description: "Восстановление памяти IWE из exocortex-бэкапа на новом устройстве/после потери — NL-обёртка над restore-from-exocortex.sh."
+description: "Restore IWE memory from an exocortex backup on a new device or after data loss — NL wrapper around restore-from-exocortex.sh."
 version: 1.0.0
 layer: L1
 status: active

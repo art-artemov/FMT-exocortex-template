@@ -1,6 +1,6 @@
 ---
 name: verify
-description: Верификация артефакта по эталону из Pack. Загружает роль VR.R.001 (Верификатор) с context isolation — проверяет результат, а не процесс создания.
+description: Verify an artifact against a Pack standard. Loads VR.R.001 (Verifier) role with context isolation — checks the result, not the creation process.
 argument-hint: "[code|archgate|capture|wp|chain|adversarial|subsection|section|guide|auto] [путь или id]"
 routing:
   executor: sonnet

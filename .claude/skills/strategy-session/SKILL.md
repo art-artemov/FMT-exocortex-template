@@ -1,6 +1,6 @@
 ---
 name: strategy-session
-description: Стратегическая сессия — диспетчер. День-0 (нет Strategy.md/WeekPlan) → initial flow (цели, неудовлетворённости, первый WeekPlan). День-1+ → weekly flow (требует черновик от session-prep). Триггеры — «проведём стратегическую сессию», «первая стратегическая сессия», «strategy session», «давай стратегировать».
+description: Strategy session — dispatcher. Day 0 (no Strategy.md/WeekPlan) → initial flow (goals, dissatisfactions, first WeekPlan). Day 1+ → weekly flow (requires draft from session-prep). Triggers: 'run strategy session', 'first strategy session', 'strategy session', 'let's strategize'.
 version: 1.0.0
 layer: L1
 status: active

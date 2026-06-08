@@ -1,6 +1,6 @@
 ---
 name: bottleneck-pick
-description: "Скилл IWE — см. тело файла"
+description: "Identify the pilot's development bottleneck across cp-profile slots and recommend the next growth step."
 version: 1.0.0
 layer: L1
 status: active
