@@ -17,7 +17,7 @@
 
 ## Что делать с первой карточкой
 
-1. Скопируй шаблон в свою папку задач: `cp docs/templates/conveyor-card.md <твоё-пространство>/inbox/tasks/my-card.md` (реестр и `inbox/tasks/` живут в твоём DS-пространстве, не в шаблоне).
+1. Скопируй шаблон в свою папку задач: `cp docs/developer/card-template.md <твоё-пространство>/inbox/tasks/my-card.md` (реестр и `inbox/tasks/` живут в твоём DS-пространстве, не в шаблоне).
 2. Заполни frontmatter (wp, verification_class, estimate, double_exit)
 3. Пройди 6 станций (карточка = вход для станции 1)
 4. Закрытие: PR в репо + capture в distinctions/memory
@@ -47,4 +47,4 @@
 
 ---
 
-*Версия: 2026-06-09. Связанные документы: `docs/LEARNING-PATH.md` (T1–T4), `docs/templates/conveyor-card.md` (шаблон задачи), `CLAUDE.md` (WP Gate).*
+*Версия: 2026-06-09. Связанные документы: `docs/LEARNING-PATH.md` (T1–T4), `docs/developer/card-template.md` (шаблон задачи), `CLAUDE.md` (WP Gate).*

@@ -802,7 +802,7 @@ else
     fi
     echo ""
     echo "Developer onboarding (T4+) — single entry point:"
-    echo "  cat docs/conveyor-onboarding.md"
+    echo "  cat docs/developer/README.md"
     echo ""
     echo "Update from upstream:"
     echo "  cd $TEMPLATE_DIR && bash update.sh"
