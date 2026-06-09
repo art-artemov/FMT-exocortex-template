@@ -42,6 +42,15 @@
       "path": ".claude/hooks/extensions-gate.sh"
     },
     {
+      "path": ".claude/hooks/inject-communication-style.sh"
+    },
+    {
+      "path": ".claude/hooks/inject-fault-profile.sh"
+    },
+    {
+      "path": ".claude/hooks/memory-exocortex-sync.sh"
+    },
+    {
       "path": ".claude/hooks/pack-creator-spf-guard.sh"
     },
     {
@@ -49,9 +58,6 @@
     },
     {
       "path": ".claude/hooks/protocol-artifact-validate.sh"
-    },
-    {
-      "path": ".claude/hooks/memory-exocortex-sync.sh"
     },
     {
       "path": ".claude/hooks/protocol-completion-reminder.sh"
@@ -102,16 +108,22 @@
       "path": ".claude/runtime-overlay.yaml"
     },
     {
+      "path": ".claude/scripts/check-index-health.py"
+    },
+    {
       "path": ".claude/scripts/load-extensions.sh"
     },
     {
       "path": ".claude/scripts/wp-sync-bundle.sh"
     },
     {
-      "path": ".claude/scripts/check-index-health.py"
+      "path": ".claude/settings.json"
     },
     {
-      "path": ".claude/settings.json"
+      "path": ".claude/skills-catalog.yaml"
+    },
+    {
+      "path": ".claude/skills/SKILL-INDEX.yaml"
     },
     {
       "path": ".claude/skills-catalog.yaml"
@@ -163,6 +175,9 @@
     },
     {
       "path": ".claude/skills/diagnose-iwe/SKILL.md"
+    },
+    {
+      "path": ".claude/skills/discovery-session/SKILL.md"
     },
     {
       "path": ".claude/skills/extend/SKILL.md"
@@ -399,7 +414,10 @@
       "path": "docs/principles-vs-skills.md"
     },
     {
-      "path": "docs/release-audit-log.md"
+      "path": "docs/roles-catalog.md"
+    },
+    {
+      "path": "docs/scripts-catalog.md"
     },
     {
       "path": "docs/skills-catalog.md"
@@ -567,9 +585,7 @@
       "path": "pack-templates/digital-platform/08-service-clauses/DP.SC.NNN-external-session-request.md"
     },
     {
-      "path": "promotion-status.yaml"
-    },
-    {
+
       "path": "roles/README.md"
     },
     {
@@ -873,9 +889,6 @@
       "path": "scripts/day-close.sh"
     },
     {
-      "path": "scripts/restore-from-exocortex.sh"
-    },
-    {
       "path": "scripts/day-open-scaffold.sh"
     },
     {
@@ -970,6 +983,9 @@
     },
     {
       "path": "scripts/promote-common.sh"
+    },
+    {
+      "path": "scripts/restore-from-exocortex.sh"
     },
     {
       "path": "scripts/route-task.sh"
@@ -1237,6 +1253,13 @@
     {
       "path": "inbox/fleeting-notes.md",
       "reason": "personal notes — user-specific content, not part of template delivery"
-    }
+    },
+    "scripts/",
+    "scripts/tests/",
+    "promotion-status.yaml",
+    "AGENTS-agent-blocks.md",
+    "docs/BROWSER-CI-TEMPLATE.md",
+    "docs/maintaining-skills.md",
+    "docs/release-audit-log.md"
   ]
 }

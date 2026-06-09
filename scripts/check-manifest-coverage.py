@@ -81,6 +81,11 @@ def _is_excluded(path: str, extra: list[str]) -> bool:
     if path in extra:
         return True
 
+    for exc in extra:
+        exc_norm = exc.rstrip("/")
+        if path.startswith(exc_norm + "/") or path == exc_norm:
+            return True
+
     return False
 
 
