@@ -113,10 +113,8 @@ fi
 
 # Пишем временные JSON для передачи в Python
 TMPDIR=$(mktemp -d)
-python3 -c "import json; print(json.dumps(${FILES[@]+\"${FILES[@]}\"}))" > "$TMPDIR/files.json" 2>/dev/null || echo '[]' > "$TMPDIR/files.json"
-python3 -c "import json; print(json.dumps(${EXCLUDED_PATHS[@]+\"${EXCLUDED_PATHS[@]}\"}))" > "$TMPDIR/excluded.json" 2>/dev/null || echo '[]' > "$TMPDIR/excluded.json"
 
-# Надёжнее: через printf записываем построчно и читаем в Python
+# Через printf записываем построчно и читаем в Python
 printf '%s\n' "${FILES[@]}" > "$TMPDIR/files.txt"
 printf '%s\n' "${EXCLUDED_PATHS[@]}" > "$TMPDIR/excluded.txt"
 
