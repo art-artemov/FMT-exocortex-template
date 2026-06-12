@@ -527,17 +527,14 @@ schema_version: 1
 - **Telegram бот:** команды - plain text (не в `<code>`), заголовки - `*жирный*` (не `#`), таблицы - списки с `*жирным*`, абзацы - 2-3 предложения.
 - **Документы:** первый абзац - суть. Примеры и эталоны - в конце под спойлером.
 
-### Календарный конвейер (WP-357)
+### Планировщик датозависимых процессов
 
-> Single source-of-truth для датозависимых процессов IWE. Полная спецификация → `DS-strategy/docs/calendar-pipeline.md`.
+> ОС-зависим. Установщики ролей (`roles/*/install.sh`) детектируют ОС (`uname -s`): **Linux → systemd user timers** (`systemctl --user`), **macOS → launchd**. Реальные таймеры ставятся install-скриптами ролей (strategist morning/weekreview, extractor inbox-check, scheduler, secaudit-watchdog).
 
-**Каталог:** `DS-strategy/exocortex/process-catalog.yaml` (9 процессов: 5 A-класс + 4 B-класс).
-**Ledger (generated):** `DS-strategy/current/date-ledger.yaml` (регенерируется при каждом Day Open).
-**Watchdog:** in-band (Day Open hook) + out-of-band (launchd, каждый час). Telegram-дайджест при пропусках (cooldown 12h).
-**Установка:** `bash DS-strategy/scripts/install-launchd.sh` (10 plist, требует ручного запуска пилота).
-**Smoke-test:** `bash DS-strategy/scripts/calendar-pipeline-smoke.sh`.
+**Проверка:** `systemctl --user list-timers` (Linux) · `launchctl list` (macOS).
+**Логи:** `journalctl --user -u <unit>.service` (Linux).
 
-Добавление нового процесса = добавить запись в process-catalog.yaml + плист в exocortex/launchd/ + entry в install-launchd.sh PLISTS. Не редактировать date-ledger.yaml вручную (derived).
+> **Календарный конвейер (WP-357)** — `process-catalog.yaml` / `date-ledger.yaml` / `calendar-pipeline.md` / `install-launchd.sh` / `calendar-pipeline-smoke.sh` **в шаблоне НЕ поставляются** (это незавершённый дизайн эпохи macOS). Не ссылаться на них как на действующие файлы. Out-of-band watchdog на Linux — через systemd timer, не launchd.
 
 ---
 
