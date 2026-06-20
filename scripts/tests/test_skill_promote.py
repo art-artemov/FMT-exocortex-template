@@ -44,6 +44,9 @@ bash /Users/testuser/IWE/scripts/helper.sh
 ```
 
 Also $HOME/IWE/scripts/another.sh.
+
+<!-- USER-SPACE -->
+<!-- /USER-SPACE -->
 """
 
 SHELL_HELPER = """#!/usr/bin/env bash
@@ -96,6 +99,10 @@ def run_promote(skill_src: Path, tmp_fmt: Path, dry_run: bool = False) -> subpro
     (tmp_iwe / ".claude" / "skills").mkdir(parents=True, exist_ok=True)
     env["IWE_WORKSPACE"] = str(tmp_iwe)
     env["IWE_TEMPLATE"] = str(tmp_fmt)
+    # Pin HOME so the personal-path substitution ($HOME/IWE -> ${IWE:-$HOME/IWE}) has a
+    # deterministic match for the /Users/testuser/IWE paths the fixtures hard-code,
+    # independent of the runner's real HOME (/home/runner in CI, /Users/<dev> locally).
+    env["HOME"] = "/Users/testuser"
     args = ["bash", str(tmp_fmt / "scripts" / "skill-promote.sh"), str(skill_src)]
     if dry_run:
         args.append("--dry-run")
