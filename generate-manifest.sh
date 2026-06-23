@@ -109,7 +109,11 @@ while IFS= read -r rel; do
 
     $is_files_exclude && continue
     FILES+=("$rel")
-done < <(git -C "$SCRIPT_DIR" ls-files | sort)
+# LC_ALL=C pins byte-order collation so the manifest is reproducible across
+# contributor locales (CI sorts under C.UTF-8). Without it, a UTF-8 locale
+# reorders entries like README.md / sync_feedback_to_memory.py and breaks the
+# manifest-completeness check (issue #207).
+done < <(git -C "$SCRIPT_DIR" ls-files | LC_ALL=C sort)
 
 # Читаем существующий манифест для deprecated_files (ручное управление)
 DEPRECATED_JSON="[]"
