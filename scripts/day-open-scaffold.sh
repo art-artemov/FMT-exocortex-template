@@ -82,22 +82,43 @@ DOW_RU="${DOW_NAMES[$DOW_NUM]}"
 MONTH_RU="${MONTH_NAMES[$MONTH_NUM]}"
 YDAY_MONTH_RU="${MONTH_NAMES[$YDAY_MNUM]}"
 
-# --- YAML reader (uses python3 + yaml; fallback to grep) ---
-read_yaml() {
-  local key="$1"
-  python3 -c "
+# --- YAML reader: parse config once, then do pure-bash lookup per call ---
+# _YAML_KEYS / _YAML_VALS are parallel arrays built by a single python3 invocation.
+_YAML_KEYS=()
+_YAML_VALS=()
+if [ -f "$CONFIG" ] && command -v python3 >/dev/null 2>&1; then
+  while IFS=$'\x01' read -r k v; do
+    _YAML_KEYS+=("$k")
+    _YAML_VALS+=("$v")
+  done < <(python3 -c "
 import yaml, sys
+
+def flatten(d, prefix=''):
+    for k, v in (d or {}).items():
+        full = f'{prefix}{k}'
+        if isinstance(v, dict):
+            yield from flatten(v, full + '.')
+        else:
+            yield full, '' if v is None else str(v)
+
 try:
-    with open('$CONFIG') as f: d = yaml.safe_load(f)
-    keys = '$key'.split('.')
-    v = d
-    for k in keys:
-        v = v.get(k) if isinstance(v, dict) else None
-        if v is None: break
-    print(v if v is not None else '')
+    with open('$CONFIG') as f:
+        d = yaml.safe_load(f) or {}
+    for k, v in flatten(d):
+        print(k + '\x01' + v)
 except Exception:
     pass
-" 2>/dev/null
+" 2>/dev/null)
+fi
+
+read_yaml() {
+  local key="$1" i
+  for i in "${!_YAML_KEYS[@]}"; do
+    if [ "${_YAML_KEYS[$i]}" = "$key" ]; then
+      echo "${_YAML_VALS[$i]}"
+      return
+    fi
+  done
 }
 
 # --- Deterministic context extractors (WP-7 DAP: strategy + day-close) ---
@@ -670,6 +691,35 @@ render_ke_candidates() {
   done
 }
 
+# --- Section: Content-cleanup backlog (WP-376 surfacing into the plan) ---
+# Lists open knowledge-base cleanup signals so the pilot triages them in the plan.
+# Open signal = <summary> starts with "CC-NNN" (no leading ~~ strikethrough) and
+# carries no checkmark marker. Mirrors render_ke_candidates: graceful skip if absent.
+render_content_cleanup() {
+  local file="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/current/content-cleanup-backlog.md"
+  if [ ! -f "$file" ]; then
+    echo "> Реестр сигналов очистки базы знаний не настроен."
+    return
+  fi
+  local open
+  open=$(grep -E '<summary><strong>CC-[0-9]' "$file" | grep -v '✅' || true)
+  if [ -z "$open" ]; then
+    echo "> Разобрано — открытых сигналов нет."
+    return
+  fi
+  local count
+  count=$(printf '%s\n' "$open" | grep -c .)
+  echo "> **$count на разбор** → открыть реестр и решить по каждому сигналу."
+  echo
+  printf '%s\n' "$open" \
+    | sed -E 's#.*<summary><strong>##; s#</strong></summary>.*##' \
+    | while read -r title; do
+        [ -n "$title" ] && echo "- $title"
+      done
+  echo
+  echo "Реестр: \`${IWE_GOVERNANCE_REPO:-DS-strategy}/current/content-cleanup-backlog.md\`"
+}
+
 # --- Section: Итоги вчера (commits stats + sessions) ---
 render_yesterday() {
   local total=0 repos=0
@@ -752,8 +802,12 @@ render_compact_dashboard() {
   echo "---END-COMPACT-DASHBOARD---"
 }
 
-# --- Pre-compute sweep list для инжекта в PENDING (избежать двойного вызова внутри heredoc) ---
-SWEEP_WP_LIST=$(bash "$IWE/scripts/active-wp-sweep.sh" "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox" "$IWE" 2>/dev/null \
+# --- Pre-compute sweep list and full output (single call, reused below) ---
+# SWEEP_WP_FULL: full markdown table for "Активные РП" section (line ~975)
+# SWEEP_WP_LIST: WP-NNN IDs for PENDING injection — extracted from SWEEP_WP_FULL, no second call
+SWEEP_WP_FULL=$(bash "$IWE/scripts/active-wp-sweep.sh" "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox" "$IWE" 2>/dev/null \
+  || echo "<!-- active-wp-sweep: ошибка запуска -->")
+SWEEP_WP_LIST=$(echo "$SWEEP_WP_FULL" \
   | grep -oE '\*\*WP-[0-9]+\*\*' | tr -d '*' | tr '\n' ' ' | sed 's/  */ /g' || true)
 
 # --- Deterministic context injection (WP-7 DAP) ---
@@ -917,6 +971,13 @@ $(render_ke_candidates)
 
 $(render_gate_metrics)
 
+<details>
+<summary><b>Авторская очистка базы знаний</b></summary>
+
+$(render_content_cleanup)
+
+</details>
+
 </details>
 
 <details>
@@ -946,7 +1007,7 @@ $(render_world)
 <details>
 <summary><b>Активные РП</b></summary>
 
-$(bash "$IWE/scripts/active-wp-sweep.sh" "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox" "$IWE" 2>/dev/null || echo "<!-- active-wp-sweep: ошибка запуска -->")
+$SWEEP_WP_FULL
 
 </details>
 

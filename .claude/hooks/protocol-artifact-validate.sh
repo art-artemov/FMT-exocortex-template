@@ -54,15 +54,15 @@ if [ -n "$DAYPLAN" ]; then
 # Required sections (parameterized — update this list when format changes).
 # Scout раздел опционален: проверяется отдельно ниже (см. блок "Scout").
 SECTIONS=(
-  "План на сегодня"
-  "Календарь"
-  "IWE за ночь"
-  "Разбор заметок"
-  "Итоги вчера"
+  "План на сегодня|Plan for Today|Today.s Plan"
+  "Календарь|Calendar"
+  "IWE за ночь|IWE Overnight"
+  "Разбор заметок|Notes Review"
+  "Итоги вчера|Yesterday"
 )
 
 for section in "${SECTIONS[@]}"; do
-  if ! grep -q "$section" "$DAYPLAN"; then
+  if ! grep -qE "$section" "$DAYPLAN"; then
     MISSING+=("$section")
   fi
 done
@@ -80,7 +80,8 @@ fi
 # Флаг-диапазон вместо awk-range '/start/,/^## /': заголовок секции (## Календарь ...)
 # совпадает и со start, и с end-ограничителем /^## /, из-за чего range схлопывается в
 # одну строку и тело секции теряется (ложный блок коммита — issue #207).
-CALENDAR_CONTENT=$(awk 'f && /^## /{exit} /Календарь/{f=1} f' "$DAYPLAN" 2>/dev/null | wc -l || echo 0)
+# EN-альтернатива заголовка (Calendar) — для двуязычных DayPlan (issue #210).
+CALENDAR_CONTENT=$(awk 'f && /^## /{exit} /Календарь|Calendar/{f=1} f' "$DAYPLAN" 2>/dev/null | wc -l || echo 0)
 if [ "$CALENDAR_CONTENT" -lt 3 ]; then
   ERRORS+=("Секция 'Календарь' пустая или слишком короткая (${CALENDAR_CONTENT} строк)")
 fi
@@ -136,13 +137,13 @@ if [ -n "$WEEKPLAN" ]; then
   # Детектор (в): обязательные секции WeekPlan (по templates-dayplan.md)
   # ОПТ-5 (WP-297, 8 май): «Итоги» переехали в WeekReport — больше не required в WeekPlan
   WP_REQUIRED=(
-    "Повестка"
+    "Повестка|Agenda"
     "Inbox Triage"
-    "План на неделю"
-    "Контент-план"
+    "План на неделю|Week Plan"
+    "Контент-план|Content Plan"
   )
   for wp_section in "${WP_REQUIRED[@]}"; do
-    if ! grep -q "$wp_section" "$WEEKPLAN"; then
+    if ! grep -qE "$wp_section" "$WEEKPLAN"; then
       WP_MISSING_LIST+=("$wp_section")
     fi
   done

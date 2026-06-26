@@ -69,7 +69,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-06-23
+## [Unreleased] — обновлено 2026-06-26
 
 ### Added
 
@@ -122,10 +122,12 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `51cb56d` fix(#206/#207): edge-case tests for update.sh + Day Open token reduction
+- `64f690c` fix(#210): add EN section alternatives to protocol-artifact-validate.sh
 - `c2e66f2` fix(template-sync): normalize author workspace path to placeholder
 - `6141e76` fix(setup): IWE_TEMPLATE path to FMT-exocortex-template after rename
-- `c3df1f8` fix(#205/#203/#204): --check guard, §9 neutral stub, release automation
 - `6bb63c0` fix(CLAUDE): add pre-commit staged-scope verification rule
+- `c3df1f8` fix(#205/#203/#204): --check guard, §9 neutral stub, release automation
 - `d8c8568` fix(validate-template): skip wakatime-heartbeat.sh in orphan hook check
 - `5917dd6` fix: pathspec enforcement in 6 finalizing skills + lesson-close + skill-promote
 - `b7d1c4c` fix(diagnose): remove duplicate /diagnose trigger entries after rename

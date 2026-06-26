@@ -60,6 +60,9 @@
       "path": ".claude/hooks/lazy-context-loader.sh"
     },
     {
+      "path": ".claude/hooks/inject-role-prefixes.sh"
+    },
+    {
       "path": ".claude/hooks/memory-exocortex-sync.sh"
     },
     {
@@ -109,6 +112,9 @@
     },
     {
       "path": ".claude/parity-contract.yaml"
+    },
+    {
+      "path": ".claude/rules-lazy/role-prefixes-full.md"
     },
     {
       "path": ".claude/rules/distinctions.md"
