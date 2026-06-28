@@ -49,7 +49,21 @@ done
 # Kimi-only aliases фильтровать не нужно — claude -p принимает любые модели
 # По умолчанию sonnet (closed-loop, синтез — DP.D.distinctions Model Tiering)
 
-"$CLAUDE_BIN" -p \
+# WP-394 Ф2.4: --exclude-dynamic-system-prompt-sections moves per-machine sections
+# (cwd, env, memory paths, git status) from system prompt to first user message.
+# → stable byte-identical prefix across turns → higher cross-turn prompt-cache reuse.
+# Only applies with default system prompt (no --system-prompt passed here).
+#
+# --permission-mode bypassPermissions (default, overridable by caller via --permission-mode):
+# Without this, claude -p tries to request tool permissions via stdio on a closed pipe → hang.
+# Caller can override: e.g. --permission-mode acceptEdits for verify step.
+#
+# perl alarm 300: 5-minute hard timeout, same as kimi-peer-adapter.sh.
+# On timeout: SIGALRM → exit 142 → caller sees exit≠0 + empty file → reports to pilot.
+perl -e 'alarm 300; exec @ARGV' -- \
+  "$CLAUDE_BIN" -p \
+  --exclude-dynamic-system-prompt-sections \
+  --permission-mode bypassPermissions \
   "${MODEL_ARG[@]}" \
   ${ADD_DIRS[@]+"${ADD_DIRS[@]}"} \
   ${PERMISSION_MODE_ARG[@]+"${PERMISSION_MODE_ARG[@]}"} \
