@@ -159,6 +159,15 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - `06b9d79` fix(WP-376): A52/A49/A50/A51 — template hygiene и agentigore sample
 
 
+## [0.35.5] — 2026-06-30
+
+### Fixed
+
+- fix(#215): orphan detection TypeError — `set(dict_list)` → `_path()` helper + set comprehension (`update.sh` Python heredoc)
+- fix(#215): bare `DS-strategy` literals in `update.sh` lines 306/533-544 → `${IWE_GOVERNANCE_REPO:-DS-strategy}` (no longer blocked by `validate-fmt-scripts.sh`)
+- fix(#215): add `roles/strategist/WORKPLAN.md`, `.claude/hooks/wakatime-heartbeat.sh`, `.claude/skills/peer-conversation/modes.md` to `update-manifest.json deprecated_files` — suppresses false orphan warnings for removed platform files
+- fix(#214): `iwe-env-bootstrap.sh` `.claude/` branch — inline `basename` check prevents `WORKSPACE_DIR` landing inside `FMT-exocortex-template` when bootstrap is sourced from `FMT/.claude/lib/`
+
 ## [0.35.4] — 2026-06-15
 
 ### Fixed

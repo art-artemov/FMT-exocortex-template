@@ -303,7 +303,7 @@ echo "  ✓ .secrets/ (ключи)"
 echo "  ✓ .claude/settings.local.json (permissions)"
 echo "  ✓ sessions/00-index.md (журнал peer-сессий)"
 echo "  ✓ personal/ (ваши файлы)"
-echo "  ✓ DS-strategy/ (ваше планирование)"
+echo "  ✓ ${IWE_GOVERNANCE_REPO:-DS-strategy}/ (ваше планирование)"
 echo ""
 
 if [ "$UNCHANGED" -gt 0 ]; then
@@ -530,8 +530,8 @@ if [ -f "$ENV_FILE" ]; then
             # Resolve workspace: ENV_WORKSPACE_DIR (если есть) → fallback dirname $SCRIPT_DIR
             DETECT_WS="${ENV_WORKSPACE_DIR:-$(dirname "$SCRIPT_DIR")}"
             DETECTED_GOV=""
-            if [ -d "${DETECT_WS}/DS-strategy" ]; then
-                DETECTED_GOV="DS-strategy"
+            if [ -d "${DETECT_WS}/${IWE_GOVERNANCE_REPO:-DS-strategy}" ]; then
+                DETECTED_GOV="${IWE_GOVERNANCE_REPO:-DS-strategy}"
             else
                 for d in "${DETECT_WS}"/DS-*; do
                     case "${d##*/}" in
@@ -540,8 +540,8 @@ if [ -f "$ENV_FILE" ]; then
                 done
             fi
             if [ -z "$DETECTED_GOV" ]; then
-                DETECTED_GOV="DS-strategy"
-                echo "  ⚠ Governance repo не найден в $DETECT_WS — fallback DS-strategy. Проверьте .exocortex.env вручную."
+                DETECTED_GOV="${IWE_GOVERNANCE_REPO:-DS-strategy}"
+                echo "  ⚠ Governance repo не найден в $DETECT_WS — fallback ${IWE_GOVERNANCE_REPO:-DS-strategy}. Проверьте .exocortex.env вручную."
             fi
             echo "GOVERNANCE_REPO=$DETECTED_GOV" >> "$ENV_FILE"
             echo "  ✓ Добавлено GOVERNANCE_REPO=$DETECTED_GOV в .exocortex.env (миграция 0.28.5)"
@@ -1020,8 +1020,9 @@ manifest_path = os.path.join(script_dir, "update-manifest.json")
 with open(manifest_path) as f:
     manifest = json.load(f)
 
-known = set(manifest.get("files", []))
-deprecated = set(manifest.get("deprecated_files", []))
+def _path(e): return e["path"] if isinstance(e, dict) else e
+known = {_path(e) for e in manifest.get("files", [])}
+deprecated = {_path(e) for e in manifest.get("deprecated_files", [])}
 all_known = known | deprecated
 
 L1_DIRS = [".claude/hooks", ".claude/rules", ".claude/skills"]

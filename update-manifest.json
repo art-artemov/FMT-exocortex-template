@@ -1,5 +1,5 @@
 {
-  "version": "0.35.4",
+  "version": "0.35.5",
   "description": "Манифест платформенных файлов FMT-exocortex-template. Используется update.sh для доставки обновлений.",
   "files": [
     {
@@ -1143,6 +1143,18 @@
     {
       "path": "strategist-agent/scripts/strategist.sh",
       "reason": "strategist-agent directory removed"
+    },
+    {
+      "path": "roles/strategist/WORKPLAN.md",
+      "reason": "hub-and-spoke antipattern removed in WP-283 2026-05-11"
+    },
+    {
+      "path": ".claude/hooks/wakatime-heartbeat.sh",
+      "reason": "removed from platform in v0.34 — user-installed hook only"
+    },
+    {
+      "path": ".claude/skills/peer-conversation/modes.md",
+      "reason": "removed from platform — moved to peer-conversation skill internals"
     }
   ]
 }
