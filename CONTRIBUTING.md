@@ -74,6 +74,24 @@ Before contributing, understand how IWE is structured:
 
 ---
 
+## Promoting a Practice (keep the guide in sync)
+
+When you promote a stabilized practice (via `script-promote.sh` / `skill-promote.sh`) that
+changes the *principled* approach to working with IWE — not just an implementation detail —
+flag it so the guide-update pipeline can keep the user-facing guide current:
+
+1. Add a `[guide-impact]` marker to the practice file, **or**
+2. Add `[guide-update: S7.SS_N]` to the commit message, pointing at the affected section.
+
+The pipeline does the rest: it surfaces the change at Week Close so the maintainer can decide
+whether section 7 ("From Use to Creation") of the universal guide needs an update.
+
+**Boundary — guide vs developer-guide.** Content belongs in the guide only if it passes *both* checks:
+it is understandable without knowing specific IWE files/commands, **and** a T3+ reader gets it without
+first reading the developer-guide. If either check fails, it belongs in the developer-guide instead.
+
+---
+
 ## Pull Request Guidelines
 
 ### Before You Start
