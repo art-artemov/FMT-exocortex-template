@@ -8,6 +8,10 @@ Usage:
 
     # Discover untranslated terms (writes CSV to stdout)
     python3 scripts/translate.py --mode=discover docs/README.md
+
+    # Translate only category-D files changed since last sync (WP-415 Ф-В2)
+    python3 scripts/translate.py --mode=delta --output-dir ../en-out \\
+        --state-file ../en-draft/.translation-state.yaml
 """
 
 from __future__ import annotations
@@ -15,8 +19,10 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import anthropic
@@ -440,6 +446,97 @@ def run_translate(args: argparse.Namespace, manifest: dict, glossary: dict) -> i
 
 
 # ---------------------------------------------------------------------------
+# Delta mode (WP-415 Ф-В2: translate only category-D files changed since last sync)
+# ---------------------------------------------------------------------------
+
+
+def _category_d_files(repo_root: Path, manifest: dict) -> list[Path]:
+    """Expand category-D manifest patterns to concrete tracked .md files."""
+    patterns: list[str] = manifest.get("categories", {}).get("D", {}).get("files", [])
+    found: list[Path] = []
+    for pattern in patterns:
+        candidate = repo_root / pattern
+        if candidate.is_file():
+            found.append(candidate)
+        elif candidate.is_dir():
+            found.extend(sorted(candidate.rglob("*.md")))
+    return found
+
+
+def _git_changed_since(repo_root: Path, since_sha: str) -> set[Path]:
+    """Absolute paths changed between since_sha and HEAD (raises on git failure)."""
+    result = subprocess.run(
+        ["git", "diff", "--name-only", f"{since_sha}..HEAD"],
+        cwd=repo_root, capture_output=True, text=True, check=True,
+    )
+    return {repo_root / line for line in result.stdout.splitlines() if line.strip()}
+
+
+def _git_head_sha(repo_root: Path) -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo_root, capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip()
+
+
+def _write_state_file(state_path: Path, sha: str, files_translated: list[str]) -> None:
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "schema_version": 1,
+        "last_synced_sha": sha,
+        "last_run_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "files_translated": files_translated,
+    }
+    state_path.write_text(
+        yaml.dump(state, allow_unicode=True, default_flow_style=False), encoding="utf-8"
+    )
+
+
+def run_delta(args: argparse.Namespace, manifest: dict, glossary: dict) -> int:
+    """Translate only category-D files changed since `.translation-state.yaml`.
+
+    First run (no state file / no last_synced_sha) translates the full
+    category-D set — there is no baseline to diff against yet.
+    """
+    if not args.output_dir:
+        print("ERROR: --output-dir is required for delta mode", file=sys.stderr)
+        return 1
+
+    repo_root = _find_repo_root(Path.cwd())
+    output_dir = Path(args.output_dir)
+
+    state: dict = {}
+    if args.state_file:
+        state_file = Path(args.state_file)
+        if state_file.exists():
+            with state_file.open(encoding="utf-8") as f:
+                state = yaml.safe_load(f) or {}
+    last_sha = state.get("last_synced_sha")
+
+    d_files = _category_d_files(repo_root, manifest)
+    if last_sha:
+        changed = _git_changed_since(repo_root, last_sha)
+        targets = [f for f in d_files if f in changed]
+    else:
+        targets = d_files
+
+    head_sha = _git_head_sha(repo_root)
+
+    if not targets:
+        print("No category-D files changed since last sync — nothing to translate.", file=sys.stderr)
+        _write_state_file(output_dir / ".translation-state.yaml", head_sha, [])
+        return 0
+
+    args.files = [str(f) for f in targets]
+    exit_code = run_translate(args, manifest, glossary)
+
+    rel_targets = [str(f.relative_to(repo_root)) for f in targets]
+    _write_state_file(output_dir / ".translation-state.yaml", head_sha, rel_targets)
+    return exit_code
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -450,10 +547,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--mode",
-        choices=["translate", "discover"],
+        choices=["translate", "discover", "delta"],
         default="translate",
         help="translate: call Claude API and write output; "
-             "discover: find untranslated terms (CSV to stdout)",
+             "discover: find untranslated terms (CSV to stdout); "
+             "delta: translate only category-D files changed since last sync",
     )
     parser.add_argument(
         "--manifest",
@@ -478,14 +576,23 @@ def main() -> int:
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Output directory for translated files (translate mode only)",
+        help="Output directory for translated files (translate/delta modes)",
+    )
+    parser.add_argument(
+        "--state-file",
+        default=None,
+        help="Path to .translation-state.yaml (delta mode: last_synced_sha source)",
     )
     parser.add_argument(
         "files",
-        nargs="+",
-        help="Files to process",
+        nargs="*",
+        help="Files to process (translate/discover modes; ignored in delta mode)",
     )
     args = parser.parse_args()
+
+    if args.mode in ("translate", "discover") and not args.files:
+        print(f"ERROR: --mode={args.mode} requires at least one file argument", file=sys.stderr)
+        return 1
 
     manifest_path = Path(args.manifest)
     if not manifest_path.exists():
@@ -499,6 +606,8 @@ def main() -> int:
 
     if args.mode == "discover":
         return run_discover(args, manifest, glossary)
+    if args.mode == "delta":
+        return run_delta(args, manifest, glossary)
     return run_translate(args, manifest, glossary)
 
 

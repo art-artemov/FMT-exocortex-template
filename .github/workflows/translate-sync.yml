@@ -1,0 +1,118 @@
+name: Translate Sync (RU → EN)
+
+# see WP-415 Ф-В2 (translation pipeline automation, keystone-independent)
+# Peer-session: sessions/2026-07/2026-07-01-12-wp415-translation-pipeline-automation/report.md
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "README.md"
+      - "docs/**"
+
+concurrency:
+  group: translate-sync-${{ github.ref }}
+  cancel-in-progress: false
+
+# Loop-guard: the bot only ever pushes to en-draft, which this workflow does
+# not watch, so branch-scoping is the actual defense today. Kept as a second
+# line of defense in case the trigger ever grows to include en-draft pushes —
+# do not delete as "dead code" without checking the trigger above first.
+jobs:
+  sync:
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      !contains(github.event.head_commit.message, '[skip-translate]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main (full history for delta diff)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install anthropic pyyaml pytest
+
+      - name: Run delivery tests (formal + content, unit-level)
+        run: |
+          pytest scripts/tests/test_delivery_formal.py \
+                 scripts/tests/test_delivery_content.py \
+                 scripts/tests/test_translate_delta.py -q
+
+      - name: Fetch or create en-draft staging branch
+        id: en_draft
+        run: |
+          if git ls-remote --exit-code --heads origin en-draft > /dev/null 2>&1; then
+            git worktree add ../en-draft origin/en-draft
+          else
+            git worktree add -b en-draft ../en-draft
+            git -C ../en-draft rm -rf --quiet . || true
+          fi
+
+      - name: Translate changed category-D files (delta)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python3 scripts/translate.py --mode=delta \
+            --output-dir ../en-out \
+            --state-file ../en-draft/.translation-state.yaml
+
+      - name: Formal + content delivery checks (Tier-1 fail / Tier-2-3 warn)
+        id: delivery_checks
+        run: |
+          set -e
+          status=ok
+          # Source of truth for which files to check is .translation-state.yaml
+          # (written by translate.py --mode=delta), not a directory glob —
+          # avoids re-deriving source paths by string-stripping ../en-out/.
+          files=$(python3 -c "
+          import yaml
+          with open('../en-out/.translation-state.yaml', encoding='utf-8') as f:
+              state = yaml.safe_load(f) or {}
+          print('\n'.join(state.get('files_translated', [])))
+          ")
+          while IFS= read -r rel; do
+            [ -z "$rel" ] && continue
+            if ! python3 scripts/delivery_checks.py \
+                --source "$rel" --output "../en-out/$rel" \
+                --glossary translation/glossary-v0.1.csv; then
+              status=failed
+            fi
+          done <<< "$files"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          if [ "$status" = "failed" ]; then exit 1; fi
+
+      - name: Publish sync status badge data
+        if: always() && steps.en_draft.outcome == 'success'
+        run: |
+          color=green
+          message=ok
+          if [ "${{ steps.delivery_checks.outputs.status }}" = "failed" ]; then
+            color=red
+            message=failed
+          fi
+          cat > ../en-draft/badge-data.json <<EOF
+          {"schemaVersion":1,"label":"EN sync","message":"$message","color":"$color"}
+          EOF
+
+      - name: Commit and push to en-draft
+        if: always() && steps.en_draft.outcome == 'success'
+        run: |
+          rsync -a --delete --exclude '.git' ../en-out/ ../en-draft/ 2>/dev/null || cp -r ../en-out/. ../en-draft/
+          cd ../en-draft
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No translation changes to commit."
+            exit 0
+          fi
+          git commit -m "chore(translate-sync): sync EN draft from $(git -C "$GITHUB_WORKSPACE" rev-parse --short HEAD) [skip-translate]"
+          git push origin en-draft

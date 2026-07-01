@@ -1,19 +1,19 @@
-term_ru,term_en,context,notes
-Созидатель,Creator,Person building value in IWE,core term
-Ступень мастерства,Mastery stage,cp-profile level 1-5,
-Рабочий продукт,Work Product,WP abbreviation retained,
-Скилл,Skill,Agent skill/capability,
-Среда,Environment,IWE working environment,
-Пак,Pack,Knowledge pack,
-Конвейер,Pipeline,Automated pipeline,
-Рубеж работы,Work milestone,Decision point in workflow,
-Напарник,Peer partner,Peer agent in DP.SC.154,
-Открытие,Opening,ORZ Opening phase,
-Закрытие,Closing,ORZ Closing phase,
-Рабочий ход,Work turn,Turn in peer session,
-Аудит,Audit,Audit process,
-Различение,Distinction,Key conceptual distinction,
-Поток,Flow/Stream,Learning or work stream,
-Форматирование,Formatting,Document formatting,
-Ролевой префикс,Role prefix,Role activation prefix,
-Блокирующее правило,Blocking rule,Mandatory rule,
+term_ru,term_en,context,notes,tier
+Созидатель,Creator,Person building value in IWE,core term,1
+Ступень мастерства,Mastery stage,cp-profile level 1-5,,1
+Рабочий продукт,Work Product,WP abbreviation retained,,1
+Скилл,Skill,Agent skill/capability,,1
+Среда,Environment,IWE working environment,,1
+Пак,Pack,Knowledge pack,,1
+Конвейер,Pipeline,Automated pipeline,,1
+Рубеж работы,Work milestone,Decision point in workflow,,1
+Напарник,Peer partner,Peer agent in DP.SC.154,,1
+Открытие,Opening,ORZ Opening phase,,1
+Закрытие,Closing,ORZ Closing phase,,1
+Рабочий ход,Work turn,Turn in peer session,,1
+Аудит,Audit,Audit process,,1
+Различение,Distinction,Key conceptual distinction,,1
+Поток,Flow/Stream,Learning or work stream,,1
+Форматирование,Formatting,Document formatting,,1
+Ролевой префикс,Role prefix,Role activation prefix,,1
+Блокирующее правило,Blocking rule,Mandatory rule,,1
