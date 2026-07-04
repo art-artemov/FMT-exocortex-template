@@ -659,6 +659,27 @@ else
     echo "  ℹ  Restart shell or run: source $HOME/.zshenv"
 fi
 
+# === 4e. Generate executor-catalog.yaml for task routing (issue #197) ===
+# route-task.sh (DP.ROLE.059, Маршрутизатор) looks this up at
+# ~/IWE/$GOVERNANCE_REPO/scripts/executor-catalog.yaml — without generating it on
+# install, a fresh install has no catalog and route-task.sh always fails ("not found").
+# Non-fatal on error: routing is a convenience feature, not a hard setup prerequisite
+# (PyYAML availability etc. is already checked at consumption time in route-task.sh).
+if $CORE_ONLY; then
+    echo "[4e] executor-catalog.yaml... пропущено (core mode, нет агента для маршрутизации)"
+elif $DRY_RUN; then
+    echo "[DRY RUN] Would generate executor-catalog.yaml (IWE_GOVERNANCE_REPO=$GOVERNANCE_REPO)"
+else
+    echo "[4e] Generating executor-catalog.yaml..."
+    if CATALOG_OUTPUT=$(IWE_GOVERNANCE_REPO="$GOVERNANCE_REPO" python3 "$TEMPLATE_DIR/scripts/generate-executor-catalog.py" 2>&1); then
+        echo "$CATALOG_OUTPUT" | sed 's/^/  /'
+    else
+        echo "$CATALOG_OUTPUT" | sed 's/^/  /'
+        echo "  ⚠ executor-catalog.yaml не сгенерирован — запусти вручную:"
+        echo "    python3 $TEMPLATE_DIR/scripts/generate-executor-catalog.py"
+    fi
+fi
+
 # === 5. Install roles (autodiscovery via role.yaml) ===
 if $CORE_ONLY; then
     echo "[5/6] Автоматизация... пропущена (core mode)"
