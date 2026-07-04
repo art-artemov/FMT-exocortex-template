@@ -197,6 +197,10 @@ check_command() {
 # Git — обязателен всегда
 check_command "git" "Git" "xcode-select --install"
 
+# jq — обязателен всегда: .claude/hooks/dry-run-gate.sh (устанавливается в любом режиме,
+# см. шаг 4b) fail-closed блокирует ВСЕ tool calls без jq, без явного предупреждения (issue #192).
+check_command "jq" "jq" "brew install jq (Linux: apt install jq / dnf install jq)"
+
 if $CORE_ONLY; then
     echo ""
     echo "  Режим --core: проверяются только обязательные зависимости (git)."
