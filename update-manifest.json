@@ -360,10 +360,10 @@
       "path": ".claude/styles/s0-core.md"
     },
     {
-      "path": ".claude/templates/drr-template.md"
+      "path": ".claude/sync-manifest.yaml"
     },
     {
-      "path": ".claude/sync-manifest.yaml"
+      "path": ".claude/templates/drr-template.md"
     },
     {
       "path": ".githooks/pre-commit"
