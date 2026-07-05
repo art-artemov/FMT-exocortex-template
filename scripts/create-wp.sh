@@ -61,8 +61,8 @@ max_num = 0
 try:
     with open(registry, "r", encoding="utf-8") as f:
         for line in f:
-            # Ищем строки вида | 297 | или | ~~297~~ |
-            m = re.match(r"^\|\s*[*~]*(\d+)[*~]*\s*\|", line)
+            # Ищем строки вида | 297 |, | ~~297~~ | или legacy-формат | WP-297 |
+            m = re.match(r"^\|\s*[*~]*(?:WP-)?(\d+)[*~]*\s*\|", line)
             if m:
                 n = int(m.group(1))
                 if n > max_num:
