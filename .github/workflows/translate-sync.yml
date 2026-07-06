@@ -62,8 +62,16 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
+          # Writes straight into the en-draft worktree (already checked out
+          # from origin/en-draft, holding every prior run's output) so files
+          # untouched by this delta stay put. Do NOT stage this through a
+          # throwaway ../en-out + `rsync --delete` mirror — that mirrors the
+          # delta subset onto en-draft and deletes everything else, wiping
+          # out all previously translated docs on every run that doesn't
+          # touch all of them (caught 2026-07-06: a zero-file delta run
+          # erased all 38 published files).
           python3 scripts/translate.py --mode=delta \
-            --output-dir ../en-out \
+            --output-dir ../en-draft \
             --state-file ../en-draft/.translation-state.yaml
           rc=$?
           set -e
@@ -80,17 +88,17 @@ jobs:
           status=ok
           # Source of truth for which files to check is .translation-state.yaml
           # (written by translate.py --mode=delta), not a directory glob —
-          # avoids re-deriving source paths by string-stripping ../en-out/.
+          # avoids re-deriving source paths by string-stripping ../en-draft/.
           files=$(python3 -c "
           import yaml
-          with open('../en-out/.translation-state.yaml', encoding='utf-8') as f:
+          with open('../en-draft/.translation-state.yaml', encoding='utf-8') as f:
               state = yaml.safe_load(f) or {}
           print('\n'.join(state.get('files_translated', [])))
           ")
           while IFS= read -r rel; do
             [ -z "$rel" ] && continue
             if ! python3 scripts/delivery_checks.py \
-                --source "$rel" --output "../en-out/$rel" \
+                --source "$rel" --output "../en-draft/$rel" \
                 --glossary translation/glossary-v0.1.csv; then
               status=failed
             fi
@@ -114,7 +122,6 @@ jobs:
       - name: Commit and push to en-draft
         if: always() && steps.en_draft.outcome == 'success'
         run: |
-          rsync -a --delete --exclude '.git' ../en-out/ ../en-draft/ 2>/dev/null || cp -r ../en-out/. ../en-draft/
           cd ../en-draft
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
