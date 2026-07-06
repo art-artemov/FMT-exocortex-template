@@ -67,6 +67,12 @@ categories:
     files:
       - README.md
       - docs/
+    # Blank fill-in templates: frontmatter list values are station
+    # identifiers, not prose — the single-key-value translate path can't
+    # handle them, so they always trip the tier-1 glossary check. Route
+    # to category G (manual_adapt) instead of chasing per-file exceptions.
+    exclude:
+      - docs/developer/card-template.md
 
   I:
     policy: manual_adapt
@@ -88,6 +94,7 @@ categories:
       - CHANGELOG.md
       - CONTRIBUTING.md
       - .claude/skills/**/README.md
+      - docs/developer/card-template.md
 
   N:
     policy: skip

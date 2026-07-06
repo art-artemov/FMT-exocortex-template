@@ -462,8 +462,16 @@ def run_translate(args: argparse.Namespace, manifest: dict, glossary: dict) -> i
 
 
 def _category_d_files(repo_root: Path, manifest: dict) -> list[Path]:
-    """Expand category-D manifest patterns to concrete tracked .md files."""
-    patterns: list[str] = manifest.get("categories", {}).get("D", {}).get("files", [])
+    """Expand category-D manifest patterns to concrete tracked .md files.
+
+    `exclude` entries are relative paths for files swept in by a directory
+    pattern (e.g. `docs/`) that don't belong in auto-translate — typically
+    blank templates whose frontmatter holds structural identifiers rather
+    than prose (see translation-manifest.yaml comment).
+    """
+    category_d = manifest.get("categories", {}).get("D", {})
+    patterns: list[str] = category_d.get("files", [])
+    excluded = {repo_root / rel for rel in category_d.get("exclude", [])}
     found: list[Path] = []
     for pattern in patterns:
         candidate = repo_root / pattern
@@ -471,7 +479,7 @@ def _category_d_files(repo_root: Path, manifest: dict) -> list[Path]:
             found.append(candidate)
         elif candidate.is_dir():
             found.extend(sorted(candidate.rglob("*.md")))
-    return found
+    return [f for f in found if f not in excluded]
 
 
 def _git_changed_since(repo_root: Path, since_sha: str) -> set[Path]:
