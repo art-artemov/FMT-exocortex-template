@@ -32,6 +32,11 @@ verify_quick_close: true
 # Telegram уведомления от ролей (strategist, extractor, synchronizer)
 telegram_notifications: true
 
+# Путь к кастомному скрипту уведомлений (issue #17, Linux/Docker).
+# Если не задан — используется встроенный macOS osascript.
+# Скрипт получает: $1=title $2=message и должен вернуть exit 0.
+notify_sh_path: ""
+
 # === MCP / Capture ===
 
 # Уровень инициативы агента при Capture-to-Pack (WP-189 Ф2):

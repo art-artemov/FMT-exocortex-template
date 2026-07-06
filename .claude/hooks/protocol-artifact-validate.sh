@@ -6,11 +6,11 @@
 # Read-only: only returns JSON, does not modify files.
 #
 # Validated artifacts:
-#   - DayPlan: 11 required sections + collapsible + non-empty key sections + carry-over
+#   - DayPlan: 11 required sections + ## headings structure + non-empty key sections + carry-over
 #   - DayClose: итоги, carry-over (day-close protocol) [future]
 #
 # Parameterized: sections list is a variable, not hardcoded per format.
-# Ф3 WP-229: добавлены проверки структуры (collapsible, непустые секции, мультипликатор, carry-over)
+# Ф3 WP-229: добавлены проверки структуры (## заголовки, непустые секции, мультипликатор, carry-over)
 
 INPUT=$(cat)
 TOOL=$(echo "$INPUT" | jq -r '.tool_name // empty')
@@ -28,9 +28,9 @@ if ! echo "$TOOL_INPUT" | grep -qE 'git (add.*&&.*git )?commit'; then
   exit 0
 fi
 
-# Governance-репо: из env $IWE_GOVERNANCE_REPO (по умолчанию DS-strategy).
+# Governance-репо: из env $IWE_GOVERNANCE_REPO (по умолчанию ${IWE_GOVERNANCE_REPO:-DS-strategy}).
 # Workspace: $IWE_WORKSPACE или $IWE_ROOT (синонимы), default ~/IWE.
-GOV_REPO="${IWE_GOVERNANCE_REPO:-DS-strategy}"
+GOV_REPO="${IWE_GOVERNANCE_REPO:-${IWE_GOVERNANCE_REPO:-DS-strategy}}"
 WORKSPACE="${IWE_WORKSPACE:-${IWE_ROOT:-$HOME/IWE}}"
 GOV_PATH="$WORKSPACE/$GOV_REPO"
 
@@ -54,30 +54,36 @@ if [ -n "$DAYPLAN" ]; then
 # Required sections (parameterized — update this list when format changes).
 # Scout раздел опционален: проверяется отдельно ниже (см. блок "Scout").
 SECTIONS=(
-  "План на сегодня"
-  "Календарь"
-  "IWE за ночь"
-  "Разбор заметок"
-  "Итоги вчера"
+  "План на сегодня|Plan for Today|Today.s Plan"
+  "Календарь|Calendar"
+  "IWE за ночь|IWE Overnight"
+  "Разбор заметок|Notes Review"
+  "Итоги вчера|Yesterday"
 )
 
 for section in "${SECTIONS[@]}"; do
-  if ! grep -q "$section" "$DAYPLAN"; then
+  if ! grep -qE "$section" "$DAYPLAN"; then
     MISSING+=("$section")
   fi
 done
 
 # Check mandatory format elements
 
-# --- Ф3 Check 1: collapsible <details> блоки ---
-DETAILS_COUNT=$(grep -c '<details' "$DAYPLAN" 2>/dev/null || true); DETAILS_COUNT=${DETAILS_COUNT:-0}
-if [ "$DETAILS_COUNT" -lt 3 ]; then
-  ERRORS+=("Collapsible секции (<details>) < 3 найдено: $DETAILS_COUNT. DayPlan должен иметь collapsible-структуру")
+# --- Ф3 Check 1: заголовки секций — ## (Obsidian-совместимый) или <summary> (сворачиваемые секции, formatting.md) ---
+# issue #221: formatting.md требует <details><summary> для DayPlan/WeekPlan (более новое решение,
+# заменившее старый Obsidian-only запрет на HTML-теги) — считаем оба варианта заголовком секции.
+HEADINGS_COUNT=$(grep -cE '^## |^[[:space:]]*<summary>' "$DAYPLAN" 2>/dev/null || true); HEADINGS_COUNT=${HEADINGS_COUNT:-0}
+if [ "$HEADINGS_COUNT" -lt 3 ]; then
+  ERRORS+=("Секций (## или <summary>) < 3 найдено: $HEADINGS_COUNT. DayPlan должен иметь структуру из заголовков секций")
 fi
 
 # --- Ф3 Check 2: непустые обязательные секции ---
-# Календарь: должна содержать хотя бы одну строку с | (таблица) или "нет событий"
-CALENDAR_CONTENT=$(awk '/Календарь/,/^<\/details>/' "$DAYPLAN" 2>/dev/null | wc -l || echo 0)
+# Календарь: должна содержать хотя бы одну строку с | (таблица) или "нет событий".
+# Флаг-диапазон вместо awk-range '/start/,/^## /': заголовок секции (## Календарь ...)
+# совпадает и со start, и с end-ограничителем /^## /, из-за чего range схлопывается в
+# одну строку и тело секции теряется (ложный блок коммита — issue #207).
+# EN-альтернатива заголовка (Calendar) — для двуязычных DayPlan (issue #210).
+CALENDAR_CONTENT=$(awk 'f && /^## /{exit} /Календарь|Calendar/{f=1} f' "$DAYPLAN" 2>/dev/null | wc -l || echo 0)
 if [ "$CALENDAR_CONTENT" -lt 3 ]; then
   ERRORS+=("Секция 'Календарь' пустая или слишком короткая (${CALENDAR_CONTENT} строк)")
 fi
@@ -85,7 +91,9 @@ fi
 # Scout: проверяется только если секция вообще присутствует в DayPlan (опциональный компонент,
 # зависит от DS-agent-workspace). Если секции нет — Scout не сконфигурирован, валидатор не блокирует.
 if grep -q "Наработки Scout" "$DAYPLAN" 2>/dev/null; then
-  if ! awk '/Наработки Scout/,/^<\/details>/' "$DAYPLAN" 2>/dev/null | grep -iqE 'наход|capture|статус|нет|find|disabled|not configured'; then
+  # Флаг-диапазон вместо awk-range (см. Календарь выше, issue #207): заголовок
+  # '## Наработки Scout' совпадает с end-ограничителем /^## /, range схлопывается.
+  if ! awk 'f && /^## /{exit} /Наработки Scout/{f=1} f' "$DAYPLAN" 2>/dev/null | grep -iqE 'наход|capture|статус|нет|find|disabled|not configured'; then
     ERRORS+=("Секция 'Наработки Scout' пустая (допустимы маркеры 'нет находок', 'disabled', 'not configured')")
   fi
 fi
@@ -122,29 +130,22 @@ if [ -n "$WEEKPLAN" ]; then
   WP_ERRORS=()
   WP_MISSING_LIST=()
 
-  # Детектор (а): >80 строк без достаточного числа <details>
-  WP_DETAILS_COUNT=$(grep -c '<details' "$WEEKPLAN" 2>/dev/null || true); WP_DETAILS_COUNT=${WP_DETAILS_COUNT:-0}
-  if [ "$WP_LINES" -gt 80 ] && [ "$WP_DETAILS_COUNT" -lt 3 ]; then
-    WP_ERRORS+=("WeekPlan >80 строк ($WP_LINES) но collapsible секций < 3 ($WP_DETAILS_COUNT). Используй <details>/<summary> (formatting.md)")
-  fi
-
-  # Детектор (б): баланс <details> / </details>
-  DETAILS_OPEN=$(grep -c '<details' "$WEEKPLAN" 2>/dev/null || true); DETAILS_OPEN=${DETAILS_OPEN:-0}
-  DETAILS_CLOSE=$(grep -c '</details>' "$WEEKPLAN" 2>/dev/null || true); DETAILS_CLOSE=${DETAILS_CLOSE:-0}
-  if [ "$DETAILS_OPEN" != "$DETAILS_CLOSE" ]; then
-    WP_ERRORS+=("WeekPlan: несбалансированные <details> (открытий=$DETAILS_OPEN, закрытий=$DETAILS_CLOSE)")
+  # Детектор (а): >80 строк без достаточного числа заголовков — ## или <summary> (issue #221, см. Check 1 выше)
+  WP_HEADINGS_COUNT=$(grep -cE '^## |^[[:space:]]*<summary>' "$WEEKPLAN" 2>/dev/null || true); WP_HEADINGS_COUNT=${WP_HEADINGS_COUNT:-0}
+  if [ "$WP_LINES" -gt 80 ] && [ "$WP_HEADINGS_COUNT" -lt 3 ]; then
+    WP_ERRORS+=("WeekPlan >80 строк ($WP_LINES) но секций (## или <summary>) < 3 ($WP_HEADINGS_COUNT). Используй ## заголовки или <details><summary> для структурирования.")
   fi
 
   # Детектор (в): обязательные секции WeekPlan (по templates-dayplan.md)
   # ОПТ-5 (WP-297, 8 май): «Итоги» переехали в WeekReport — больше не required в WeekPlan
   WP_REQUIRED=(
-    "Повестка"
+    "Повестка|Agenda"
     "Inbox Triage"
-    "План на неделю"
-    "Контент-план"
+    "План на неделю|Week Plan"
+    "Контент-план|Content Plan"
   )
   for wp_section in "${WP_REQUIRED[@]}"; do
-    if ! grep -q "$wp_section" "$WEEKPLAN"; then
+    if ! grep -qE "$wp_section" "$WEEKPLAN"; then
       WP_MISSING_LIST+=("$wp_section")
     fi
   done
@@ -184,7 +185,7 @@ if [ ${#MISSING[@]} -gt 0 ] || [ ${#ERRORS[@]} -gt 0 ]; then
   jq -n --arg reason "$MSG" '{"decision": "block", "reason": $reason}'
 else
   cat <<'EOF'
-{"additionalContext": "✅ DayPlan прошёл валидацию: секции, collapsible, непустые блоки, мультипликатор, carry-over."}
+{"additionalContext": "✅ DayPlan прошёл валидацию: секции, ## заголовки, непустые блоки, мультипликатор, carry-over."}
 EOF
 fi
 

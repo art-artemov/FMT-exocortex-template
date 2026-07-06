@@ -15,6 +15,19 @@ set -e
 # но prompts/ — read-only, должны браться из FMT через $IWE_TEMPLATE.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
+
+# Guard: сырой файл в FMT-exocortex-template никогда не подставляет плейсхолдеры
+# (build-runtime.sh подставляет их только в собранную копию под .iwe-runtime/).
+# Запуск отсюда напрямую тихо создаёт директории с буквальным именем "{{HOME_DIR}}"
+# (bug-2026-07-02-home-dir-placeholder-literal-directory.md).
+case "$SCRIPT_DIR" in
+    */FMT-exocortex-template/roles/extractor/scripts)
+        echo "FATAL: extractor.sh запущен из сырого шаблона FMT-exocortex-template — плейсхолдеры не подставлены." >&2
+        echo "  Используй собранную копию: \$IWE_RUNTIME/roles/extractor/scripts/extractor.sh" >&2
+        exit 1
+        ;;
+esac
+
 WORKSPACE="{{WORKSPACE_DIR}}"
 
 # PROMPTS_DIR резолв: $IWE_TEMPLATE → standard FMT → relative (legacy)
@@ -37,6 +50,15 @@ AI_CLI="${AI_CLI:-$CLAUDE_PATH}"
 AI_CLI_PROMPT_FLAG="${AI_CLI_PROMPT_FLAG:--p}"
 AI_CLI_EXTRA_FLAGS="${AI_CLI_EXTRA_FLAGS:---dangerously-skip-permissions --allowedTools Read,Write,Edit,Glob,Grep,Bash}"
 
+# issue #17: load NOTIFY_SH_PATH from params.yaml if not already set in environment
+if [ -z "${NOTIFY_SH_PATH:-}" ]; then
+    _params="${IWE_WORKSPACE:-$HOME/IWE}/params.yaml"
+    if [ -f "$_params" ]; then
+        _notify_val=$(grep -E '^notify_sh_path:' "$_params" | sed 's/^notify_sh_path:[[:space:]]*//;s/^"//;s/"$//;s/^'"'"'//;s/'"'"'$//' | tr -d '[:space:]')
+        [ -n "$_notify_val" ] && export NOTIFY_SH_PATH="$_notify_val"
+    fi
+fi
+
 # Создаём папку для логов
 mkdir -p "$LOG_DIR"
 
@@ -52,10 +74,15 @@ log() {
 notify() {
     local title="$1"
     local message="$2"
-    # macOS: osascript, Linux: notify-send, fallback: silent
-    printf 'display notification "%s" with title "%s"' "$message" "$title" | osascript 2>/dev/null \
-        || notify-send "$title" "$message" 2>/dev/null \
-        || true
+    # issue #17: NOTIFY_SH_PATH override for Linux/Docker (set in params.yaml or .exocortex.env)
+    if [ -n "${NOTIFY_SH_PATH:-}" ] && [ -x "$NOTIFY_SH_PATH" ]; then
+        "$NOTIFY_SH_PATH" "$title" "$message" 2>/dev/null || true
+    else
+        # macOS: osascript, Linux: notify-send, fallback: silent
+        printf 'display notification "%s" with title "%s"' "$message" "$title" | osascript 2>/dev/null \
+            || notify-send "$title" "$message" 2>/dev/null \
+            || true
+    fi
 }
 
 notify_telegram() {

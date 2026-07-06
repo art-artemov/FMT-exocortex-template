@@ -7,7 +7,6 @@
 1. **WP Gate:** Задание → проверь РП в таблице ниже → нет = СТОП (CLAUDE.md § 2)
 2. **Close:** push ≠ закрытие → capture-to-pack + подтверждение + backup (CLAUDE.md § 2)
 3. **ArchGate ≥8:** Предлагать ТОЛЬКО решения с оценкой ≥8 по ArchGate (ЭМОГСС). Слабые решения (≤7) — НЕ предлагать.
-4. **Routing Gate:** Перед Write нового файла → `memory/routing-vocab.md` (fast-path). Miss → `memory/repo-type-rules.md`. Аналогия с соседним файлом запрещена (P5).
 
 ## ВАЖНЫЕ (проверяй на рубежах)
 
@@ -31,7 +30,8 @@
 
 | Тема | Файл |
 |------|------|
-| Различения (жёсткие пары) | `memory/hard-distinctions.md` |
+| Различения (жёсткие + авторские warm) | `memory/hard-distinctions.md`, `memory/distinctions-warm.md` |
+| Роли (детали R27–R31) | `memory/roles-detail.md` |
 | FPF (навигация, принципы) | `memory/fpf-reference.md` |
 | Правила по типам репо | `memory/repo-type-rules.md` |
 | Чеклисты | `memory/checklists.md` |

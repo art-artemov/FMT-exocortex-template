@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# routing: helper  skill=week-close  called-by=sonnet
+# see DP.SC.159, DP.ROLE.059
 # archive-done-wp.sh — атомарная архивация завершённого РП
 # see DP.M.010, DP.SC.033 (WP-297)
 #
@@ -41,6 +43,16 @@ FILENAME=$(basename "$WP_FILE")
 ARCHIVE_TARGET="$ARCHIVE/$FILENAME"
 
 echo "📦 Архивирую WP-${WP_NUM}: $FILENAME"
+
+# Guard (issue #224): create-wp.sh уже создал pending-заготовку по этому же
+# пути (Шаг 2/6 "archive stub") — перезаписываем только саму pending-заготовку,
+# не случайный уже-заполненный §Закрытие. Проверка ДО правки inbox-файла —
+# иначе при отказе inbox остаётся тронутым (frontmatter уже переписан), а
+# archive нет: смоук-тест 2026-07-05 поймал именно этот порядок как баг.
+if [[ -f "$ARCHIVE_TARGET" ]] && ! grep -q "^status: pending" "$ARCHIVE_TARGET"; then
+  echo "❌ $ARCHIVE_TARGET уже существует и не помечен status: pending — не перезаписываю, проверьте вручную" >&2
+  exit 1
+fi
 
 # 1. Обновить frontmatter status → done
 # Ищем первый фронтматтер (между --- и ---)
@@ -90,11 +102,13 @@ fi
 cp "$TMP" "$WP_FILE"
 rm -f "$TMP"
 
-# 2. git mv (из STRATEGY_REPO)
-if ! git -C "$STRATEGY_REPO" mv "inbox/$FILENAME" "archive/wp-contexts/$FILENAME" 2>/dev/null; then
-  echo "⚠️  git mv не удался — пробую обычный mv"
+# 2. git mv (из STRATEGY_REPO); -f — см. guard-комментарий выше (issue #224)
+if ! git -C "$STRATEGY_REPO" mv -f "inbox/$FILENAME" "archive/wp-contexts/$FILENAME" 2>/dev/null; then
+  echo "⚠️  git mv -f не удался — пробую обычный mv + ручной re-stage"
   mkdir -p "$ARCHIVE"
   mv "$WP_FILE" "$ARCHIVE_TARGET"
+  git -C "$STRATEGY_REPO" add "archive/wp-contexts/$FILENAME" 2>/dev/null
+  git -C "$STRATEGY_REPO" rm --cached "inbox/$FILENAME" 2>/dev/null
 fi
 
 echo "✅ WP-${WP_NUM} → archive/wp-contexts/$FILENAME"

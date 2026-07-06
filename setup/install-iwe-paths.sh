@@ -49,13 +49,13 @@ fi
 WORKSPACE_DIR="${WORKSPACE_DIR/#\~/$HOME}"
 GOVERNANCE_REPO="${GOVERNANCE_REPO:-DS-strategy}"
 
-IWE_ENV_FILE="$HOME/.iwe-paths"
+IWE_ENV_FILE="$WORKSPACE_DIR/.iwe-paths"
 ZSHENV_FILE="$HOME/.zshenv"
 IWE_ENV_MARKER="# IWE environment (WP-219, DP.FM.009): lookup-слой для путей к скриптам"
 
 if $DRY_RUN; then
     $QUIET || echo "  [DRY RUN] Would write $IWE_ENV_FILE (workspace=$WORKSPACE_DIR, governance=$GOVERNANCE_REPO)"
-    $QUIET || echo "  [DRY RUN] Would ensure $ZSHENV_FILE sources \$HOME/.iwe-paths"
+    $QUIET || echo "  [DRY RUN] Would ensure $ZSHENV_FILE sources \$WORKSPACE_DIR/.iwe-paths"
     exit 0
 fi
 
@@ -74,14 +74,27 @@ IWEENV_EOF
 
 $QUIET || echo "  ✓ $IWE_ENV_FILE written (workspace=$WORKSPACE_DIR)"
 
-# Ensure ~/.zshenv sources ~/.iwe-paths (idempotent)
+# Ensure ~/.zshenv sources $WORKSPACE_DIR/.iwe-paths (idempotent)
 if [ -f "$ZSHENV_FILE" ] && grep -qF "$IWE_ENV_MARKER" "$ZSHENV_FILE"; then
-    $QUIET || echo "  ○ $ZSHENV_FILE already sources \$HOME/.iwe-paths"
+    $QUIET || echo "  ○ $ZSHENV_FILE already sources \$WORKSPACE_DIR/.iwe-paths"
 else
-    cat >> "$ZSHENV_FILE" <<'ZSHENV_EOF'
+    cat >> "$ZSHENV_FILE" <<ZSHENV_EOF
 
 # IWE environment (WP-219, DP.FM.009): lookup-слой для путей к скриптам
-[ -f "$HOME/.iwe-paths" ] && source "$HOME/.iwe-paths"
+_IWE_ROOT="$WORKSPACE_DIR"
+[ -f "\$_IWE_ROOT/.iwe-paths" ] && source "\$_IWE_ROOT/.iwe-paths"
+unset _IWE_ROOT
 ZSHENV_EOF
-    $QUIET || echo "  ✓ $ZSHENV_FILE → sources \$HOME/.iwe-paths"
+    $QUIET || echo "  ✓ $ZSHENV_FILE → sources \$WORKSPACE_DIR/.iwe-paths"
 fi
+
+# Auto-enable pre-commit hooks for IWE repos that have .githooks/
+# (Claude peer-review, 2026-05-26 — BFS3)
+for repo_dir in "$WORKSPACE_DIR"/* "$WORKSPACE_DIR"/*/*; do
+    [ -d "$repo_dir/.git" ] || continue
+    [ -d "$repo_dir/.githooks" ] || continue
+    if [ "$(git -C "$repo_dir" config --local core.hooksPath 2>/dev/null)" != ".githooks" ]; then
+        git -C "$repo_dir" config --local core.hooksPath .githooks
+        $QUIET || echo "  ✓ $repo_dir → core.hooksPath=.githooks"
+    fi
+done

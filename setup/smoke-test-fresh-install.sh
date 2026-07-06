@@ -49,6 +49,7 @@ FAIL_COUNT=0
 PASS_COUNT=0
 fail() { echo "  ❌ FAIL: $*" >&2; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 pass() { echo "  ✅ PASS: $*"; PASS_COUNT=$((PASS_COUNT + 1)); }
+warn() { echo "  ⚠️  WARN: $*" >&2; }
 
 echo "=========================================="
 echo "  Smoke Test: Fresh Install (WP-273 F)"
@@ -190,13 +191,13 @@ echo "[6d] все .claude/*/ каталоги в update.sh:609 паттерне.
 # Контракт: при добавлении нового подкаталога в .claude/X/ его обязаны добавить в паттерн
 # на строке `case "$f" in .claude/skills/*|...` в update.sh, иначе файлы X не попадут
 # в workspace при `update.sh` (баг 0.29.28: .claude/scripts/* пропущен).
-PATTERN_LINE=$(grep -E 'case "\$f" in \.claude/skills/' "$TEMPLATE_DIR/update.sh" 2>/dev/null | head -1)
+PATTERN_LINE=$(grep -E '\.claude/skills/\*\|\.claude/hooks/' "$TEMPLATE_DIR/update.sh" 2>/dev/null | head -1)
 MISSING_DIRS=""
 for dir in "$TEMPLATE_DIR"/.claude/*/; do
     [ -d "$dir" ] || continue
     dirname=$(basename "$dir")
     case "$dirname" in
-        projects|context-cache|logs) continue ;; # workspace-local / runtime-only, не propagate
+        projects|context-cache|logs|worktrees) continue ;; # workspace-local / runtime-only, не propagate
     esac
     if ! echo "$PATTERN_LINE" | grep -q "\.claude/$dirname/\*"; then
         MISSING_DIRS="$MISSING_DIRS $dirname"
@@ -257,8 +258,8 @@ if [ -x "$RUNTIME_RUNNER" ]; then
 fi
 rm -f "$TEST_FMT_PROMPT"
 
-# === Test 6d: cleanup-processed-notes.py читает GOVERNANCE_REPO из env (R6.1* regression) ===
-echo "[6d] cleanup-processed-notes.py резолвит GOVERNANCE_REPO из env (R6.1* regression)..."
+# === Test 6e: cleanup-processed-notes.py читает GOVERNANCE_REPO из env (R6.1* regression) ===
+echo "[6e] cleanup-processed-notes.py резолвит GOVERNANCE_REPO из env (R6.1* regression)..."
 PY_RESULT=$(IWE_WORKSPACE="$TEST_WS" IWE_GOVERNANCE_REPO=DS-pilot-strategy \
     python3 -c "
 import sys, importlib.util
@@ -379,6 +380,44 @@ else
 fi
 rm -rf "$E2E_WS" "$E2E_MEM" 2>/dev/null || true
 
+# === Test 10: setup.sh full mode — step [5/6] Installing roles не падает (WP-315 Ф5) ===
+# Test 9 использует --core → пропускает step 5. Этот тест — полный запуск на macOS
+# с изолированным HOME, чтобы роли установились в tmp LaunchAgents.
+echo "[10] e2e setup.sh full mode (no --core, SETUP_CI=1)..."
+E2E_WS10="/tmp/iwe-smoke-full-$$"
+E2E_HOME10="$E2E_WS10/home"
+mkdir -p "$E2E_WS10" "$E2E_HOME10"
+E2E10_RC=0
+E2E10_OUT=$(HOME="$E2E_HOME10" SETUP_CI=1 GITHUB_USER=smoke-full WORKSPACE_DIR="$E2E_WS10" \
+    GIT_AUTHOR_NAME="smoke-full" GIT_AUTHOR_EMAIL="smoke@test.local" \
+    GIT_COMMITTER_NAME="smoke-full" GIT_COMMITTER_EMAIL="smoke@test.local" \
+    bash "$TEMPLATE_DIR/setup.sh" 2>&1) || E2E10_RC=$?
+
+if [ "$E2E10_RC" -ne 0 ]; then
+    fail "e2e setup.sh full mode завершился с rc=$E2E10_RC: $(echo "$E2E10_OUT" | tail -5)"
+else
+    pass "e2e setup.sh full mode exit 0"
+    # Проверяем что [5/6] Installing roles... выполнялся (не пропущен)
+    if echo "$E2E10_OUT" | grep -q '\[5/6\] Installing roles'; then
+        pass "e2e full mode: step [5/6] Installing roles executed"
+    else
+        warn "e2e full mode: step [5/6] Installing roles NOT executed (launchctl missing or skipped)"
+    fi
+    # Проверяем что plist'ы не содержат {{плейсхолдеры}}
+    E2E_LAUNCHDIR="$E2E_HOME10/Library/LaunchAgents"
+    if [ -d "$E2E_LAUNCHDIR" ]; then
+        PLIST_BAD=$(grep -rl '{{[A-Z_]*}}' "$E2E_LAUNCHDIR" --include="*.plist" 2>/dev/null || true)
+        if [ -n "$PLIST_BAD" ]; then
+            fail "e2e full mode: plist'ы содержат незаменённые placeholders: $PLIST_BAD"
+        else
+            pass "e2e full mode: все plist'ы без placeholders"
+        fi
+    else
+        warn "e2e full mode: LaunchAgents dir не создан (возможно, ни одна auto-role не установлена)"
+    fi
+fi
+rm -rf "$E2E_WS10" "$E2E_HOME10" 2>/dev/null || true
+
 # === Test 8: setup.sh delivery completeness (meta-detector, баг 08e4803) ===
 # Евгений нашёл два delivery gap: .claude/scripts/ и memory/*.yaml не копировались при fresh install.
 # Этот тест — статический анализ setup.sh: проверяет что все .claude/*/ субдиректории
@@ -391,7 +430,7 @@ for dir in "$TEMPLATE_DIR"/.claude/*/; do
     [ -d "$dir" ] || continue
     dirname=$(basename "$dir")
     case "$dirname" in
-        projects|context-cache|logs|settings.json) continue ;; # workspace-local / runtime-only
+        projects|context-cache|logs|settings.json|worktrees) continue ;; # workspace-local / runtime-only
     esac
     if ! echo "$SUBDIR_LINE" | grep -qw "$dirname"; then
         SETUP8A_MISS="$SETUP8A_MISS $dirname"
@@ -418,7 +457,7 @@ fi
 echo "[8c] setup.sh step 5: source ~/.iwe-paths перед role install.sh..."
 # Берём блок между "Installing roles" и первым вызовом install.sh
 STEP5_BLOCK=$(awk '/\[5\/6\] Installing roles/{flag=1} flag; flag && /bash.*install\.sh/{exit}' "$SETUP_SH")
-if echo "$STEP5_BLOCK" | grep -qE '(\.|source)[[:space:]]+"?\$HOME/\.iwe-paths|export[[:space:]]+IWE_RUNTIME'; then
+if echo "$STEP5_BLOCK" | grep -qE '(\.|source)[[:space:]]+"?\$(HOME|WORKSPACE_DIR)/\.iwe-paths|export[[:space:]]+IWE_RUNTIME'; then
     pass "setup.sh step 5: env для install.sh подготовлен (source .iwe-paths или export IWE_RUNTIME)"
 else
     fail "setup.sh step 5: install.sh вызывается БЕЗ IWE_RUNTIME (legacy mode → fail-fast у пользователя)"

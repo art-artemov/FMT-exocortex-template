@@ -16,6 +16,32 @@ Thank you for your interest in contributing to IWE! This document explains how t
 
 Use [GitHub Issues](https://github.com/TserenTserenov/FMT-exocortex-template/issues) with the appropriate template.
 
+**Before filing a new issue:**
+
+1. **Read the [Roadmap & Backlog Focus](https://github.com/TserenTserenov/FMT-exocortex-template/issues/147)** (pinned) — it lists active focus areas grouped by category. Your bug may already be tracked.
+2. **Search closed issues** for prior analyses:
+   ```
+   is:closed your-keyword                    # full-text closed
+   is:closed label:stale-archive             # archived during 2026-06-01 cleanup
+   is:closed label:triaged-2026-06-01        # all triaged issues (incl. closed)
+   ```
+3. **Include in the bug report:** OS, IWE version (`bash update.sh --check`), reproducing command, expected vs actual behavior.
+
+Maintainer responds within 1 week, applies a categorization label, and either schedules a fix or marks as `needs-reproduction` / `needs-discussion`.
+
+### Stale & lifecycle
+
+To keep the backlog actionable, a [stale-bot](.github/workflows/stale.yml) runs daily:
+
+- **`needs-reproduction` without reply for 30 days** → labeled `stale-needs-reproduction` with a reminder comment. After **+14 days** without reply (44d total) → auto-closed. Re-open with reproduction details if still relevant.
+- **Any open issue 14+ days without `triaged-*` label** → labeled `stale-unattended` (warn-only, no close). This is a maintainer-side signal: «you missed this one».
+
+**Opt out:** apply `keep-alive` label to any issue where the conversation is active but slow. The bot will skip it.
+
+**Exempt labels (never stale):** `keep-alive`, `critical`, `deadline`, `roadmap`, `pinned`, `triaged-accepted`.
+
+**Notification channel:** if you maintain a fork, you can set `TG_BOT_TOKEN` / `TG_CHAT_ID` (or `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`) env vars and run `bash scripts/fmt-critical-alert.sh` in your Day Open / Week Close — it'll Telegram you any open `critical` or `deadline` issues. Useful for weekend-P0 detection.
+
 ### Share Your Setup
 
 Show how you use IWE in [GitHub Discussions](https://github.com/TserenTserenov/FMT-exocortex-template/discussions):
@@ -45,6 +71,24 @@ Before contributing, understand how IWE is structured:
 | **L3 (User)** | Your personal customizations | You | `extensions/`, `params.yaml`, CLAUDE.md §9 |
 
 **Key rule:** User customizations go in `extensions/` and `params.yaml`, never in platform files. This ensures `update.sh` works cleanly.
+
+---
+
+## Promoting a Practice (keep the guide in sync)
+
+When you promote a stabilized practice (via `script-promote.sh` / `skill-promote.sh`) that
+changes the *principled* approach to working with IWE — not just an implementation detail —
+flag it so the guide-update pipeline can keep the user-facing guide current:
+
+1. Add a `[guide-impact]` marker to the practice file, **or**
+2. Add `[guide-update: S7.SS_N]` to the commit message, pointing at the affected section.
+
+The pipeline does the rest: it surfaces the change at Week Close so the maintainer can decide
+whether section 7 ("From Use to Creation") of the universal guide needs an update.
+
+**Boundary — guide vs developer-guide.** Content belongs in the guide only if it passes *both* checks:
+it is understandable without knowing specific IWE files/commands, **and** a T3+ reader gets it without
+first reading the developer-guide. If either check fails, it belongs in the developer-guide instead.
 
 ---
 

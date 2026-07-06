@@ -1,4 +1,6 @@
 #!/bin/bash
+# routing: migration  one-time=true
+# see DP.SC.159, DP.ROLE.059
 # migrate-initial-marker.sh — добавить skeleton-marker IWE-INITIAL-NEEDED в Strategy.md
 # для существующих пользователей (clone до 0.28.5).
 #

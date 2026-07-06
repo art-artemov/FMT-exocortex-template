@@ -15,7 +15,7 @@ jobs:
   release-sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Check CHANGELOG/manifest version sync
         run: |
           if [ ! -f "CHANGELOG.md" ] || [ ! -f "update-manifest.json" ]; then
@@ -39,6 +39,8 @@ jobs:
             exit 1
           fi
           echo "PASS: CHANGELOG/manifest version sync ($CHANGELOG_VERSION)"
+      - name: Check README version badge sync
+        run: bash scripts/sync-version-badge.sh --check
 
   # Integration contract validator + fresh-install smoke-test.
   # Defense-in-depth для случая `git commit --no-verify` в pre-commit.
@@ -63,7 +65,7 @@ jobs:
     env:
       SMOKE_GOVERNANCE_REPO: ${{ matrix.gov_repo }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y python3 jq
@@ -85,7 +87,7 @@ jobs:
   upgrade-test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0  # full history для git log
       - name: Install dependencies
@@ -108,6 +110,11 @@ jobs:
           echo "sha=$PREV_SHA" >> $GITHUB_OUTPUT
           echo "ver=$PREV_VER" >> $GITHUB_OUTPUT
           echo "skip=false" >> $GITHUB_OUTPUT
+      - name: Check rename coverage (issue #218)
+        if: steps.prev.outputs.skip != 'true'
+        run: |
+          git show "${{ steps.prev.outputs.sha }}:update-manifest.json" > /tmp/prev-manifest.json
+          python3 scripts/check-manifest-rename-coverage.py /tmp/prev-manifest.json update-manifest.json
       - name: Upgrade simulation — checkout prev → smoke → checkout HEAD → validate
         if: steps.prev.outputs.skip != 'true'
         run: |
@@ -127,7 +134,7 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install ShellCheck
         run: sudo apt-get install -y shellcheck
@@ -149,7 +156,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # C1 fix (0.28.6): CI source-of-truth = local validator (setup/validate-template.sh).
       # Раньше CI имел собственный inline blacklist, который расходился с local — например,
@@ -158,6 +165,14 @@ jobs:
       # hooks-cross-ref в local validator; CI-only остаются: smoke-test, MCP doc, placeholders.
       - name: Run local validator (source-of-truth)
         run: bash setup/validate-template.sh "$PWD"
+
+      # validate-fmt-scripts: проверка на личные хардкоды и нарушения конвенций.
+      # Корень бага (май 2026): detector ловил legitimate uses (template identity,
+      # python fallback, env override) как false positives. Исправлено в validate-fmt-scripts.sh.
+      # Гейт: прогоняем в CI, чтобы не полагаться только на pre-commit (который зовётся
+      # только при staged .claude/settings.json) и ручной запуск.
+      - name: Run validate-fmt-scripts (author-specific hardcodes & conventions)
+        run: bash scripts/validate-fmt-scripts.sh
 
       # CI-only check: MCP — серверы подключаются через claude.ai/settings/connectors
       - name: Check MCP documentation
@@ -238,6 +253,23 @@ jobs:
 
           rm -rf "$TMP"
           exit $FAIL
+
+      # B2 gap closure: проверяем что update-manifest.json синхронизирован с git tree.
+      # verify-manifest.sh запускает generate-manifest.sh и сравнивает с текущим.
+      # При рассинхроне показывает diff и инструкцию по фиксу.
+      - name: Check manifest completeness (B2)
+        run: |
+          bash scripts/verify-manifest.sh
+
+      # setup.sh ↔ update.sh parity. Root (29 июня, peer-session 2026-06-29-03):
+      # rules-lazy доставлялся через update.sh, но отсутствовал в setup.sh for-loop —
+      # fresh install терял компонент. check-setup-update-parity существовал (WP-315),
+      # но НЕ был подключён к CI (dormant guard), а его regex-контракт не покрывал
+      # измерение «список компонентов». Подключаем оба: контракт-паттерны + set-diff.
+      - name: Check setup/update parity contract
+        run: bash scripts/check-setup-update-parity.sh
+      - name: Check setup/update component-set parity
+        run: bash scripts/check-component-parity.sh
 
       # 7. Только допустимые placeholders
       - name: Check placeholders are valid

@@ -40,8 +40,7 @@ Just as an IDE combines editor, compiler, and debugger into one environment for 
 
 > **Key principle: exoskeleton, not prosthesis.** IWE amplifies your thinking, not replaces it. After each session you become more competent, not just get a result. More: [principles-vs-skills.md](docs/principles-vs-skills.md).
 
-<details>
-<summary>Key IWE Terms</summary>
+## Key IWE Terms
 
 | Term | What it is |
 |------|-----------|
@@ -52,8 +51,6 @@ Just as an IDE combines editor, compiler, and debugger into one environment for 
 | **Strategist** | AI agent that automatically creates daily/weekly plans and tracks progress |
 
 Full glossary: [ONTOLOGY.md](ONTOLOGY.md)
-
-</details>
 
 ---
 

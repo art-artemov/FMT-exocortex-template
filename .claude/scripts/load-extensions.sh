@@ -61,7 +61,7 @@ EXT_DIR="$WORKSPACE/extensions"
 #   day-close.after.md
 #   day-close.after.health.md
 #   day-close.after.linear.md
-FOUND=$(find "$EXT_DIR" -maxdepth 1 \( -type f -name "${PROTOCOL}.${HOOK}.md" -o -name "${PROTOCOL}.${HOOK}.*.md" \) 2>/dev/null | sort)
+FOUND=$(find -L "$EXT_DIR" -maxdepth 1 \( -type f -name "${PROTOCOL}.${HOOK}.md" -o -name "${PROTOCOL}.${HOOK}.*.md" \) 2>/dev/null | while IFS= read -r f; do [ -e "$f" ] && echo "$f"; done | sort)
 
 if [ -z "$FOUND" ]; then
     exit 1

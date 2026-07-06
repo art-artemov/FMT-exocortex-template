@@ -1,0 +1,88 @@
+name: Release
+
+# Triggered by a version bump in update-manifest.json.
+# On push to main: if the manifest version is new (no matching tag), create a
+# git tag v{version} and a GitHub release using the matching CHANGELOG section.
+#
+# Manual trigger: workflow_dispatch with explicit version input lets maintainers
+# re-tag or create a release for an already-pushed version.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - update-manifest.json
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (e.g. 0.35.5). Leave empty to read from manifest."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history to check existing tags
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            VERSION="${{ github.event.inputs.version }}"
+          else
+            VERSION=$(grep -m1 '"version"' update-manifest.json \
+              | sed 's/.*"version"[[:space:]]*:[[:space:]]*"//;s/".*//')
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "FAIL: could not determine version from manifest"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: tag_check
+        run: |
+          if git rev-parse "refs/tags/v${{ steps.version.outputs.version }}" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag v${{ steps.version.outputs.version }} already exists — skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Extract CHANGELOG section for this version
+        if: steps.tag_check.outputs.exists == 'false'
+        id: changelog
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # Extract the block between "## [$VERSION]" and the next "## [" header.
+          BODY=$(awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          if [ -z "$BODY" ]; then
+            BODY="Release $VERSION — see CHANGELOG.md for details."
+          fi
+          # Write to a file to preserve newlines through GitHub Actions output.
+          echo "$BODY" > /tmp/release_body.md
+          echo "Release notes extracted for $VERSION"
+
+      - name: Create tag and GitHub release
+        if: steps.tag_check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG"
+          git push origin "$TAG"
+          gh release create "$TAG" \
+            --title "IWE Template $TAG" \
+            --notes-file /tmp/release_body.md \
+            --latest
+          echo "Created release $TAG"

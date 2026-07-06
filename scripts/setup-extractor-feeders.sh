@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# routing: utility  deterministic=true
+# see DP.SC.159, DP.ROLE.059
 # setup-extractor-feeders.sh — Onboarding скрипт для активации feeder-системы
 # (WP-247 Ф-MULTI-SOURCE).
 #
@@ -79,7 +81,10 @@ else
 # post-commit hook — WP-247 Ф-TRIGGER-BASED
 # При изменении inbox/captures.md или fleeting-notes.md → запускает extractor inbox-check
 set -uo pipefail
-IWE_ROOT="${IWE_ROOT:-$HOME/IWE}"
+
+# Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../.claude/lib/iwe-env-bootstrap.sh" || exit 1
 REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 [[ "$REPO_DIR" != "$IWE_ROOT"* ]] && exit 0
 REPO_NAME=$(basename "$REPO_DIR")

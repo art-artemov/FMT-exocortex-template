@@ -19,7 +19,9 @@
 
 set -eu
 
-IWE_ROOT="${IWE_ROOT:-$HOME/IWE}"
+# Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../../.claude/lib/iwe-env-bootstrap.sh" || exit 1
 MODE="${MODE:-all}"
 
 while [ $# -gt 0 ]; do

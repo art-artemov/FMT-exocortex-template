@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# routing: utility  deterministic=true
+# see DP.SC.159, DP.ROLE.059
 # check-script-collisions.sh — проверить коллизии скриптов между авторской зоной и FMT-шаблоном.
 #
 # Назначение: запускается ПЕРЕД промоцией скрипта L3→L1 (author → universal в FMT)

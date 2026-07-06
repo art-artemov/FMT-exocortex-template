@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# routing: helper  skill=day-close,week-close  called-by=haiku
+# see DP.SC.159, DP.ROLE.059
 # memory-active-wp-update.sh — обновление секции «Текущие РП» в MEMORY.md
 # из результатов active-wp-sweep.sh.
 # see WP-283 Ф8 (DS-strategy/inbox/WP-283-server-day-open-crossplatform.md)
@@ -79,7 +81,18 @@ end = os.environ['END_MARKER_ENV']
 new_block = os.environ['NEW_BLOCK_ENV']
 
 try:
-    with open(memory_path, 'r', encoding='utf-8') as f:
+    # Если runtime memory read-only — fallback на exocortex source-of-truth
+    exocortex_path = os.environ.get('EXOCORTEX_MEMORY', memory_path)
+    target_path = memory_path
+    if not os.access(memory_path, os.W_OK):
+        if os.path.exists(exocortex_path) and os.access(exocortex_path, os.W_OK):
+            target_path = exocortex_path
+            print(f"INFO: runtime memory read-only, using exocortex: {target_path}", file=sys.stderr)
+        else:
+            print(f"ERROR: neither runtime nor exocortex MEMORY.md is writable", file=sys.stderr)
+            sys.exit(1)
+
+    with open(target_path, 'r', encoding='utf-8') as f:
         content = f.read()
 
     pattern = re.escape(start) + r'.*?' + re.escape(end)
@@ -91,7 +104,7 @@ try:
         print("INFO: нет изменений", file=sys.stderr)
         sys.exit(0)
 
-    with open(memory_path, 'w', encoding='utf-8') as f:
+    with open(target_path, 'w', encoding='utf-8') as f:
         f.write(new_content)
 
     print("OK: MEMORY.md обновлён", file=sys.stderr)

@@ -263,13 +263,29 @@ main() {
       echo "REGISTRY_FILE: MISSING"
       exit 1
     fi
+    # Find any real WP from inbox instead of hardcoded number
+    local test_num=""
+    if [[ -d "$INBOX_DIR" ]]; then
+      local first_wp
+      first_wp=$(find "$INBOX_DIR" -maxdepth 1 -name "WP-*.md" 2>/dev/null | sort | head -1 || true)
+      if [[ -n "$first_wp" ]]; then
+        test_num=$(basename "$first_wp" | grep -oE '^WP-[0-9]+' | grep -oE '[0-9]+' || true)
+      fi
+    fi
+    if [[ -z "$test_num" ]]; then
+      test_num=$(grep -oE 'WP-[0-9]+' "$REGISTRY_FILE" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true)
+    fi
+    if [[ -z "$test_num" ]]; then
+      echo "WP lookup: SKIP (no WP files found in inbox or registry)"
+      exit 0
+    fi
     local test_file
-    test_file=$(find_wp_file 294)
+    test_file=$(find_wp_file "$test_num")
     if [[ -n "$test_file" ]]; then
-      echo "WP-294 lookup: OK ($test_file)"
+      echo "WP-${test_num} lookup: OK ($test_file)"
       exit 0
     else
-      echo "WP-294 lookup: FAIL"
+      echo "WP-${test_num} lookup: FAIL"
       exit 1
     fi
   fi

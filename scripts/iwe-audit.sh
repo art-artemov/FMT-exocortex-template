@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# routing: helper  skill=audit-installation  called-by=haiku  deterministic=true
+# see DP.SC.159, DP.ROLE.059
 # iwe-audit.sh — оркестратор аудита инсталляции IWE
 #
 # WP-265 Ф2, 2026-04-26.
@@ -28,8 +30,9 @@
 
 set -eu
 
-IWE_ROOT="${IWE_ROOT:-$HOME/IWE}"
-GOVERNANCE_REPO="${GOVERNANCE_REPO:-${IWE_GOVERNANCE_REPO:-DS-strategy}}"
+# Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../.claude/lib/iwe-env-bootstrap.sh" || exit 1
 DRIFT_CRITICAL=""
 
 while [ $# -gt 0 ]; do
@@ -182,20 +185,21 @@ fi
 # params.yaml — конфиг
 emit_inventory_row "params.yaml" 1 ""
 
-# Governance repo — директория с .git (имя из $GOVERNANCE_REPO, default DS-strategy)
-DS_DIR="$IWE_ROOT/$GOVERNANCE_REPO"
+# Governance-репо — директория с .git
+GOV_REPO="${IWE_GOVERNANCE_REPO:-DS-strategy}"
+DS_DIR="$IWE_ROOT/$GOV_REPO"
 TOTAL=$((TOTAL + 1))
 if [ -d "$DS_DIR" ]; then
     if [ -d "$DS_DIR/.git" ]; then
         FOUND=$((FOUND + 1))
-        printf "| \`%s\` | %s | %s |\n" "$GOVERNANCE_REPO/" "✅" "git-репо (is_git=true)"
+        printf "| \`%s\` | %s | %s |\n" "$GOV_REPO/" "✅" "git-репо (is_git=true)"
     else
         OPTIONAL_MISSING=$((OPTIONAL_MISSING + 1))
-        printf "| \`%s\` | %s | %s |\n" "$GOVERNANCE_REPO/" "⚠️" "директория есть, но не git-репо"
+        printf "| \`%s\` | %s | %s |\n" "$GOV_REPO/" "⚠️" "директория есть, но не git-репо"
     fi
 else
     CRITICAL_MISSING=$((CRITICAL_MISSING + 1))
-    printf "| \`%s\` | %s | %s |\n" "$GOVERNANCE_REPO/" "❌" "директория не найдена"
+    printf "| \`%s\` | %s | %s |\n" "$GOV_REPO/" "❌" "директория не найдена"
 fi
 
 echo ""
@@ -225,20 +229,20 @@ if [ -f "$DRIFT_SCRIPT" ]; then
     set -e
     if [ $DRIFT_RC -ne 0 ]; then
         echo ""
-        echo "_iwe-drift.sh exit code: $DRIFT_RC_"
+        echo "_iwe-drift.sh exit code: ${DRIFT_RC}_"
     fi
 else
     echo "❌ \`scripts/iwe-drift.sh\` не найден — drift-сверка пропущена"
 fi
 echo ""
 
-# ---------- Раздел 3: governance repo ----------
+# ---------- Раздел 3: Governance repo ----------
 
-echo "## 3. $GOVERNANCE_REPO"
+echo "## 3. $GOV_REPO"
 echo ""
 
 if [ ! -d "$DS_DIR/.git" ]; then
-    echo "❌ \`$GOVERNANCE_REPO\` не git-репо (или директория отсутствует)"
+    echo "❌ \`$GOV_REPO\` не git-репо (или директория отсутствует)"
 else
     set +e
     DS_STATUS=$(git -C "$DS_DIR" status --short 2>&1)
@@ -375,28 +379,56 @@ else
 fi
 echo ""
 
-# 4c. AUTHOR-ONLY зоны в distinctions.md
-echo "### AUTHOR-ONLY зоны"
+# 4c. AUTHOR-ONLY zones in extensions/
+echo "### AUTHOR-ONLY зоны (extensions/)"
 echo ""
-DIST_FILE="$IWE_ROOT/.claude/rules/distinctions.md"
-if [ ! -f "$DIST_FILE" ]; then
-    echo "_distinctions.md не найден_"
+EXTENSIONS_DIR="$IWE_ROOT/extensions"
+if [ ! -d "$EXTENSIONS_DIR" ]; then
+    echo "_extensions/ не найдена (нормально для нового пилота)_"
 else
-    # Считаем строки внутри блоков <!-- AUTHOR-ONLY --> ... <!-- /AUTHOR-ONLY -->
-    # ИЛИ под заголовком "## Различения (авторские" (текущая авторская конвенция)
-    # grep -c возвращает rc=1 при 0 матчей, что в связке с || echo даёт "0\n0"
     set +e
-    AUTHOR_HEADER=$(grep -c "^## Различения (авторские" "$DIST_FILE" 2>/dev/null)
-    AUTHOR_BLOCKS=$(grep -c "<!-- AUTHOR-ONLY" "$DIST_FILE" 2>/dev/null)
+    AUTHOR_FILES=$(find "$EXTENSIONS_DIR" -name "*.md" -print0 2>/dev/null | xargs -0 grep -l "<!-- AUTHOR-ONLY" 2>/dev/null | wc -l | tr -d ' ')
+    AUTHOR_BLOCKS=$(find "$EXTENSIONS_DIR" -name "*.md" -print0 2>/dev/null | xargs -0 grep -c "<!-- AUTHOR-ONLY" 2>/dev/null | awk -F: '{s+=$2} END{print s+0}')
     set -e
-    [ -z "$AUTHOR_HEADER" ] && AUTHOR_HEADER=0
+    [ -z "$AUTHOR_FILES" ] && AUTHOR_FILES=0
     [ -z "$AUTHOR_BLOCKS" ] && AUTHOR_BLOCKS=0
-    if [ "$AUTHOR_HEADER" -eq 0 ] && [ "$AUTHOR_BLOCKS" -eq 0 ]; then
-        echo "_Авторских/L3-различений не найдено (нормально для нового пилота)_"
+    if [ "$AUTHOR_BLOCKS" -eq 0 ]; then
+        echo "_AUTHOR-ONLY зон не найдено в extensions/ (нормально для нового пилота)_"
     else
-        echo "✅ Найдены маркеры L3:"
-        [ "$AUTHOR_HEADER" -gt 0 ] && echo "- секция \`## Различения (авторские)\` присутствует"
-        [ "$AUTHOR_BLOCKS" -gt 0 ] && echo "- блоков \`<!-- AUTHOR-ONLY -->\`: $AUTHOR_BLOCKS"
+        echo "✅ Найдены маркеры AUTHOR-ONLY в extensions/:"
+        echo "- файлов с маркерами: $AUTHOR_FILES"
+        echo "- блоков \`<!-- AUTHOR-ONLY -->\`: $AUTHOR_BLOCKS"
+    fi
+fi
+echo ""
+
+# 4d. USER-SPACE zones in L1 FMT skills
+echo "### USER-SPACE зоны в L1-скиллах"
+echo ""
+FMT_SKILLS_DIR="$IWE_ROOT/FMT-exocortex-template/.claude/skills"
+if [ ! -d "$FMT_SKILLS_DIR" ]; then
+    echo "_FMT-exocortex-template/ не найден — пропуск_"
+else
+    total_l1=0
+    with_markers=0
+    without_markers=0
+    while IFS= read -r -d '' md_file; do
+        if grep -qE '^layer:[[:space:]]*L1' "$md_file" 2>/dev/null; then
+            total_l1=$((total_l1 + 1))
+            if grep -q '^<!-- USER-SPACE -->' "$md_file" 2>/dev/null; then
+                with_markers=$((with_markers + 1))
+            else
+                without_markers=$((without_markers + 1))
+            fi
+        fi
+    done < <(find "$FMT_SKILLS_DIR" -name "SKILL.md" -print0 2>/dev/null)
+    if [ "$total_l1" -eq 0 ]; then
+        echo "_L1-скиллов не найдено_"
+    elif [ "$without_markers" -eq 0 ]; then
+        echo "✅ USER-SPACE маркеры: $with_markers/$total_l1 L1-скиллов"
+    else
+        echo "⚠️ USER-SPACE маркеры отсутствуют в $without_markers/$total_l1 L1-скиллах"
+        echo "  Запусти: bash \$IWE_ROOT/FMT-exocortex-template/scripts/add-skill-markers.sh"
     fi
 fi
 echo ""

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# routing: helper  skill=audit-installation  called-by=haiku
+# see DP.SC.159, DP.ROLE.059
 # memory-validate.sh — валидация frontmatter memory/*.md (WP-217 Ф10.2)
 #
 # Проверяет: наличие frontmatter, обязательные поля, допустимые значения,
@@ -15,7 +17,9 @@
 
 set -eu
 
-IWE_ROOT="${IWE_ROOT:-$HOME/IWE}"
+# Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/../.claude/lib/iwe-env-bootstrap.sh" || exit 1
 MEMORY_DIR="$IWE_ROOT/memory"
 QUIET=0
 TARGET=""

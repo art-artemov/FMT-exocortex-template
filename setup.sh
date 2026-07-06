@@ -12,6 +12,7 @@ VERSION="0.7.0"  # WP-273 Этап 2: Generated runtime architecture (F)
 DRY_RUN=false
 CORE_ONLY=false
 VALIDATE_ONLY=false
+_MCP_AUTH_INCOMPLETE=false
 
 # === Cross-platform sed -i ===
 # macOS sed requires '' after -i, GNU sed does not
@@ -51,10 +52,17 @@ if $VALIDATE_ONLY; then
     echo "=========================================="
     echo ""
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-    # WP-273 Этап 2: .exocortex.env живёт в $WORKSPACE_DIR/ (родитель FMT-template),
-    # а не внутри FMT (раньше). Сначала проверяем актуальное место, потом legacy fallback.
+    # WP-273 / issue #57: search order mirrors the write path in main setup mode.
+    # 1. $IWE_ENV_PATH (explicit override via env or exocortex.env.example)
+    # 2. $WORKSPACE_DIR/.exocortex.env (standard WP-273 location)
+    # 3. parent-of-template heuristic (most common layout: ~/IWE/FMT-exocortex-template)
+    # 4. legacy: inside SCRIPT_DIR (pre-WP-273 installs)
     WORKSPACE_GUESS="$(dirname "$SCRIPT_DIR")"
-    if [ -f "$WORKSPACE_GUESS/.exocortex.env" ]; then
+    if [ -n "${IWE_ENV_PATH:-}" ] && [ -f "$IWE_ENV_PATH" ]; then
+        ENV_FILE="$IWE_ENV_PATH"
+    elif [ -n "${WORKSPACE_DIR:-}" ] && [ -f "$WORKSPACE_DIR/.exocortex.env" ]; then
+        ENV_FILE="$WORKSPACE_DIR/.exocortex.env"
+    elif [ -f "$WORKSPACE_GUESS/.exocortex.env" ]; then
         ENV_FILE="$WORKSPACE_GUESS/.exocortex.env"
     else
         ENV_FILE="$SCRIPT_DIR/.exocortex.env"  # legacy fallback (pre-WP-273)
@@ -189,24 +197,57 @@ check_command() {
 # Git — обязателен всегда
 check_command "git" "Git" "xcode-select --install"
 
+# jq — обязателен всегда: .claude/hooks/dry-run-gate.sh (устанавливается в любом режиме,
+# см. шаг 4b) fail-closed блокирует ВСЕ tool calls без jq, без явного предупреждения (issue #192).
+check_command "jq" "jq" "brew install jq (Linux: apt install jq / dnf install jq)"
+
 if $CORE_ONLY; then
     echo ""
     echo "  Режим --core: проверяются только обязательные зависимости (git)."
     echo "  GitHub CLI, Node.js, Claude Code — не требуются."
 else
-    check_command "gh" "GitHub CLI" "brew install gh"
-    check_command "node" "Node.js" "brew install node (or https://nodejs.org)"
-    check_command "npm" "npm" "Comes with Node.js"
-    check_command "claude" "Claude Code" "npm install -g @anthropic-ai/claude-code"
+    # В CI-режиме (SETUP_CI=1) node/npm/claude — необязательны: Test 10 проверяет delivery
+    # и role-installation, а не наличие runtime-инструментов на машине.
+    # Паттерн уже установлен для gh auth ниже (строка с SETUP_CI).
+    _TOOL_REQUIRED="${SETUP_CI:+false}"; _TOOL_REQUIRED="${_TOOL_REQUIRED:-true}"
+    check_command "gh" "GitHub CLI" "brew install gh" "$_TOOL_REQUIRED"
+    check_command "node" "Node.js" "brew install node (or https://nodejs.org)" "$_TOOL_REQUIRED"
+    check_command "npm" "npm" "Comes with Node.js" "$_TOOL_REQUIRED"
+    # Multi-agent support: Claude Code, Kimi Code, Hermes — любой из них подходит
+    AI_CLI_CANDIDATES="${AI_CLI_CANDIDATES:-claude kimi-code kimi hermes}"
+    _AGENT_FOUND=false
+    for _agent_cmd in $AI_CLI_CANDIDATES; do
+        if command -v "$_agent_cmd" >/dev/null 2>&1; then
+            echo "  ✓ AI Agent: $_agent_cmd ($(command -v "$_agent_cmd"))"
+            _AGENT_FOUND=true
+            break
+        fi
+    done
+    if ! $_AGENT_FOUND; then
+        if [ "${_TOOL_REQUIRED:-true}" = "true" ]; then
+            echo "  ✗ AI Agent: не найден"
+            echo "    Установи один из поддерживаемых агентов:"
+            echo "      Claude Code: npm install -g @anthropic-ai/claude-code"
+            echo "      Kimi Code:   расширение Kimi Code в VS Code"
+            echo "      Hermes:      см. https://hermes-agent.nousresearch.com/"
+            echo "    Или задай AI_CLI_CANDIDATES=<команда-агента> в окружении"
+            echo "    Минимальная установка без агента: bash setup.sh --core"
+            PREREQ_FAIL=1
+        else
+            echo "  ○ AI Agent: не найден (опционально)"
+        fi
+    fi
 
     # Check gh auth
     if command -v gh >/dev/null 2>&1; then
         if gh auth status >/dev/null 2>&1; then
             echo "  ✓ GitHub CLI: authenticated"
         else
-            echo "  ✗ GitHub CLI: not authenticated"
-            echo "    Run: gh auth login"
-            PREREQ_FAIL=1
+            echo "  ⚠ GitHub CLI: not authenticated"
+            if [ -z "${SETUP_CI:-}" ]; then
+                echo "    Run: gh auth login"
+                PREREQ_FAIL=1
+            fi
         fi
     fi
 fi
@@ -468,23 +509,25 @@ else
         # MCP knowledge servers connect through Gateway (OAuth auto-flow)
         echo "  Знаниевые MCP-серверы подключаются через Gateway (автоматически):"
         echo ""
-        echo "  .mcp.json уже содержит iwe-knowledge → https://mcp.aisystant.com/mcp"
-        echo "  При первом запуске Claude Code откроется браузер для входа через Ory."
-        echo "  Необходима подписка «Бесконечное развитие»."
-        echo ""
-        echo "  После входа проверьте командой /mcp в Claude Code."
+        echo "  .mcp.json содержит iwe-knowledge → https://mcp.aisystant.com/mcp"
+        echo "  T1-T2: при первом запуске откроется браузер (OAuth через Ory)."
+        echo "  T3-T4: CLI-режим (IWE_TIER=T3 в env или tier: T3 в ~/.iwe/config.yaml)."
+        echo "  Необходима подписка «Инженерия интеллекта» (ранее «Бесконечное развитие»)."
+        echo "  После входа: /mcp в Claude Code."
     fi
 fi
 
-# === 4b. Propagate skills, hooks, rules, lib, config, detectors, scripts to workspace ===
-echo "[4b] Installing skills, hooks, rules, lib, config, detectors, scripts..."
+# === 4b. Propagate skills, hooks, rules, lib, config, detectors, scripts, styles to workspace ===
+echo "[4b] Installing skills, hooks, rules, rules-lazy, lib, config, detectors, scripts, styles..."
 if $DRY_RUN; then
-    echo "  [DRY RUN] Would copy .claude/{skills,hooks,rules,lib,config,detectors,scripts,agents}/ → $WORKSPACE_DIR/.claude/"
+    echo "  [DRY RUN] Would copy .claude/{skills,hooks,rules,rules-lazy,lib,config,detectors,scripts,agents,styles}/ → $WORKSPACE_DIR/.claude/"
 else
     mkdir -p "$WORKSPACE_DIR/.claude"
     # lib/config/detectors — runtime dependencies капчер-шины (capture-bus.sh) и детекторов
     # scripts — требуется скиллами (напр. load-extensions.sh)
-    for subdir in skills hooks rules lib config detectors scripts agents; do
+    # styles — дисциплина языковых стилей (WP-412)
+    # rules-lazy — lazy-loaded rule expansions (role-prefixes-full), parity with update.sh
+    for subdir in skills hooks rules rules-lazy lib config detectors scripts agents styles templates; do
         if [ -d "$TEMPLATE_DIR/.claude/$subdir" ]; then
             cp -r "$TEMPLATE_DIR/.claude/$subdir" "$WORKSPACE_DIR/.claude/"
             echo "  ✓ .claude/$subdir/ → $WORKSPACE_DIR/.claude/$subdir/"
@@ -497,6 +540,17 @@ else
     fi
 fi
 
+# Resolves IWE_TIER: env var → ~/.iwe/config.yaml → default T1
+check_user_tier() {
+    [ -n "${IWE_TIER:-}" ] && { echo "$IWE_TIER"; return; }
+    local cfg="${IWE_CONFIG:-$HOME/.iwe/config.yaml}"
+    if [ -f "$cfg" ]; then
+        local t; t=$(grep -E '^tier:' "$cfg" 2>/dev/null | head -1 | awk '{print $2}' | tr -d '"')
+        [ -n "$t" ] && { echo "$t"; return; }
+    fi
+    echo "T1"
+}
+
 # === 4c. Copy .mcp.json to workspace ===
 echo "[4c] Configuring .mcp.json..."
 
@@ -505,20 +559,71 @@ MCP_DEST="$WORKSPACE_DIR/.mcp.json"
 MCP_USER_EXT="$WORKSPACE_DIR/extensions/mcp-user.json"
 
 if $DRY_RUN; then
-    echo "  [DRY RUN] Would copy $MCP_TEMPLATE → $MCP_DEST"
-    echo "    iwe-knowledge → https://mcp.aisystant.com/mcp (OAuth)"
+    _IWE_TIER=$(check_user_tier)
+    echo "  [DRY RUN] Would generate $MCP_DEST (tier=$_IWE_TIER)"
+    case "$_IWE_TIER" in
+        T3|T4) echo "    iwe-knowledge → https://mcp.aisystant.com/mcp (ict-token auth — требует IWE_ICT_TOKEN или ~/.iwe/config.yaml ict_token)" ;;
+        *)     echo "    iwe-knowledge → https://mcp.aisystant.com/mcp (браузерный OAuth)" ;;
+    esac
     if [ -f "$MCP_USER_EXT" ] && command -v jq >/dev/null 2>&1; then
         echo "  [DRY RUN] Would merge extensions/mcp-user.json into .mcp.json"
     fi
 elif [ ! -f "$MCP_TEMPLATE" ]; then
     echo "  WARN: $MCP_TEMPLATE not found, skipping."
 else
-    # Copy template .mcp.json to workspace (no placeholders — Gateway URL is static)
-    cp "$MCP_TEMPLATE" "$MCP_DEST"
-    echo "  ✓ $MCP_DEST → iwe-knowledge (Gateway, OAuth)"
+    _IWE_TIER=$(check_user_tier)
+    _MCP_LOG="$WORKSPACE_DIR/logs/mcp-auth.log"
+    mkdir -p "$WORKSPACE_DIR/logs" && touch "$_MCP_LOG"
 
-    # Merge extensions/mcp-user.json if it exists and has content
-    if [ -f "$MCP_USER_EXT" ]; then
+    case "$_IWE_TIER" in
+        T3|T4)
+            # Resolve ict_ token: IWE_ICT_TOKEN env (primary) → ~/.iwe/config.yaml (best-effort)
+            # config.yaml expected format: ict_token: "ict_VALUE"  (no inline comments, no spaces in value)
+            _ICT_TOKEN="${IWE_ICT_TOKEN:-}"
+            if [ -z "$_ICT_TOKEN" ]; then
+                _cfg="${IWE_CONFIG:-$HOME/.iwe/config.yaml}"
+                if [ -f "$_cfg" ]; then
+                    _ICT_TOKEN=$(grep -E '^ict_token[[:space:]]*:' "$_cfg" 2>/dev/null | head -1 | \
+                        sed 's/^[[:space:]]*ict_token[[:space:]]*:[[:space:]]*//' | \
+                        tr -d '"' | tr -d "'" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                fi
+            fi
+
+            if [ -n "$_ICT_TOKEN" ]; then
+                if jq -n \
+                    --arg token "$_ICT_TOKEN" \
+                    '{"mcpServers":{"iwe-knowledge":{"type":"http","url":"https://mcp.aisystant.com/mcp","headers":{"Authorization":("Bearer " + $token)}}}}' \
+                    > "$MCP_DEST" 2>/dev/null; then
+                    echo "  ✓ $MCP_DEST → iwe-knowledge (аутентифицирован, tier=$_IWE_TIER)"
+                    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) setup tier=$_IWE_TIER mode=ict_token" >> "$_MCP_LOG"
+                else
+                    echo "  ✗ jq error generating .mcp.json (check jq is installed)"
+                    _MCP_AUTH_INCOMPLETE=true
+                    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) setup tier=$_IWE_TIER mode=jq_error" >> "$_MCP_LOG"
+                fi
+            else
+                echo ""
+                echo "  ✗ Tier=$_IWE_TIER — токен аутентификации не найден. .mcp.json не записан."
+                echo "  ─────────────────────────────────────────────────────────────"
+                echo "  Для активации T3-доступа к знаниям:"
+                echo "  1. Напишите боту @aisystant_bot команду: /connect_external"
+                echo "  2. Добавьте токен в ~/.iwe/config.yaml:"
+                echo "     ict_token: \"ict_ВАШТОКЕН\""
+                echo "     (или: export IWE_ICT_TOKEN=ict_ВАШТОКЕН && bash setup.sh)"
+                echo "  ─────────────────────────────────────────────────────────────"
+                _MCP_AUTH_INCOMPLETE=true
+                echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) setup tier=$_IWE_TIER mode=missing_token" >> "$_MCP_LOG"
+            fi
+            ;;
+        *)
+            cp "$MCP_TEMPLATE" "$MCP_DEST"
+            echo "  ✓ $MCP_DEST → iwe-knowledge (браузерный OAuth, tier=$_IWE_TIER)"
+            echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) setup tier=$_IWE_TIER mode=browser" >> "$_MCP_LOG"
+            ;;
+    esac
+
+    # Merge extensions/mcp-user.json if it exists and has content (skip if MCP_DEST was not written)
+    if [ -f "$MCP_USER_EXT" ] && [ -f "$MCP_DEST" ]; then
         if command -v jq >/dev/null 2>&1; then
             USER_COUNT=$(jq '.mcpServers | length' "$MCP_USER_EXT" 2>/dev/null || echo "0")
             if [ "$USER_COUNT" -gt 0 ]; then
@@ -554,6 +659,27 @@ else
     echo "  ℹ  Restart shell or run: source $HOME/.zshenv"
 fi
 
+# === 4e. Generate executor-catalog.yaml for task routing (issue #197) ===
+# route-task.sh (DP.ROLE.059, Маршрутизатор) looks this up at
+# ~/IWE/$GOVERNANCE_REPO/scripts/executor-catalog.yaml — without generating it on
+# install, a fresh install has no catalog and route-task.sh always fails ("not found").
+# Non-fatal on error: routing is a convenience feature, not a hard setup prerequisite
+# (PyYAML availability etc. is already checked at consumption time in route-task.sh).
+if $CORE_ONLY; then
+    echo "[4e] executor-catalog.yaml... пропущено (core mode, нет агента для маршрутизации)"
+elif $DRY_RUN; then
+    echo "[DRY RUN] Would generate executor-catalog.yaml (IWE_GOVERNANCE_REPO=$GOVERNANCE_REPO)"
+else
+    echo "[4e] Generating executor-catalog.yaml..."
+    if CATALOG_OUTPUT=$(IWE_GOVERNANCE_REPO="$GOVERNANCE_REPO" python3 "$TEMPLATE_DIR/scripts/generate-executor-catalog.py" 2>&1); then
+        echo "$CATALOG_OUTPUT" | sed 's/^/  /'
+    else
+        echo "$CATALOG_OUTPUT" | sed 's/^/  /'
+        echo "  ⚠ executor-catalog.yaml не сгенерирован — запусти вручную:"
+        echo "    python3 $TEMPLATE_DIR/scripts/generate-executor-catalog.py"
+    fi
+fi
+
 # === 5. Install roles (autodiscovery via role.yaml) ===
 if $CORE_ONLY; then
     echo "[5/6] Автоматизация... пропущена (core mode)"
@@ -564,10 +690,10 @@ elif ! command -v launchctl >/dev/null 2>&1; then
 else
     echo "[5/6] Installing roles..."
 
-    # Source ~/.iwe-paths — гарантирует IWE_RUNTIME / IWE_WORKSPACE / IWE_TEMPLATE
+    # Source $WORKSPACE_DIR/.iwe-paths — гарантирует IWE_RUNTIME / IWE_WORKSPACE / IWE_TEMPLATE
     # в env для role install.sh (тот же паттерн что в update.sh:836).
     # Без этого install.sh падает в legacy fallback и видит {{плейсхолдеры}}.
-    [ -f "$HOME/.iwe-paths" ] && . "$HOME/.iwe-paths"
+    [ -f "$WORKSPACE_DIR/.iwe-paths" ] && . "$WORKSPACE_DIR/.iwe-paths"
 
     MANUAL_ROLES=()
 
@@ -726,6 +852,9 @@ else
         echo "  - Sunday night: week review"
     fi
     echo ""
+    echo "Developer onboarding (T4+) — single entry point:"
+    echo "  cat docs/developer/README.md"
+    echo ""
     echo "Update from upstream:"
     echo "  cd $TEMPLATE_DIR && bash update.sh"
     echo ""
@@ -737,14 +866,24 @@ else
         echo "  validate-режим setup.sh проверит: env-конфиг, обязательные файлы,"
         echo "  extensions, доступность MCP, структурные инварианты."
         echo ""
-        read -p "Запустить проверку сейчас? (y/n) " -n 1 -r
+        read -p "Запустить проверку сейчас? (y/n) " -n 1 -r || true
         echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if [[ ${REPLY:-} =~ ^[Yy]$ ]]; then
             echo ""
             bash "$TEMPLATE_DIR/setup.sh" --validate
         else
             echo "Пропущено. Запустить позже: cd $TEMPLATE_DIR && bash setup.sh --validate"
         fi
         echo ""
+    fi
+
+    # === Final: MCP auth check ===
+    if [ "${_MCP_AUTH_INCOMPLETE:-false}" = "true" ]; then
+        echo ""
+        echo "════════════════════════════════════════════════════════════════"
+        echo "  ⚠ SETUP INCOMPLETE: T3/T4 MCP-аутентификация не настроена."
+        echo "  Выполните шаги в секции [4c] выше и повторите: bash setup.sh"
+        echo "════════════════════════════════════════════════════════════════"
+        exit 1
     fi
 fi

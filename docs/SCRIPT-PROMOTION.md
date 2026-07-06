@@ -103,6 +103,22 @@ git push
 `git revert` коммита промоции + следующий `update.sh` у пилотов вернёт прежнее
 состояние. Параметр в `params.yaml` остаётся (без вреда, неиспользуем).
 
+## Золотое правило валидатора
+
+> **«Зависишь от валидатора → проверь его на реальных данных в `env -i` перед коммитом»**
+
+Корень B4-класса багов (clean-env blind spots, 20 мая 2026): скрипт работает у автора
+(авторский `IWE_GOVERNANCE_REPO` перекрывает дефолт), но ломается у пользователя в чистом env.
+Если изменяешь `validate-fmt-scripts.sh` или `integration-contract-validator.sh` — проверь:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" \
+    bash scripts/validate-fmt-scripts.sh scripts/
+```
+
+`hook-promote.sh` и `script-promote.sh` уже содержат такую проверку при промоции.
+При прямом `git commit` — твоя ответственность запустить её вручную.
+
 ## Связь с правилами
 
 - **DP.KR.001 §5.6** — классификация скриптов как исполнителей ролей
@@ -110,3 +126,47 @@ git push
 - **DP.D.049** — Log ≠ Incident ≠ State file (артефакты исполнения)
 - **§9 CLAUDE.md** — авторский режим (`params.yaml: author_mode: true`)
 - **Extensions Gate** — пользовательская кастомизация только через `extensions/`
+
+---
+
+## Класс багов B12: Promotion Completeness Drift
+
+> Источник: peer-сессии 2026-05-29-15 и 2026-05-29-20. WP-347 закрывал «как доставлять» (release mechanism). B12 — «что и когда доставлять» (promotion governance). Orthogonal scope.
+
+5 подклассов:
+
+| ID | Имя | Симптом | Detector | Фикс |
+|----|-----|---------|----------|-----|
+| **B12a** | **Catalog drift** | `skills-catalog.yaml` в FMT stale: новый скилл промотирован, но не виден при discovery | `coverage-skills.sh --check-catalog` | `skill-promote.sh` теперь регенерирует FMT catalog (commit c2e96e6) |
+| **B12b** | **Missing drift** | Артефакт есть в author/.claude/skills/, нет в FMT/.claude/skills/ | `coverage-skills.sh --check-missing` | Запустить `skill-promote.sh <name>` |
+| **B12c** | **Reverse drift** | Артефакт промотирован однажды, обновления в author не доходят до FMT | `coverage-skills.sh --check-reverse` (normalize-перед-diff) | Расширенный `template-sync.sh` allowlist (commit d575a6b) |
+| **B12d** | **Deletion drift** | Артефакт удалён в author, остался в FMT (dead code в шаблоне) | `coverage-skills.sh --check-deletion` | Ручная очистка по сигналу + лог в `promotion-status.yaml` |
+| **B12e** | **Decay drift** | STAGING.md запись `testing` >30 дней без машинных критериев готовности | `staging-audit.sh` | Per-row frontmatter `decay_after` / `ready_signals` |
+
+## Pair-on-Promote Convention (B12 prevention)
+
+> Source-of-truth: запись о промоции живёт **парой**: STAGING.md (decision) + `promotion-status.yaml` (execution).
+
+**При промоции скрипта/скилла/правила:**
+
+1. **STAGING.md row → status: promoted**
+   - Поля: `id`, `name`, `artefact_path`, `status`, `promoted_at`, `promoted_in_session`
+   - Если row не было до промоции — создать (для post-hoc документирования)
+
+2. **`promotion-status.yaml` append** (через `promote-common.sh::record_promotion()`)
+   - Поля: `artifact_path`, `type` (skill|script|hook|rule|protocol), `source_sha` (author commit), `fmt_sha` (FMT commit), `promoted_at` (ISO-8601), `verified_in_clean_env` (bool)
+
+3. **Smoke-check в clean-env обязателен** для скриптов и скиллов с executable содержимым:
+   - `verified_in_clean_env: true` — прошёл `env -i` smoke (см. §B4 выше)
+   - `verified_in_clean_env: false` — не критично для read-only артефактов (docs, rules)
+
+**Запрещено:**
+- Промотировать без записи в STAGING.md (исключения: emergency hotfix — задним числом сделать запись в течение 24h)
+- Запускать promote-скрипт без `--dry-run` ревизии diff перед apply
+- Push в FMT main без CI green (validate-template, integration-contract-validator)
+
+**Связанные скрипты:**
+- `scripts/coverage-skills.sh` — детектор B12a/b/c/d
+- `scripts/staging-audit.sh` — детектор B12e
+- `scripts/promote-common.sh::record_promotion()` — writer для promotion-status.yaml
+- **RELEASE-PROCESS.md** — чеклист выпуска + конвенция `deprecated_files`

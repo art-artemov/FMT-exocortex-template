@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 MANIFEST="$SCRIPT_DIR/update-manifest.json"
 
 # Версия из CHANGELOG.md (первый ## [X.Y.Z])
-VERSION=$(grep -m1 '^\#\# \[' "$SCRIPT_DIR/CHANGELOG.md" | sed 's/.*\[\(.*\)\].*/\1/')
+VERSION=$(grep -m1 '^\#\# \[[0-9]' "$SCRIPT_DIR/CHANGELOG.md" | sed 's/.*\[\(.*\)\].*/\1/')
 
 if [ -z "$VERSION" ]; then
     echo "ERROR: Не удалось извлечь версию из CHANGELOG.md"
@@ -17,28 +17,40 @@ fi
 
 echo "Генерация манифеста v$VERSION..."
 
-# Файлы/директории, которые НЕ включаются в манифест обновлений
-# seed/ — только при setup, README.md — пользователь кастомизирует,
-# settings.local.json — персональный, .gitkeep — маркеры,
-# extensions/*.after.md, extensions/*.before.md, extensions/*.checks.md, extensions/mcp-user.json —
-# пользовательское пространство (update.sh явно не трогает, см. update.sh §"Не затрагивается")
-EXCLUDE_PATTERNS=(
-    "seed/"
-    ".claude/settings.local.json"
+# === Исключения, которые НЕ попадают ни в files, ни в excluded_paths ===
+SKIP_PATTERNS=(
+    ".git/"
+    ".github/"
+    ".backups/"
+    ".DS_Store"
     "generate-manifest.sh"
     "update-manifest.json"
-    ".git/"
-    ".DS_Store"
+    "seed/"
+    "templates/"
 )
 
-# Точные пути, которые НЕ обновляются через update.sh:
-# README.md, README.en.md — витрина форка, пользователь кастомизирует под себя
-# CONTRIBUTING.md — для контрибьюторов апстрима, не для пользователей
-# LICENSE — юридический документ, форк может иметь свою лицензию
-# params.yaml — пользовательские флаги протоколов (update.sh явно не трогает)
-# extensions/day-close.after.md, extensions/mcp-user.json — пример/конфиг в пользовательском
-#   пространстве extensions/; update.sh обещает «не трогать extensions/» (см. extensions/README.md)
-EXCLUDE_EXACT=(
+# === Исключения, которые идут в excluded_paths (dev-only, не раздаются пользователям) ===
+EXCLUDED_PATTERNS=(
+    "scripts/"
+    "scripts/tests/"
+    "docs/developer/"
+)
+
+EXCLUDED_EXACT=(
+    "promotion-status.yaml"
+    "AGENTS-agent-blocks.md"
+    "docs/BROWSER-CI-TEMPLATE.md"
+    "docs/maintaining-skills.md"
+    "docs/release-audit-log.md"
+)
+
+# === Исключения из files, но не в excluded_paths (пользовательское пространство) ===
+FILES_EXCLUDE_PATTERNS=(
+    "seed/"
+    ".claude/settings.local.json"
+)
+
+FILES_EXCLUDE_EXACT=(
     "README.md"
     "README.en.md"
     "CONTRIBUTING.md"
@@ -49,119 +61,108 @@ EXCLUDE_EXACT=(
 )
 
 # Собираем файлы.
-# Источник: `git ls-files` — гарантирует, что в манифест попадут ТОЛЬКО tracked-файлы.
-# .gitignore-файлы (.exocortex.env, .claude.md.base, .claude/logs/, settings.local.json)
-# автоматически исключаются git'ом, что закрывает класс «runtime в манифесте» (WP-273 R4.1).
 FILES=()
+EXCLUDED_PATHS=()
 while IFS= read -r rel; do
-    # Проверяем исключения
+    # Пропускаем мусор/инструментарий
     skip=false
-    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+    for pattern in "${SKIP_PATTERNS[@]}"; do
         case "$rel" in
-            $pattern*|*/$pattern*) skip=true; break ;;
+            $pattern*) skip=true; break ;;
         esac
     done
-
-    # Пропускаем .gitkeep
     [[ "$(basename "$rel")" == ".gitkeep" ]] && skip=true
-
-    # Точные совпадения (корневой README.md)
-    for exact in "${EXCLUDE_EXACT[@]}"; do
-        [ "$rel" = "$exact" ] && { skip=true; break; }
-    done
-
     $skip && continue
-    FILES+=("$rel")
-done < <(git -C "$SCRIPT_DIR" ls-files | sort)
 
-# Генерируем JSON
-{
-    echo '{'
-    echo "  \"version\": \"$VERSION\","
-    echo '  "description": "Манифест платформенных файлов FMT-exocortex-template. Используется update.sh для доставки обновлений.",'
-    echo '  "files": ['
+    # setup/ contains install-time scripts; skip all except validate-template.sh,
+    # which is referenced by .githooks/pre-commit and update.sh after delivery.
+    if [[ "$rel" == setup/* && "$rel" != "setup/validate-template.sh" ]]; then
+        continue
+    fi
 
-    last_idx=$(( ${#FILES[@]} - 1 ))
-    for i in "${!FILES[@]}"; do
-        f="${FILES[$i]}"
-        comma=","
-        [ "$i" -eq "$last_idx" ] && comma=""
-        printf '    {"path": "%s"}%s\n' "$f" "$comma"
+    # Проверяем excluded_paths (dev-only)
+    is_excluded=false
+    for pattern in "${EXCLUDED_PATTERNS[@]}"; do
+        case "$rel" in
+            $pattern*) is_excluded=true; break ;;
+        esac
+    done
+    for exact in "${EXCLUDED_EXACT[@]}"; do
+        [ "$rel" = "$exact" ] && { is_excluded=true; break; }
     done
 
-    echo '  ]'
-    echo '}'
-} > "$MANIFEST"
+    if $is_excluded; then
+        EXCLUDED_PATHS+=("$rel")
+        continue
+    fi
 
-# === Deprecated files (исторический список — поддерживается вручную) ===
-# Каждая запись: path|reason
-# Только L1-платформенные файлы, которые update.sh когда-то ставил, а потом удалил.
-# update.sh удаляет их из установок пользователей при следующем обновлении.
-DEPRECATED_LIST=(
-    "LEARNING-PATH.md|moved to docs/LEARNING-PATH.md"
-    "memory/claude-md-maintenance.md|consolidated, removed in v0.27"
-    "memory/wp-gate-lesson.md|consolidated into protocol-work.md, removed in v0.27"
-    "roles/strategist/prompts/day-close.md|strategist role removed; use .claude/skills/day-close/"
-    "roles/strategist/prompts/day-plan.md|strategist role removed"
-    "roles/strategist/prompts/note-review.md|strategist role removed"
-    "roles/strategist/prompts/session-prep.md|strategist role removed"
-    "roles/strategist/prompts/strategy-session.md|strategist role removed; use .claude/skills/strategy-session/"
-    "roles/strategist/prompts/week-review.md|strategist role removed"
-    "roles/strategist/scripts/cleanup-processed-notes.py|strategist role removed"
-    "roles/strategist/scripts/cleanup-processed-notes.sh|strategist role removed"
-    "strategist-agent/README.md|strategist-agent directory removed in v0.24"
-    "strategist-agent/REPO-TYPE.md|strategist-agent directory removed"
-    "strategist-agent/prompts/day-close.md|strategist-agent directory removed"
-    "strategist-agent/prompts/day-plan.md|strategist-agent directory removed"
-    "strategist-agent/prompts/note-review.md|strategist-agent directory removed"
-    "strategist-agent/prompts/session-prep.md|strategist-agent directory removed"
-    "strategist-agent/prompts/strategy-cascade.md|strategist-agent directory removed"
-    "strategist-agent/prompts/strategy-session.md|strategist-agent directory removed"
-    "strategist-agent/prompts/strategy.md|strategist-agent directory removed"
-    "strategist-agent/prompts/week-review.md|strategist-agent directory removed"
-    "strategist-agent/scripts/strategist.sh|strategist-agent directory removed"
-)
+    # Проверяем files-исключения (пользовательское пространство)
+    is_files_exclude=false
+    for pattern in "${FILES_EXCLUDE_PATTERNS[@]}"; do
+        case "$rel" in
+            $pattern*) is_files_exclude=true; break ;;
+        esac
+    done
+    for exact in "${FILES_EXCLUDE_EXACT[@]}"; do
+        [ "$rel" = "$exact" ] && { is_files_exclude=true; break; }
+    done
 
-# Добавляем deprecated_files в JSON через Python
-DEPRECATED_JSON=""
-last_dep=$(( ${#DEPRECATED_LIST[@]} - 1 ))
-for i in "${!DEPRECATED_LIST[@]}"; do
-    entry="${DEPRECATED_LIST[$i]}"
-    dpath="${entry%%|*}"
-    dreason="${entry#*|}"
-    comma=","
-    [ "$i" -eq "$last_dep" ] && comma=""
-    DEPRECATED_JSON="${DEPRECATED_JSON}    {\"path\": \"${dpath}\", \"reason\": \"${dreason}\"}${comma}
-"
-done
+    $is_files_exclude && continue
+    FILES+=("$rel")
+# LC_ALL=C pins byte-order collation so the manifest is reproducible across
+# contributor locales (CI sorts under C.UTF-8). Without it, a UTF-8 locale
+# reorders entries like README.md / sync_feedback_to_memory.py and breaks the
+# manifest-completeness check (issue #207).
+done < <(git -C "$SCRIPT_DIR" ls-files | LC_ALL=C sort)
 
-python3 -c "
-import json, sys
-
+# Читаем существующий манифест для deprecated_files (ручное управление)
+DEPRECATED_JSON="[]"
+if [ -f "$MANIFEST" ]; then
+    DEPRECATED_JSON=$(python3 -c "
+import json
 with open('$MANIFEST') as f:
     data = json.load(f)
+print(json.dumps(data.get('deprecated_files', []), ensure_ascii=False))
+")
+fi
 
-deprecated = []
-lines = '''$DEPRECATED_JSON'''.strip().splitlines()
-for line in lines:
-    line = line.strip().rstrip(',').strip()
-    if line:
-        try:
-            deprecated.append(json.loads(line))
-        except:
-            pass
+TMPDIR=$(mktemp -d)
+# Через printf: построчная запись без bash-array-interpolation внутри строки
+printf '%s\n' "${FILES[@]}" > "$TMPDIR/files.txt"
+printf '%s\n' "${EXCLUDED_PATHS[@]}" > "$TMPDIR/excluded.txt"
 
-data['deprecated_files'] = deprecated
+# Генерируем JSON
+python3 -c "
+import json
+
+files = [line.strip() for line in open('$TMPDIR/files.txt') if line.strip()]
+excluded = [line.strip() for line in open('$TMPDIR/excluded.txt') if line.strip()]
+
+data = {
+    'version': '$VERSION',
+    'description': 'Манифест платформенных файлов FMT-exocortex-template. Используется update.sh для доставки обновлений.',
+    'files': [{'path': p} for p in files],
+    'excluded_paths': excluded,
+    'deprecated_files': json.loads('''$DEPRECATED_JSON'''),
+}
+
+# Убираем пустые массивы
+if not data['excluded_paths']:
+    del data['excluded_paths']
+if not data['deprecated_files']:
+    del data['deprecated_files']
 
 with open('$MANIFEST', 'w', encoding='utf-8') as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
     f.write('\n')
 "
 
+rm -rf "$TMPDIR"
+
 echo "Готово: $MANIFEST"
 echo "  Версия: $VERSION"
 echo "  Файлов: ${#FILES[@]}"
-echo "  Устаревших: ${#DEPRECATED_LIST[@]}"
+echo "  Исключённых (excluded_paths): ${#EXCLUDED_PATHS[@]}"
 echo ""
 echo "Проверьте diff и закоммитьте:"
 echo "  git diff update-manifest.json"

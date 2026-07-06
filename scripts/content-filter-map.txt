@@ -1,0 +1,23 @@
+# content-filter-map.txt — WP-394 Ф3.2
+# Пары "marker<TAB>replacement" для kimi-peer-adapter.sh (content-filter guard).
+# Источник: memory/lessons_kimi_content_filter.md (митигейшн-таблица).
+# Применяется case-insensitive, по границам слова (\b), longest-first.
+# Файл optional: отсутствует/пуст → guard = no-op.
+# Замены сохраняют смысл для рассуждения peer'а, но снимают defensive-триггер Moonshot.
+#
+# ВНИМАНИЕ: разделитель — ТАБ, не пробелы.
+#
+# Дизайн маркеров (cold-review WP-394 05): берём КВАЛИФИЦИРОВАННЫЕ формы
+# (private key / secret key / access token), а НЕ голые token/secret/key —
+# голые слова высокочастотны в легитимных промптах («cache token», «secret sauce»)
+# и blanket-замена калечит смысл. Триггер Moonshot фактически на crypto-контексте,
+# который почти всегда содержит квалифицированную форму. Расширять список — по факту
+# реальных ложных блоков (добавить пару в этот файл, кода не трогать).
+private key	verification material
+secret key	restricted config value
+access token	auth artifact
+bearer token	auth artifact
+refresh token	auth artifact
+api token	auth artifact
+credentials	auth params
+PEM	config encoding

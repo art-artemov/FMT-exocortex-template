@@ -2,11 +2,29 @@
 name: fpf
 description: Загрузка применимых принципов для задачи из иерархии Pack → SPF → FPF. Используй когда нужно найти релевантные принципы перед принятием решения.
 argument-hint: "<запрос или тема>"
+version: 1.0.0
+layer: L1
+status: active
+triggers:
+  slash: [/fpf]
+  phrases: []
+routing:
+  executor: haiku
+  deterministic: false
+agents: single
+interaction: multi-step
+gates_required: []
+gates_enforced: []
+gates_rationale: "операционный скилл; WP Gate применим только при создании нового РП, не для операционных вызовов"
 ---
 
 # Загрузка принципов
 
 Запрос: $ARGUMENTS
+
+## When to use
+
+Загрузка применимых принципов для задачи из иерархии Pack → SPF → FPF. Используй когда нужно найти релевантные принципы перед принятием решения.
 
 ## Fallback Chain
 
@@ -31,24 +49,35 @@ Pack (предметное) → SPF (корректность) → FPF (перв
 - Неизвестные (TransformerRole, senseFamily, Γ_*, ReferencePlane и т.п.): перевести по контексту, добавить `(FPF: <оригинал>)`. Не оставлять FPF-термин без перевода.
 - **Тест перед выводом:** пробежать output — есть ли термин, непонятный инженеру без FPF? Если да — перевести.
 
-## Алгоритм
+## Algorithm
 
-1. **Определи режим** по таблице выше. Если неясно — режим lookup.
+### 1. Определи режим
 
-2. **Классифицируй источник:**
-   - Предметное знание (архитектура, домен, сервис) → source_type=pack
-   - Форма, процесс, корректность → source=SPF
-   - Базовые различения, первые принципы → source=FPF
+По таблице выше. Если неясно — режим lookup.
 
-3. **Ищи через iwe-knowledge:**
-   - `iwe-knowledge search(query="<запрос>", source_type="pack")` -- по всем Pack
-   - `iwe-knowledge search(query="<запрос>", source="SPF")` -- по SPF
-   - `iwe-knowledge search(query="<запрос>", source="FPF")` -- по FPF
-   - Если первый уровень не дал результатов -- спускайся по fallback chain
+### 2. Классифицируй источник
 
-4. **Если iwe-knowledge недоступен** (нет в `/mcp`):
-   - Pack: читай файлы `PACK-*/pack/` через Glob + Read
-   - SPF: читай `SPF/docs/` через Glob + Read
-   - FPF: читай `FPF/Readme.md` (обзор) или ищи через Grep по `FPF/`
+- Предметное знание (архитектура, домен, сервис) → source_type=pack
+- Форма, процесс, корректность → source=SPF
+- Базовые различения, первые принципы → source=FPF
 
-5. **Покажи** релевантные принципы с пояснением, как они применимы к задаче. Включай ссылку на источник (github_url из результата поиска или путь к файлу). **Переводи FPF-термины** в engineering-язык.
+### 3. Ищи через iwe-knowledge
+
+- `iwe-knowledge search(query="<запрос>", source_type="pack")` -- по всем Pack
+- `iwe-knowledge search(query="<запрос>", source="SPF")` -- по SPF
+- `iwe-knowledge search(query="<запрос>", source="FPF")` -- по FPF
+- Если первый уровень не дал результатов -- спускайся по fallback chain
+
+### 4. Если iwe-knowledge недоступен
+
+(нет в `/mcp`):
+- Pack: читай файлы `PACK-*/pack/` через Glob + Read
+- SPF: читай `SPF/docs/` через Glob + Read
+- FPF: читай `FPF/Readme.md` (обзор) или ищи через Grep по `FPF/`
+
+### 5. Покажи результат
+
+Релевантные принципы с пояснением, как они применимы к задаче. Включай ссылку на источник (github_url из результата поиска или путь к файлу). **Переводи FPF-термины** в engineering-язык.
+
+<!-- USER-SPACE -->
+<!-- /USER-SPACE -->

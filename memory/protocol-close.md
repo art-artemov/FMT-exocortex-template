@@ -22,7 +22,7 @@ schema_version: 1
 | Триггер | Аргумент | Skill |
 |---------|---------|-------|
 | «закрываю сессию» / «всё» / «закрывай» | `close` или `close session` | Quick Close (ниже, inline) |
-| «закрываю день» / «итоги дня» | `close day` | `.claude/skills/day-close/SKILL.md` |
+| «закрываю день» / «итоги дня» | `close day` | `.claude/skills/day-close/SKILL.md` — **шаг 6: WakaTime + Мультипликатор IWE** |
 | «закрываю неделю» / «итоги недели» | `week-close` | `.claude/skills/week-close/SKILL.md` |
 
 > **`close` без уточнения** → Quick Close (сессия) по умолчанию.
@@ -40,11 +40,18 @@ schema_version: 1
 
    **1a. Pre-commit checks (БЛОКИРУЮЩЕЕ).** `bash .claude/scripts/load-extensions.sh protocol-close checks` — exit 0 → `Read` каждый файл из вывода (alphabetic) → выполнить. Exit 1 → пропустить. Поддерживает `extensions/protocol-close.checks.md` И `extensions/protocol-close.checks.<suffix>.md`. **При ❌ commit запрещён** — исправить, повторить checks, только потом 1b. Семантика идентична Day/Week Close (см. `run-protocol/SKILL.md` Шаг 1b).
 
-   **1b. Commit + Push.** После прохождения checks все изменения зафиксированы и запушены.
+   **1b. Commit + Push (БЛОКИРУЮЩЕЕ).** `git status --short` по ВСЕМ репо, которых касалась сессия (не только governance). Незафиксированные изменения → `git add <specific paths>` → commit → push. Затем убедиться что `git status` чист. Только после этого переходить к шагу 2.
 
 2. **WP Context File** — обновить секцию «Осталось» (structured формат):
    - in_progress → structured handoff
-   - done → пометить `status: done`
+   - done → пометить `status: done` **→ и немедленно архивировать:**
+     ```bash
+     git mv inbox/WP-N archive/wp-contexts/WP-N   # папка
+     git mv inbox/WP-N-slug.md archive/wp-contexts/WP-N-slug.md  # файл
+     # patch frontmatter: status: archived, archived_at: YYYY-MM-DD
+     # нет results_in → добавить results_not_captured: true
+     ```
+     *(Реализует DP.SC.033 инвариант: done-РП не остаётся в inbox дольше одного Day Close)*
    - Незавершённое → context file. Идея → `MAPSTRATEGIC.md`. Зерно → `drafts/draft-list.md`
 
 2.5. **KE** — прочитать поле «Что узнали» в «Осталось». Маршрутизировать СЕЙЧАС:
@@ -109,6 +116,7 @@ schema_version: 1
 - [ ] MEMORY.md: статус РП обновлён
 - [ ] Decision log: прочитать записи сессии в `decisions/decision-log-YYYY-MM.md`, скорректировать если неточно
 - [ ] **Docs Gate (условный):** РП затрагивал поведение онбординга (skills, MCP-сервисы, бот `/start`)? → обновить онбординг-документацию в governance-репо + `/verify` обновлённый файл. Владелец: пользователь. Если не затрагивал → пропустить молча.
+- [ ] **Conversational-сессии:** report.md создан ИЛИ status: interrupted (DP.SC.154 Q8)
 
 
 ## Week Close (Неделя)
@@ -138,6 +146,15 @@ schema_version: 1
 - distinctions.md > 80 строк без флага в Week Report
 - Week Report без R-ответов
 - MEMORY.md > 200 строк уже 2+ недели подряд
+
+## Мультипликатор IWE (WP-299 Ф5, шаг 6 Day Close)
+
+> **Полная спецификация → `.claude/skills/day-close/SKILL.md` § 6.**
+
+- **WakaTime-источник:** CLI `~/.wakatime/wakatime-cli --today` → если недоступен: Neon `domain_event WHERE event_type='coding_time'` за дату (fallback).
+- **Мультипликатор** = сумма бюджетов закрытых РП за день / WakaTime (сек). Формат: `N.Nx`.
+- **Эмиссия:** после вычисления — `day_close` событие в domain_event, `external_id = "day-close-YYYY-MM-DD"` (ON CONFLICT DO NOTHING — идемпотентно). Payload: `{wakatime_h, multiplier, date, session_id, source}`.
+- **Pending-мультипликатор (если Day Close не успел):** Day Open шаг 1 «Вчера» — при отсутствии записи `day_close` за вчера пересчитать из Neon WakaTime (WakaTime API `summaries?start={вчера}&end={вчера}`).
 
 ## Deferred (отложены до Day Close)
 

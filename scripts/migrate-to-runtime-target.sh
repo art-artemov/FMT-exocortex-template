@@ -1,4 +1,6 @@
 #!/bin/bash
+# routing: migration  one-time=true
+# see DP.SC.159, DP.ROLE.059
 # migrate-to-runtime-target.sh — миграция с dirty FMT (≤0.28.x) на Generated runtime (≥0.29.0).
 #
 # WP-273 Этап 2 Ф21. ArchGate v2 → F.

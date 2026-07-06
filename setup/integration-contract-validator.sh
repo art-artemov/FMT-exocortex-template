@@ -8,7 +8,7 @@
 # докуменация говорит А, код делает Б — нужен автоматический детектор расхождений
 # до релиза.
 #
-# 9 детекторов:
+# 11 детекторов:
 #   1. manifest_paths    — пути из update-manifest.json существуют в дереве
 #   2. seed_references   — protocol-*.md ссылки на seed/ существуют в seed/
 #   3. extension_table   — extensions/README.md table ↔ реальное placement EXTENSION POINT в protocol-*/SKILL.md
@@ -18,6 +18,8 @@
 #   7. prompts_python_coverage — нет hardcoded DS-strategy в prompts и .py (R6.1*, 0.29.5)
 #   8. sed_placeholder_escape — substituted runners НЕ имеют bare {{X}} в sed (R6.1**, 0.29.6)
 #   9. manifest_version  — update-manifest.json version == CHANGELOG.md version (prevent stale-manifest release)
+#  10. deprecated_runner_usage — deprecated_files не содержат промптов, которые ещё вызывает runner
+#  11. prompt_script_refs — bash-вызовы scripts/*.sh в промптах → файл существует в FMT/scripts/
 #
 # Usage:
 #   bash setup/integration-contract-validator.sh [--verbose]
@@ -60,7 +62,7 @@ log "=== Integration Contract Validator (WP-273 R4.8) ==="
 log ""
 
 # === Detector 1: manifest paths existence ===
-log "[1/9] manifest_paths — пути из update-manifest.json в дереве..."
+log "[1/11] manifest_paths — пути из update-manifest.json в дереве..."
 if [ -f update-manifest.json ] && command -v python3 >/dev/null 2>&1; then
     MISSING=$(python3 -c "
 import json, os
@@ -85,7 +87,7 @@ fi
 log ""
 
 # === Detector 2: seed references in protocols ===
-log "[2/9] seed_references — protocol-*.md ссылки на seed/ существуют..."
+log "[2/11] seed_references — protocol-*.md ссылки на seed/ существуют..."
 SEED_REFS_VIOLATIONS=0
 if [ -d seed ]; then
     while IFS= read -r ref; do
@@ -110,7 +112,7 @@ fi
 log ""
 
 # === Detector 3: extension table ↔ real EXTENSION POINT placement ===
-log "[3/9] extension_table — extensions/README.md table ↔ EXTENSION POINT в protocol-*.md/SKILL.md..."
+log "[3/11] extension_table — extensions/README.md table ↔ EXTENSION POINT в protocol-*.md/SKILL.md..."
 EXT_VIOLATIONS=0
 if [ -f extensions/README.md ]; then
     # Parse extension table from README.md: lines like "| protocol-close | checks | ..."
@@ -150,7 +152,7 @@ fi
 log ""
 
 # === Detector 4: hook trigger pattern (hooks-design.md принцип) ===
-log "[4/9] hook_artifact — hooks не грепают TOOL_INPUT (R4.5 антипаттерн)..."
+log "[4/11] hook_artifact — hooks не грепают TOOL_INPUT (R4.5 антипаттерн)..."
 HOOK_VIOLATIONS=0
 if [ -d .claude/hooks ]; then
     while IFS= read -r f; do
@@ -176,7 +178,7 @@ fi
 log ""
 
 # === Detector 5: runner read-only references resolve correctly (R5.1 regression) ===
-log "[5/9] runner_readonly — runners резолвят prompts/role.yaml/notify через \$IWE_TEMPLATE..."
+log "[5/11] runner_readonly — runners резолвят prompts/role.yaml/notify через \$IWE_TEMPLATE..."
 RUNNER_VIOLATIONS=0
 # Антипаттерн (Round 5 R5.1): PROMPTS_DIR="\$REPO_DIR/prompts" без fallback на \$IWE_TEMPLATE.
 # Runner работает только если все read-only данные дублированы в runtime.
@@ -203,7 +205,7 @@ fi
 log ""
 
 # === Detector 6: install.sh fail-fast при literal {{...}} в plist (R5.2 regression) ===
-log "[6/9] install_failfast — install.sh имеют grep '{{' check на PLIST_SRC..."
+log "[6/11] install_failfast — install.sh имеют grep '{{' check на PLIST_SRC..."
 FAILFAST_VIOLATIONS=0
 for install_sh in roles/strategist/install.sh roles/extractor/install.sh roles/synchronizer/install.sh; do
     [ -f "$install_sh" ] || continue
@@ -223,7 +225,7 @@ fi
 log ""
 
 # === Detector 7: prompts + python + shell coverage (R6.1* regression — мой smoke test пропустил) ===
-log "[7/9] prompts_python_shell_coverage — нет hardcoded DS-strategy в prompts/.py/.sh..."
+log "[7/11] prompts_python_shell_coverage — нет hardcoded DS-strategy в prompts/.py/.sh..."
 COVERAGE_VIOLATIONS=0
 # Python scripts: должны читать GOVERNANCE_REPO из env, не хардкодить
 while IFS= read -r py; do
@@ -286,7 +288,7 @@ fi
 log ""
 
 # === Detector 8: bare {{...}} в sed-выражениях substituted-runners (R6.1**, 0.29.6) ===
-log "[8/9] sed_placeholder_escape — substituted runners НЕ имеют bare {{X}} в sed (build-runtime подменит)..."
+log "[8/11] sed_placeholder_escape — substituted runners НЕ имеют bare {{X}} в sed (build-runtime подменит)..."
 SED_VIOLATIONS=0
 # Парсим overlay-реестр: substituted-файлы из реестра проверяем на bare {{X}} в sed-выражениях.
 # Антипаттерн (R6.1**): sed -e "s|{{X}}|val|" в substituted runner'е → build-runtime подменит {{X}} → sed broken.
@@ -312,10 +314,10 @@ fi
 log ""
 
 # === Detector 9: manifest version matches CHANGELOG ===
-log "[9/9] manifest_version — update-manifest.json version == CHANGELOG.md version..."
+log "[9/11] manifest_version — update-manifest.json version == CHANGELOG.md version..."
 if [ -f update-manifest.json ] && [ -f CHANGELOG.md ] && command -v python3 >/dev/null 2>&1; then
     MANIFEST_VERSION=$(python3 -c "import json; print(json.load(open('update-manifest.json')).get('version',''))" 2>/dev/null || echo "")
-    CHANGELOG_VERSION=$(grep -m1 '^\#\# \[' CHANGELOG.md | sed 's/.*\[\(.*\)\].*/\1/' 2>/dev/null || echo "")
+    CHANGELOG_VERSION=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md | sed 's/^## \[//;s/\]$//' 2>/dev/null || echo "")
     if [ -z "$MANIFEST_VERSION" ] || [ -z "$CHANGELOG_VERSION" ]; then
         log "  ⊘ SKIP (не удалось прочитать версии)"
     elif [ "$MANIFEST_VERSION" = "$CHANGELOG_VERSION" ]; then
@@ -326,6 +328,77 @@ if [ -f update-manifest.json ] && [ -f CHANGELOG.md ] && command -v python3 >/de
     fi
 else
     log "  ⊘ SKIP (нет update-manifest.json, CHANGELOG.md или python3)"
+fi
+log ""
+
+# === Detector 10: deprecated_files ↔ runner usage cross-check ===
+# Корень бага (22 мая, Евгений): update-manifest.json пометил 4 промпта deprecated
+# с reason «migrated to run_skill», но strategist.sh по-прежнему вызывал run_claude
+# для этих же промптов. update.sh удалил бы файлы → runner упал бы с «Command file
+# not found». CI не ловил: smoke-test проверял runner только с несуществующим
+# сценарием, не с реальными.
+log "[10/11] deprecated_runner_usage — deprecated_files не содержат промптов, которые runner ещё вызывает..."
+DEPRECATED_RUNNER_VIOLATIONS=0
+RUNNER="roles/strategist/scripts/strategist.sh"
+if [ -f update-manifest.json ] && [ -f "$RUNNER" ] && command -v python3 >/dev/null 2>&1; then
+    # Извлекаем пути deprecated strategist prompts из манифеста
+    DEPRECATED_PROMPTS=$(python3 -c "
+import json, sys
+try:
+    m = json.load(open('update-manifest.json'))
+    paths = [e['path'] for e in m.get('deprecated_files', []) if '/strategist/prompts/' in e.get('path', '')]
+    print('\n'.join(paths))
+except Exception:
+    pass
+" 2>/dev/null)
+    # Сравниваем с командами run_claude в runner'е
+    if [ -n "$DEPRECATED_PROMPTS" ]; then
+        while IFS= read -r cmd; do
+            [ -z "$cmd" ] && continue
+            prompt_path="roles/strategist/prompts/${cmd}.md"
+            if echo "$DEPRECATED_PROMPTS" | grep -qF "$prompt_path"; then
+                log "  ❌ CONFLICT: $prompt_path помечен deprecated, но runner вызывает run_claude \"$cmd\""
+                DEPRECATED_RUNNER_VIOLATIONS=$((DEPRECATED_RUNNER_VIOLATIONS + 1))
+            fi
+        done < <(grep -oE 'run_claude\s+"[^"]+"' "$RUNNER" 2>/dev/null | grep -oE '"[^"]+"' | tr -d '"' | sort -u)
+    fi
+    if [ "$DEPRECATED_RUNNER_VIOLATIONS" -eq 0 ]; then
+        log "  ✅ PASS"
+    else
+        log "  ❌ FAIL ($DEPRECATED_RUNNER_VIOLATIONS промптов deprecated, но runner их вызывает — update.sh удалит файлы, runner упадёт)"
+        VIOLATIONS=$((VIOLATIONS + DEPRECATED_RUNNER_VIOLATIONS))
+    fi
+else
+    log "  ⊘ SKIP (нет update-manifest.json, $RUNNER или python3)"
+fi
+log ""
+
+# === Detector 11: prompt bash-script cross-references ===
+# Checks that scripts referenced as `bash "…/scripts/<name>.sh"` in role prompts
+# exist inside FMT/scripts/. Missing scripts = runtime failure for users on fresh install.
+log "[11/11] prompt_script_refs — bash-вызовы scripts/*.sh в промптах существуют в FMT/scripts/..."
+PROMPT_SCRIPT_VIOLATIONS=0
+if command -v grep >/dev/null 2>&1; then
+    while IFS= read -r script_name; do
+        [ -z "$script_name" ] && continue
+        if [ ! -f "scripts/$script_name" ]; then
+            log "  ⚠ WARN: roles/.../prompts/*.md ссылается на scripts/$script_name — файл отсутствует в FMT/scripts/"
+            PROMPT_SCRIPT_VIOLATIONS=$((PROMPT_SCRIPT_VIOLATIONS + 1))
+        fi
+    done < <(
+        grep -rh 'bash[[:space:]]\+.*scripts/[^[:space:]"'\'']*\.sh' roles/*/prompts/*.md 2>/dev/null \
+            | grep -oE 'scripts/[^[:space:]/]+\.sh' \
+            | sed 's|scripts/||' \
+            | sort -u
+    )
+    if [ "$PROMPT_SCRIPT_VIOLATIONS" -eq 0 ]; then
+        log "  ✅ PASS"
+    else
+        log "  ❌ FAIL ($PROMPT_SCRIPT_VIOLATIONS script(s) referenced in prompts but absent from FMT/scripts/ — add via script-promote.sh or use if-exists guard)"
+        VIOLATIONS=$((VIOLATIONS + PROMPT_SCRIPT_VIOLATIONS))
+    fi
+else
+    log "  ⊘ SKIP (grep недоступен)"
 fi
 log ""
 

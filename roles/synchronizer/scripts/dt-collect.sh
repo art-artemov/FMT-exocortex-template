@@ -470,14 +470,18 @@ def parse_mult_section_budget(filepath):
     with open(filepath) as f:
         content = f.read()
     patterns = [
-        r'закрыт[^|]*?\|\s*~?\s*(\d+(?:\.\d+)?)\s*h',              # table-cell format
+        r'закрыт[^|]*?\|\s*\*{0,2}~?\s*(\d+(?:\.\d+)?)\s*h',       # table-cell format (optional ** before value)
         r'Бюджет\s+закрыт[:\*\s]+~?\s*(\d+(?:\.\d+)?)\s*h',        # bullet/bold format
     ]
     for line in content.split('\\n'):
         if 'Бюджет закрыт' not in line:
             continue
-        # Skip header row with 'День | WakaTime | Бюджет закрыт | Мультипликатор'
-        if 'WakaTime' in line and 'Мультипликатор' in line:
+        # Skip table header rows only (e.g. '| День | WakaTime | Бюджет закрыт | Мультипликатор |')
+        # Inline day-summary lines like '**WakaTime:** ... | **Бюджет закрыт:** ~27h | **Мультипликатор:**...'
+        # must NOT be skipped — they ARE the data.
+        if re.search(r'\|\s*День\s*\|', line):
+            continue
+        if 'WakaTime' in line and 'Мультипликатор' in line and '**Бюджет закрыт' not in line:
             continue
         for pat in patterns:
             m = re.search(pat, line)
