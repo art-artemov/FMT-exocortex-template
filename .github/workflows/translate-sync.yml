@@ -152,7 +152,7 @@ jobs:
     needs: sync
     runs-on: ubuntu-latest
     env:
-      TARGET_REPO: iwesys/FMT-exocortex-template-en
+      TARGET_REPO: iwesys/iwe-template
     steps:
       - name: Generate iwesys installation token
         id: iwesys_token
