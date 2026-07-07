@@ -73,6 +73,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
+
 ## [Unreleased] — обновлено 2026-07-07
 
 ### Added
@@ -92,6 +93,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `eb2e1fe` fix(WP-7/SP1): R15 (accept/reject/defer) — только живой пилот, не агент
 - `8562439` fix(translate): strip <body> markers unconditionally, detect output truncation
 - `791df86` fix(translate-sync): stop rsync --delete mirror from wiping en-draft
 - `702244e` fix(translate): exclude blank fill-in templates from auto-translate
