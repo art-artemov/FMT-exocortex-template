@@ -1032,6 +1032,7 @@
     "scripts/create-skill.sh",
     "scripts/create-wp.sh",
     "scripts/day-close.sh",
+    "scripts/day-open-pipeline.sh",
     "scripts/day-open-scaffold.sh",
     "scripts/day-open-smoke-extended.sh",
     "scripts/day-open-smoke.sh",

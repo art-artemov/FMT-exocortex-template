@@ -75,9 +75,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-07-08
 
-Спасибо всем, кто сообщил об issue #229 и #228 — без вашего внимания к деталям обновление шаблона продолжало бы тихо перезаписывать личные правки в memory-файлах, а лимит на объём горячей памяти оставался бы превышен у каждого нового пилота из коробки.
+## [Unreleased] — обновлено 2026-07-08
 
 ### Added
 
@@ -91,6 +90,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `bdb2c9b` docs(changelog): thank users for #229/#228 reports, sync Unreleased section
 - `5b72787` rename(canon-sync): target repo iwesys/FMT-exocortex-template-en -> iwesys/iwe-template
 - `5bce5e3` revert(canon-sync): drop MimEcoSys mirror job — wrong repo scope
 - `b3ba993` refactor(translate): drop openai SDK dependency, call OpenRouter directly
@@ -122,8 +122,6 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - `0b5e140` fix(extractor): guard против запуска сырого файла шаблона + правка примеров
 - `b4d08a2` fix(v0.35.5): orphan-detection TypeError + DS-strategy validator + root detection (#214 #215)
 - `212fa2f` fix(setup): include rules-lazy in dry-run and section message
-- `b7d75a8` fix(template): verify-template-integrity mirrors CI contract+smoke jobs
-- `0200a93` fix(template): close manifest drift + setup/update rules-lazy gap, wire parity gate
 
 
 ## [0.35.5] — 2026-06-30
