@@ -74,10 +74,15 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-07-07
+
+## [Unreleased] — обновлено 2026-07-08
+
+Спасибо всем, кто сообщил об issue #229 и #228 — без вашего внимания к деталям обновление шаблона продолжало бы тихо перезаписывать личные правки в memory-файлах, а лимит на объём горячей памяти оставался бы превышен у каждого нового пилота из коробки.
 
 ### Added
 
+- `c428393` feat(canon-sync): add iwesys/MimEcoSys publish jobs to translate-sync workflow
+- `a100fa6` feat: promote iwe-bug-report.sh to platform (WP-5 sub-#3)
 - `529e165` feat(wp-448-ф7): промоция TPF-рамки — 7 артефактов процессного слоя IWE
 - `77e856c` feat(wp-415): sync glossary from iwe-translation-engine (18/78/30 tiers)
 - `acf10e4` feat(wp-415): automate RU→EN translation sync with tier-based delivery tests
@@ -86,6 +91,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `5b72787` rename(canon-sync): target repo iwesys/FMT-exocortex-template-en -> iwesys/iwe-template
+- `5bce5e3` revert(canon-sync): drop MimEcoSys mirror job — wrong repo scope
 - `b3ba993` refactor(translate): drop openai SDK dependency, call OpenRouter directly
 - `901103d` docs: python3 in maintaining-skills snippets
 - `c25790a` refactor(translate): switch provider to OpenRouter (reuse existing key, mirror enrich-glossary client)
@@ -93,6 +100,9 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `726fa80` fix(ci): restore scripts/iwe-bug-report.sh dropped from manifest by 7ae267a
+- `7ae267a` fix(#229,#228): protect owner:user memory files from stale-repair, add hot-budget validator
+- `c828396` fix(canon-sync): persist-credentials false on en-draft checkout
 - `eb2e1fe` fix(WP-7/SP1): R15 (accept/reject/defer) — только живой пилот, не агент
 - `8562439` fix(translate): strip <body> markers unconditionally, detect output truncation
 - `791df86` fix(translate-sync): stop rsync --delete mirror from wiping en-draft
