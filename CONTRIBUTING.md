@@ -72,6 +72,8 @@ Before contributing, understand how IWE is structured:
 
 **Key rule:** User customizations go in `extensions/` and `params.yaml`, never in platform files. This ensures `update.sh` works cleanly.
 
+> Pilot-facing version (Russian, no contribution context assumed): [docs/onboarding/architecture-layers.md](docs/onboarding/architecture-layers.md).
+
 ---
 
 ## Promoting a Practice (keep the guide in sync)
