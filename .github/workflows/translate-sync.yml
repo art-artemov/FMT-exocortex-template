@@ -23,6 +23,7 @@ on:
       - "LICENSE"
       - "CODEOWNERS"
       - "CITATION.cff"
+      - "CHANGELOG.md"
 
 concurrency:
   group: translate-sync-${{ github.ref }}
@@ -101,13 +102,66 @@ jobs:
       - name: Copy verbatim (non-translated) files to en-draft
         # LICENSE/CODEOWNERS/CITATION.cff are legal/machine-readable text —
         # publish as-is (WP-401 Ф5.2), never through the LLM translation path.
+        # CHANGELOG.md added 2026-07-10: entries are terse commit-style lines,
+        # already almost entirely English — verbatim avoids both an LLM-translation
+        # policy call on Category G (still MVP manual_adapt) and the risk of
+        # mistranslating a technical log, while fixing the Version badge on iwesys.
         if: always() && steps.en_draft.outcome == 'success'
         run: |
-          for f in LICENSE CODEOWNERS CITATION.cff; do
+          for f in LICENSE CODEOWNERS CITATION.cff CHANGELOG.md; do
             if [ -f "$f" ]; then
               cp "$f" "../en-draft/$f"
             fi
           done
+
+      - name: Write EN-only community redirect stubs to en-draft
+        # iwesys/IWE is a read-only projection (WP-415 Decision anchor #4: RU
+        # is the working draft source-of-truth) — these are NOT translated from
+        # a RU counterpart because their content differs by design (the RU repo's
+        # own CONTRIBUTING.md/templates invite real contribution; these redirect
+        # to it). Generated fresh every run so they can't drift from the source
+        # repo URL below. Closes the contributing/issue_template/pull_request_template
+        # gaps in GitHub's community-profile check (WP-401 Ф5.4).
+        if: always() && steps.en_draft.outcome == 'success'
+        run: |
+          SRC="https://github.com/TserenTserenov/FMT-exocortex-template"
+          mkdir -p "../en-draft/.github/ISSUE_TEMPLATE"
+
+          cat > "../en-draft/CONTRIBUTING.md" <<EOF
+          # Contributing to IWE
+
+          This repository is an automatically published English projection of the
+          working source. It is not a place to open pull requests.
+
+          - **Report a bug or request a feature:** open an issue on the source
+            repository — [$SRC/issues]($SRC/issues)
+          - **Contribute code or docs:** fork [$SRC]($SRC) (the working source, in
+            Russian) and open a pull request there.
+
+          See the source repository's [CONTRIBUTING.md]($SRC/blob/main/CONTRIBUTING.md)
+          for the full guide.
+          EOF
+
+          cat > "../en-draft/.github/ISSUE_TEMPLATE/redirect.md" <<EOF
+          ---
+          name: Please file this on the source repository
+          about: This repo is a read-only English projection
+          title: ''
+          labels: ''
+          assignees: ''
+          ---
+
+          This repository is an automatically published projection and does not
+          accept issues directly.
+
+          Please open your issue on the source repository instead: $SRC/issues
+          EOF
+
+          cat > "../en-draft/.github/PULL_REQUEST_TEMPLATE.md" <<EOF
+          This repository is an automatically published English projection of
+          [$SRC]($SRC). Pull requests here will not be merged — please open your
+          PR against the source repository instead.
+          EOF
 
       - name: Formal + content delivery checks (Tier-1 fail / Tier-2-3 warn)
         id: delivery_checks

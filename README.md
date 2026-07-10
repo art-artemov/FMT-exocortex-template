@@ -5,6 +5,8 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(WSL)-lightgrey.svg)]()
 [![EN sync](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/TserenTserenov/FMT-exocortex-template/en-draft/badge-data.json)](https://github.com/TserenTserenov/FMT-exocortex-template/tree/en-draft)
 
+<img src="https://raw.githubusercontent.com/TserenTserenov/FMT-exocortex-template/main/docs/assets/orz-cycle.svg" alt="Open, Work, Close — the same cycle at every scale: session, day, week" width="100%">
+
 > Операционная система интеллектуальной работы. Ваши знания. Ваш опыт. Ваша среда — работает поверх любой AI-платформы.
 >
 > **Тип репозитория:** `Base/Форматы` (FMT) — шаблон-дистрибутив. После форка становится вашей персональной средой с ИИ-агентами.
