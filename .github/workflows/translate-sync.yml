@@ -113,30 +113,40 @@ jobs:
               cp "$f" "../en-draft/$f"
             fi
           done
+          # Hero image for the README: published locally so the EN page
+          # does not fetch assets from the RU repo (WP-401 Ф5, 2026-07-10).
+          if [ -f "docs/assets/orz-cycle.svg" ]; then
+            mkdir -p "../en-draft/docs/assets"
+            cp "docs/assets/orz-cycle.svg" "../en-draft/docs/assets/orz-cycle.svg"
+          fi
 
-      - name: Rewrite EN-side README links that have no EN target
-        # The RU README's language switcher and links to files outside the
-        # published set arrive verbatim through translation and 404 on the
-        # projection (found by a live link audit, WP-401 Ф5, 2026-07-10).
-        # Keyed on URLs (not anchor text) so retranslation wording can't
+      - name: Strip RU-source references from the EN-side README
+        # Pilot decision (WP-401 Ф5, 2026-07-10): the EN distribution must
+        # not reference the Russian source at all — it is a self-contained
+        # product page, not a projection banner. Lines are removed (not
+        # rewritten) and keyed on URLs/paths so retranslation wording can't
         # break the match; every sed is idempotent.
+        # ONTOLOGY.md is bilingual by design (RU term column + EN term
+        # column) — translating it would destroy the RU→EN mapping and
+        # trips the tier-1 glossary check (learned from failed run
+        # 29099359739), so its mentions are dropped rather than published.
         if: always() && steps.en_draft.outcome == 'success'
         run: |
-          SRC="https://github.com/TserenTserenov/FMT-exocortex-template"
           R="../en-draft/README.md"
           if [ -f "$R" ]; then
-            # Language switcher: an EN projection must point back to the RU
-            # source, not to itself (current RU target) or to a file that is
-            # not published (legacy target).
-            sed -i "s|\[English version\](https://github.com/iwesys/IWE)|[Russian-language source]($SRC)|" "$R"
-            sed -i "s|\[English version\](README.en.md)|[Russian-language source]($SRC)|" "$R"
-            # Docs referenced by the README but not in the published set.
-            # ONTOLOGY.md is bilingual by design (RU term column + EN term
-            # column) — translating it would destroy the RU→EN mapping and
-            # trips the tier-1 glossary check, so it stays RU-source-only
-            # (learned from failed run 29099359739).
-            sed -i "s|(extensions/README.md)|($SRC/blob/main/extensions/README.md)|" "$R"
-            sed -i "s|(ONTOLOGY.md)|($SRC/blob/main/ONTOLOGY.md)|" "$R"
+            # Language switcher (both historical targets).
+            sed -i '\|\[English version\](https://github.com/iwesys/IWE)|d' "$R"
+            sed -i '\|\[English version\](README.en.md)|d' "$R"
+            # EN-sync badge points at the RU repo's en-draft branch.
+            sed -i '\|en-draft/badge-data.json|d' "$R"
+            # Hero image: served from the local copy (published verbatim
+            # below), not from the RU repo's raw URL.
+            sed -i 's|https://raw.githubusercontent.com/TserenTserenov/FMT-exocortex-template/main/docs/assets/orz-cycle.svg|docs/assets/orz-cycle.svg|' "$R"
+            # Docs that exist only on the RU side: drop the referencing lines.
+            sed -i '\|ONTOLOGY.md|d' "$R"
+            sed -i '\|extensions/README.md|d' "$R"
+            # Pack deep-links lead to Russian-language repos.
+            sed -i '\|github.com/TserenTserenov/PACK-digital-platform|d' "$R"
           fi
 
       - name: Write EN-only community redirect stubs to en-draft
