@@ -1,7 +1,7 @@
 ---
 name: verify
 description: Верификация артефакта по эталону из Pack. Загружает роль VR.R.001 (Верификатор) с context isolation — проверяет результат, а не процесс создания.
-argument-hint: "[code|archgate|capture|wp|chain|adversarial|subsection|section|guide|auto] [путь или id]"
+argument-hint: "[code|archgate|capture|pack|wp|chain|adversarial|subsection|section|guide|auto] [путь или id]"
 version: 1.0.0
 layer: L1
 status: active
