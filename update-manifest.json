@@ -339,10 +339,10 @@
       "path": ".claude/skills/verify/verify-fpf-subsection.md"
     },
     {
-      "path": ".claude/skills/verify/verify-pedagogy-subsection.md"
+      "path": ".claude/skills/verify/verify-pack-adequacy-subsection.md"
     },
     {
-      "path": ".claude/skills/verify/verify-pack-adequacy-subsection.md"
+      "path": ".claude/skills/verify/verify-pedagogy-subsection.md"
     },
     {
       "path": ".claude/skills/w-reflection/SKILL.md"
@@ -445,6 +445,9 @@
     },
     {
       "path": "docs/agent-coordination-manifest.md"
+    },
+    {
+      "path": "docs/assets/orz-cycle.svg"
     },
     {
       "path": "docs/hindsight-setup.md"
@@ -1005,7 +1008,6 @@
   "excluded_paths": [
     "AGENTS-agent-blocks.md",
     "docs/BROWSER-CI-TEMPLATE.md",
-    "docs/assets/orz-cycle.svg",
     "docs/developer/README.md",
     "docs/developer/card-template.md",
     "docs/developer/developer-guide.md",
