@@ -17,6 +17,12 @@ on:
     paths:
       - "README.md"
       - "docs/**"
+      - "CODE_OF_CONDUCT.md"
+      - "SECURITY.md"
+      - "PRIVACY.md"
+      - "LICENSE"
+      - "CODEOWNERS"
+      - "CITATION.cff"
 
 concurrency:
   group: translate-sync-${{ github.ref }}
@@ -91,6 +97,17 @@ jobs:
           # and in delivery checks; the hard no-Cyrillic gate belongs to
           # the iwesys publish stage (Phase V4), not to this sync.
           if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then exit "$rc"; fi
+
+      - name: Copy verbatim (non-translated) files to en-draft
+        # LICENSE/CODEOWNERS/CITATION.cff are legal/machine-readable text —
+        # publish as-is (WP-401 Ф5.2), never through the LLM translation path.
+        if: always() && steps.en_draft.outcome == 'success'
+        run: |
+          for f in LICENSE CODEOWNERS CITATION.cff; do
+            if [ -f "$f" ]; then
+              cp "$f" "../en-draft/$f"
+            fi
+          done
 
       - name: Formal + content delivery checks (Tier-1 fail / Tier-2-3 warn)
         id: delivery_checks

@@ -66,6 +66,9 @@ categories:
     glossary: translation/glossary-v0.1.csv
     files:
       - README.md
+      - CODE_OF_CONDUCT.md
+      - SECURITY.md
+      - PRIVACY.md
       - docs/
     # Blank fill-in templates: frontmatter list values are station
     # identifiers, not prose — the single-key-value translate path can't

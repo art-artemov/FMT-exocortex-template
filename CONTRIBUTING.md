@@ -157,9 +157,7 @@ See [extensions/README.md](extensions/README.md) for the full extension API, nam
 
 ## Code of Conduct
 
-- Be respectful and constructive
-- Focus on the work, not the person
-- Help others learn — IWE is about amplifying thinking, including in collaboration
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Be respectful and constructive, focus on the work rather than the person, and help others learn — IWE is about amplifying thinking, including in collaboration.
 
 ---
 
