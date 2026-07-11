@@ -442,8 +442,15 @@ render_repo_issues() {
   if [ -f "$cache" ] && [ -n "$(find "$cache" -mmin -60 2>/dev/null)" ]; then
     cat "$cache"; return
   fi
-  if ! gh auth status >/dev/null 2>&1; then
-    echo "_gh не авторизован — обзор задач пропущен (проверьте \`gh auth login\`)._"; return
+  # issue #241 (остаточная дыра): gh auth status делает сетевой запрос к GitHub API
+  # для валидации токена — на WSL2 с проблемной сетью может зависнуть тем же классом
+  # бага, что уже закрыт для gh issue list ниже. run_bounded не пробрасывает exit-код
+  # обёрнутой команды (возвращает статус cat/rm) — поэтому результат передаём через
+  # маркер в stdout, а не через "if ! run_bounded ...".
+  local auth_ok
+  auth_ok=$(run_bounded "${ISSUE_SWEEP_TIMEOUT:-10}" bash -c "gh auth status >/dev/null 2>&1 && echo ok")
+  if [ "$auth_ok" != "ok" ]; then
+    echo "_gh не авторизован или GitHub недоступен — обзор задач пропущен (проверьте \`gh auth login\` и сеть)._"; return
   fi
   local since
   since=$(date -v-2d +%Y-%m-%d 2>/dev/null || date -d "2 days ago" +%Y-%m-%d 2>/dev/null)
@@ -684,9 +691,13 @@ INCEOF
   fi
 
   # update.sh check (FMT)
+  # issue #241 (остаточная дыра): вызов делает сетевой ls-remote/fetch внутри —
+  # без тайм-бокса тот же класс зависания на WSL2 воспроизводится даже после
+  # фикса a3d0b95 (тот фикс закрыл только gh issue list ниже по heredoc).
   if [ -d "$IWE/FMT-exocortex-template" ]; then
     local upd_status
-    upd_status=$(cd "$IWE/FMT-exocortex-template" && bash update.sh --check 2>&1 | grep -oE '[0-9]+ обновлен|нет обновлен|актуал' | head -1)
+    upd_status=$(run_bounded "${ISSUE_SWEEP_TIMEOUT:-10}" bash -c \
+      "cd '$IWE/FMT-exocortex-template' && bash update.sh --check 2>&1 | grep -oE '[0-9]+ обновлен|нет обновлен|актуал' | head -1")
     echo "| Update IWE | 🟢 | ${upd_status:-проверено} |"
   fi
 
@@ -694,7 +705,7 @@ INCEOF
   for repo in FPF SPF ZP; do
     local d="$IWE/$repo"
     if [ -d "$d/.git" ]; then
-      git -C "$d" fetch --quiet 2>/dev/null
+      run_bounded "${ISSUE_SWEEP_TIMEOUT:-10}" git -C "$d" fetch --quiet >/dev/null 2>&1
       local behind
       behind=$(git -C "$d" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
       if [ "$behind" -gt 0 ]; then
@@ -906,8 +917,12 @@ render_compact_dashboard() {
   # Светофор — критические позиции
   echo "**IWE за ночь:**"
   echo "  Scheduler: $(launchctl list 2>/dev/null | grep -qE 'iwe\.(scheduler|feedback)' && echo '🟢' || echo '🔴 не запущен')"
-  local fpf_status
-  if [ -d "$IWE/FPF/.git" ] && git -C "$IWE/FPF" fetch --quiet 2>/dev/null; then
+  local fpf_status fpf_fetch_ok
+  # issue #241 (остаточная дыра): та же незащищённая git fetch, тот же класс зависания.
+  # run_bounded не пробрасывает exit-код — результат передаём через маркер в stdout.
+  fpf_fetch_ok=$([ -d "$IWE/FPF/.git" ] && run_bounded "${ISSUE_SWEEP_TIMEOUT:-10}" \
+    bash -c "git -C '$IWE/FPF' fetch --quiet 2>/dev/null && echo ok")
+  if [ "$fpf_fetch_ok" = "ok" ]; then
     local behind; behind=$(git -C "$IWE/FPF" rev-list --count HEAD..origin/main 2>/dev/null || echo "?")
     fpf_status=$( [ "$behind" = "0" ] && echo "🟢" || echo "🟡 новых: $behind" )
   else
