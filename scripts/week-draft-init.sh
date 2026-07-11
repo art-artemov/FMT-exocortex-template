@@ -78,7 +78,9 @@ DOW_RU=("Пн" "Вт" "Ср" "Чт" "Пт" "Сб" "Вс")
 TABLE_ROWS=""
 for i in 0 1 2 3 4 5 6; do
   day_date=$(date -v+${i}d -j -f %Y-%m-%d "$MON_DATE" +%Y-%m-%d 2>/dev/null || date -d "$MON_DATE + $i days" +%Y-%m-%d)
-  day_num=$(date -j -f %Y-%m-%d "$day_date" +%d 2>/dev/null | sed 's/^0//' || date -d "$day_date" +%d | sed 's/^0//')
+  # issue #245: `||` за пайпом на sed не срабатывал, если падал только `date -j` (GNU date) —
+  # sed на пустом вводе завершается успешно, поэтому фолбэк никогда не запускался.
+  day_num=$(date -j -f %Y-%m-%d "$day_date" +%d 2>/dev/null || date -d "$day_date" +%d 2>/dev/null); day_num=${day_num#0}
   TABLE_ROWS="${TABLE_ROWS}| ${DOW_RU[$i]} ${day_num} | | | | | |"$'\n'
 done
 
