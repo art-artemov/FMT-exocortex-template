@@ -234,9 +234,16 @@ fi
 echo "=== 2. LLM Proxy healthcheck ==="
 PROXY_HEALTH=$(curl -s "${LLM_PROXY_URL}/v1/health" 2>/dev/null | grep -q "ok" && echo "ok" || echo "fail")
 if [ "$PROXY_HEALTH" != "ok" ]; then
-  echo "  Proxy not running. Starting via launcher (loads OPENROUTER_API_KEY from secrets)..."
-  bash "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/llm-proxy-launcher.sh" "$PROXY_PORT" &
-  PROXY_PID=$!
+  if lsof -ti :"$PROXY_PORT" >/dev/null 2>&1; then
+    # Port already held by another process — likely a live proxy the check above
+    # missed on a transient blip. Spawning here would just crash into "Address
+    # already in use" and spam the error log without helping (found 2026-07-11).
+    echo "  Health check failed but port $PROXY_PORT is already held — not spawning a second proxy, just waiting."
+  else
+    echo "  Proxy not running. Starting via launcher (loads OPENROUTER_API_KEY from secrets)..."
+    bash "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/llm-proxy-launcher.sh" "$PROXY_PORT" &
+    PROXY_PID=$!
+  fi
   # Retry up to 10 times (20s total) — launcher needs extra time to source secrets + import
   for _i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 2

@@ -84,14 +84,22 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-07-11
 
-Спасибо VxxxlBxxxxv, AVNechaev, alexmetasky, den317 и maxborovik за репорты этой волны (#230, #232-233, #235-246). issue #234 (Day Close token-discipline model, за него отдельное спасибо maxborovik) — принят к рассмотрению, реализация отложена в РП7 отдельной фазой.
+## [Unreleased] — обновлено 2026-07-11
 
 ### Added
 
+- `1d66115` feat(docs): принцип резидентности персональных данных (WP-475 Ф4)
 - `e919c04` feat(update.sh): add --fast check mode, version-only comparison (#230)
-- `fed2e79` feat(wp401): governance-файлы публичной витрины (CODE_OF_CONDUCT/SECURITY/PRIVACY/CODEOWNERS/CITATION.cff) + доставка в iwesys
+- `34bcc57` feat(en-projection): community channels live on iwesys/IWE itself (pilot decision)
+- `7eeee9e` feat(en-projection): EN distribution is self-contained — no RU-source references (pilot decision)
+- `c8fcea1` feat(wp474/f5-f6): dry-run фиксы + assembly через доменные источники
+- `dfb4a48` feat(wp401): визуальный слой README + доставка CHANGELOG + EN-редирект контрибуций (Ф5.4/Ф5.6)
+- `fed2e79` feat(wp401): governance-файлы публичной витрины + доставка в iwesys (Ф5.1-Ф5.2)
+- `3c4d202` feat(wp474/f4): реализовать verify-pack-adequacy-subsection + подключить к /verify и pack-creator
+- `0a1de9a` feat(pack-creator,pack-new): seed/mature maturity marker + move .spf-state.yaml out of Pack tree
+- `0fbfbba` feat(pack-new): provisional-имя Pack + PFAD-lite decision record (WP-474 Ф2)
+- `2befada` feat(pack-new): собирать источники домена до имени, не после (SoTA-Sheet-lite)
 - `2381d7f` feat(wp-7): promote 6 day-open scripts + fix scaffold drift + seed new-user scripts
 - `927808b` feat(wp-7): promote 6 day-open scripts + fix scaffold drift + seed new-user scripts
 - `1c71664` feat: promote day-open-pipeline.sh entry point (WP-7 FMT-PROMOTE-DAYOPEN1)
@@ -105,8 +113,12 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `e1c1924` refine(note-review-d6): уточнить текст правила (не существует вместо пуст, дальние сроки → WeekPlan)
+- `0fafee4` docs(changelog): sync Unreleased section — FMT issues #230-246 batch
+- `831a992` docs(pack-creation): синхронизация с WP-474 Ф1-Ф6 — SoTA на Шаге 1.5, Kind/термины, /verify pack [wp474]
+- `1ef78f4` docs(changelog): sync Unreleased section (governance-файлы, jq-фикс, rename iwe-template->IWE)
 - `65e5534` rename(canon-sync): target repo iwesys/iwe-template -> iwesys/IWE
-- `e4a23f0` fix(wp415): jq null-guard for per-commit added/modified/removed in translate-sync
+- `eba00c7` docs: онбординг-страница про три слоя IWE (L1/L2/L3)
 - `039ccf8` chore(hygiene): untrack .DS_Store, добавить в .gitignore
 - `bdb2c9b` docs(changelog): thank users for #229/#228 reports, sync Unreleased section
 - `5b72787` rename(canon-sync): target repo iwesys/FMT-exocortex-template-en -> iwesys/iwe-template
@@ -118,6 +130,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `86cf080` fix(update.sh): author_mode-guard для repair_pass()/Step 6 L1-паттерна — устраняет клоббер 66 файлов
+- `448daac` fix(note-review): страховка от воскрешения уже закрытого DayPlan (D6 РП-7)
 - `f37d93a` fix(exocortex): back up and restore extensions/, matching DATA-POLICY.md promise (#235)
 - `b3b6a37` fix(week): remove phantom auto-publisher claim, fix day_num GNU-date fallback (#245)
 - `a3d0b95` fix(day-open-scaffold): bound gh issue list calls with portable timeout (#241)
@@ -126,10 +140,24 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - `3647e57` fix(memory-active-wp-update): fall back to nested FMT-exocortex-template/ layout (#242)
 - `2b7109c` fix(dt-collect): read scheduler/reports, not scheduler/scheduler-reports (#243)
 - `fa23ff0` fix(hooks): scope destructive-guard force detection to git push segment (#233)
-- `d234799` fix(manifest): restore executable bit for shell scripts (#239)
 - `b4a3fa9` fix(perms): restore executable bit on .claude/lib/frontmatter.sh
+- `d234799` fix(manifest): restore executable bit for shell scripts (#239)
 - `0f15820` fix(strategy): avoid false calendar and issue defaults in day plan (#238)
 - `6a7a7b0` fix(hooks): harden dry-run gate git and cleanup handling (#237)
+- `261c5a0` fix(update.sh): не перезаписывать .claude/settings.json при repair/update — только сеять при отсутствии
+- `3b00406` fix(day-close): postcondition 9a — xargs ломал проверку на пробеле в имени DayPlan
+- `189b62a` fix(en-projection): install command on the EN side forks iwesys/IWE, not the RU source
+- `a92471a` fix(en-projection): ONTOLOGY.md is bilingual by design — rewrite link instead of translating
+- `b8f8d22` fix(en-projection): heal 3 broken README links on iwesys/IWE found by live audit
+- `857cdad` fix(ontology): IWE abbreviation — Intellectual Work Environment (align with distinctions.md and README H1)
+- `f3111b2` fix(verify): тип pack в argument-hint — описание скилла не отставало от таблицы типов [wp474]
+- `e5c8b0d` fix(manifest): перегенерация generate-manifest.sh — алфавитный порядок verify-* + orz-cycle.svg в files [wp474]
+- `e4a23f0` fix(wp415): jq null-guard for per-commit added/modified/removed in translate-sync
+- `a0ea7c5` fix(pack-new,pack-creator): устранить дефекты финализации + ретроактивная дыра из Ф2 (WP-474 Ф3)
+- `0132fa2` fix(pack-new): устранить дефекты процедуры финализации имени Pack (WP-474 Ф2)
+- `4dea62e` fix(translate-sync): publish single attributed commits to iwesys, not en-draft's full history
+- `040012c` fix(translate-sync): handle null github.event.commits on workflow_dispatch
+- `1113cd0` fix(day-open): promote WP-5 VDV correction — snapshot refresh ordering + drop dead report step
 - `41c20fe` fix(translate-sync): attribute EN commits to the human source author, not a bot
 - `726fa80` fix(ci): restore scripts/iwe-bug-report.sh dropped from manifest by 7ae267a
 - `7ae267a` fix(#229,#228): protect owner:user memory files from stale-repair, add hot-budget validator
@@ -153,6 +181,8 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - `0b5e140` fix(extractor): guard против запуска сырого файла шаблона + правка примеров
 - `b4d08a2` fix(v0.35.5): orphan-detection TypeError + DS-strategy validator + root detection (#214 #215)
 - `212fa2f` fix(setup): include rules-lazy in dry-run and section message
+- `b7d75a8` fix(template): verify-template-integrity mirrors CI contract+smoke jobs
+- `0200a93` fix(template): close manifest drift + setup/update rules-lazy gap, wire parity gate
 
 
 ## [0.35.5] — 2026-06-30
