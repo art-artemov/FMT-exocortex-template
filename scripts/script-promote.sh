@@ -108,6 +108,9 @@ fi
 # Smoke-тест: запустить в изолированном env с шаблонными переменными
 # Цель: убедиться что скрипт не падает с exit 1 при чужом окружении
 # Используем --help или пустой запуск — ожидаем exit 0 или exit 1 только от validation
+# 5s alarm (perl, портативно — тот же приём, что в kimi-peer-adapter.sh): демон-скрипты
+# (while true; do ...; done без обработки --help) иначе висят здесь бесконечно —
+# нашлось на kimi-session-watchdog.sh, script-promote.sh завис на смоук-тесте.
 echo "   smoke-test с шаблонным окружением..."
 smoke_result=0
 env -i \
@@ -115,17 +118,23 @@ env -i \
     IWE="/tmp/iwe-smoke-user/IWE" \
     IWE_GOVERNANCE_REPO="DS-strategy" \
     PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin" \
-    bash "$tmp_file" --help > /dev/null 2>&1 || smoke_result=$?
+    perl -e 'alarm 5; exec @ARGV' -- bash "$tmp_file" --help > /dev/null 2>&1 || smoke_result=$?
 
 # exit 0 = OK, exit 1 = validation error (приемлемо — скрипт без аргументов)
 # exit 127 = команда не найдена (зависимость сломана) — блокер
+# exit 142 = SIGALRM (perl alarm) — скрипт не завершился за 5с, похоже на демон
+# с циклом while true; это не баг зависимости, просто пропускаем дальше.
 if [[ $smoke_result -eq 127 ]]; then
     rm -rf "$tmp_dir"
     echo "❌ Smoke-тест: exit 127 — скрипт не может запуститься в чужом окружении." >&2
     echo "   Проверь зависимости (python3, jq, и т.п.) и абсолютные пути." >&2
     exit 1
 fi
-echo "   smoke-test: OK (exit $smoke_result)"
+if [[ $smoke_result -eq 142 ]]; then
+    echo "   smoke-test: таймаут 5с (похоже на демон с бесконечным циклом, не блокер)"
+else
+    echo "   smoke-test: OK (exit $smoke_result)"
+fi
 
 # Скопировать в FMT
 cp "$tmp_file" "$DEST"
