@@ -84,10 +84,13 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-07-10
+## [Unreleased] — обновлено 2026-07-11
+
+Спасибо VxxxlBxxxxv, AVNechaev, alexmetasky, den317 и maxborovik за репорты этой волны (#230, #232-233, #235-246). issue #234 (Day Close token-discipline model, за него отдельное спасибо maxborovik) — принят к рассмотрению, реализация отложена в РП7 отдельной фазой.
 
 ### Added
 
+- `e919c04` feat(update.sh): add --fast check mode, version-only comparison (#230)
 - `fed2e79` feat(wp401): governance-файлы публичной витрины (CODE_OF_CONDUCT/SECURITY/PRIVACY/CODEOWNERS/CITATION.cff) + доставка в iwesys
 - `2381d7f` feat(wp-7): promote 6 day-open scripts + fix scaffold drift + seed new-user scripts
 - `927808b` feat(wp-7): promote 6 day-open scripts + fix scaffold drift + seed new-user scripts
@@ -115,6 +118,18 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `f37d93a` fix(exocortex): back up and restore extensions/, matching DATA-POLICY.md promise (#235)
+- `b3b6a37` fix(week): remove phantom auto-publisher claim, fix day_num GNU-date fallback (#245)
+- `a3d0b95` fix(day-open-scaffold): bound gh issue list calls with portable timeout (#241)
+- `e0f5031` fix(strategy-session): wire load-extensions before/after hooks (#236)
+- `cddc7aa` fix(seed): align WP-REGISTRY.md schema with create-wp.sh's 6-column output (#232)
+- `3647e57` fix(memory-active-wp-update): fall back to nested FMT-exocortex-template/ layout (#242)
+- `2b7109c` fix(dt-collect): read scheduler/reports, not scheduler/scheduler-reports (#243)
+- `fa23ff0` fix(hooks): scope destructive-guard force detection to git push segment (#233)
+- `d234799` fix(manifest): restore executable bit for shell scripts (#239)
+- `b4a3fa9` fix(perms): restore executable bit on .claude/lib/frontmatter.sh
+- `0f15820` fix(strategy): avoid false calendar and issue defaults in day plan (#238)
+- `6a7a7b0` fix(hooks): harden dry-run gate git and cleanup handling (#237)
 - `41c20fe` fix(translate-sync): attribute EN commits to the human source author, not a bot
 - `726fa80` fix(ci): restore scripts/iwe-bug-report.sh dropped from manifest by 7ae267a
 - `7ae267a` fix(#229,#228): protect owner:user memory files from stale-repair, add hot-budget validator
