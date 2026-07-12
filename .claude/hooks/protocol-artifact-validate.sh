@@ -124,8 +124,14 @@ fi
 fi  # endif [ -n "$DAYPLAN" ]
 
 # --- WeekPlan Validation (Ф6.1 WP-265) ---
-WEEKPLAN=$(ls "$GOV_PATH"/current/WeekPlan\ *.md 2>/dev/null | sort | tail -1)
-if [ -n "$WEEKPLAN" ]; then
+# issue #248: раньше валидировался ПОСЛЕДНИЙ WeekPlan на диске по mtime/имени,
+# даже если в этом коммите менялся только DayPlan — старый, не мигрированный
+# WeekPlan блокировал коммиты, к которым не имел отношения. Теперь валидируем
+# ТОЛЬКО если сам WeekPlan застейджен в этом коммите.
+WEEKPLAN_STAGED=$(echo "$STAGED" | grep -E '^current/WeekPlan.*\.md$' | sort | tail -1)
+WEEKPLAN=""
+[ -n "$WEEKPLAN_STAGED" ] && WEEKPLAN="$GOV_PATH/$WEEKPLAN_STAGED"
+if [ -n "$WEEKPLAN" ] && [ -f "$WEEKPLAN" ]; then
   WP_LINES=$(wc -l < "$WEEKPLAN" | tr -d ' ')
   WP_ERRORS=()
   WP_MISSING_LIST=()
@@ -151,9 +157,13 @@ if [ -n "$WEEKPLAN" ]; then
   done
 
   # Детектор (г): WeekReport валидация (ОПТ-5 WP-297)
-  WEEKREPORT=$(ls "$GOV_PATH"/current/WeekReport\ *.md 2>/dev/null | sort | tail -1)
-  if [ -n "$WEEKREPORT" ]; then
-    if ! grep -q "Итоги" "$WEEKREPORT"; then
+  # issue #248: та же болезнь — раньше брался ПОСЛЕДНИЙ WeekReport на диске,
+  # который может относиться к уже закрытой прошлой неделе. Валидируем только
+  # если WeekReport сам застейджен в этом коммите.
+  WEEKREPORT_STAGED=$(echo "$STAGED" | grep -E '^current/WeekReport.*\.md$' | sort | tail -1)
+  if [ -n "$WEEKREPORT_STAGED" ]; then
+    WEEKREPORT="$GOV_PATH/$WEEKREPORT_STAGED"
+    if [ -f "$WEEKREPORT" ] && ! grep -q "Итоги" "$WEEKREPORT"; then
       WP_MISSING_LIST+=("Итоги (в WeekReport)")
     fi
   fi
