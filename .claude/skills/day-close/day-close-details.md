@@ -129,9 +129,17 @@ python3 {{HOME_DIR}}/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/check-index
 **Postcondition 9a:**
 ```bash
 TODAY=$(date +%Y-%m-%d)
-grep -l "Итоги дня" ~/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/archive/day-plans/DayPlan\ ${TODAY}.md 2>/dev/null \
-  | xargs grep -l "${TODAY}" 2>/dev/null \
-  | grep -q . && echo "9a OK" || echo "9a FAIL: итоги не найдены в DayPlan ${TODAY}"
+# NOTE (bug-2026-07-10, найден Day Close 10.07): исходная версия гнала путь через
+# `xargs`, который делит аргументы по пробелам — а DayPlan-имена ВСЕГДА содержат
+# пробел ("DayPlan YYYY-MM-DD.md"), поэтому xargs получал два несуществующих
+# токена и постусловие молча падало в FAIL независимо от реального содержимого
+# файла. Прямая проверка через переменную в кавычках не расщепляет путь.
+F="$HOME/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/archive/day-plans/DayPlan ${TODAY}.md"
+if grep -q "Итоги дня" "$F" 2>/dev/null && grep -q "${TODAY}" "$F" 2>/dev/null; then
+  echo "9a OK"
+else
+  echo "9a FAIL: итоги не найдены в DayPlan ${TODAY}"
+fi
 ```
 
 **Postcondition 9b:**

@@ -17,7 +17,7 @@
    ---
    ```
 3. Добавить skill в `docs/skills-catalog.md`
-4. Запустить `python scripts/iwe-catalog-list.py` для проверки
+4. Запустить `python3 scripts/iwe-catalog-list.py` для проверки
 
 ## Изменение рубрик diagnose
 
@@ -28,7 +28,7 @@ SoT: `shared/rubrics/form-089.yaml`
 vim shared/rubrics/form-089.yaml
 
 # 2. Проверить синхронность (дрифт-детекция)
-python scripts/generate-diagnose-skill.py --check
+python3 scripts/generate-diagnose-skill.py --check
 # Если ошибка — обнови SKILL.md вручную, чтобы вопросы совпадали с YAML
 
 # 3. Закоммитить оба файла вместе

@@ -52,7 +52,7 @@ Anthropic **не использует данные API для обучения**
 
 | | Шаблон (обновляемое) | Ваши файлы (личное) |
 |--|---------------------|---------------------|
-| Что входит | `setup.sh`, `update.sh`, `scripts/`, `seed/`, `roles/`, `CLAUDE.md §1-8` | `memory/`, `extensions/`, `params.yaml`, `CLAUDE.md §9-10`, DS-strategy |
+| Что входит | `setup.sh`, `update.sh`, `scripts/`, `roles/`, `CLAUDE.md §1-8` | `memory/`, `extensions/`, `params.yaml`, `CLAUDE.md §9-10`, `seed/` (разово при установке), DS-strategy |
 | Кто пишет | IWE | Вы |
 | Обновляется автоматически | Да (`update.sh`) | **Никогда** |
 | Содержит ваши данные | Нет | Да |

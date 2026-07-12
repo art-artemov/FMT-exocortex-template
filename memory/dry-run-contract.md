@@ -23,22 +23,23 @@ description: "Операционный файл памяти IWE"
 ### Файл
 
 ```
-/tmp/iwe-dry-run-${SESSION_ID}.flag
+/tmp/iwe-dry-run.flag
 ```
 
-- **Имя:** `iwe-dry-run-${SESSION_ID}.flag`. `SESSION_ID` = идентификатор Claude Code сессии (получается из env `CLAUDE_SESSION_ID` или генерируется через `uuidgen`/`date +%s%N` если env пуст).
-- **Содержимое:** одна строка JSON: `{"created_at": "<ISO8601>", "session_id": "<id>", "initiator": "<skill-name>"}`.
+- **Имя:** единый файл, не session-bound (v2, WP-7/BUGTRIAGE2, issue #237). `CLAUDE_SESSION_ID` не пробрасывается в окружение субагентов — session-bound имя создавало рассинхрон: главный агент создавал `iwe-dry-run-${SID}.flag` по своему SID, а Stop-hook субагента чистил по своему (пустому/другому) SID, промахиваясь мимо реального файла. Единое имя убирает рассинхрон создания/очистки.
+- **Содержимое:** одна строка JSON: `{"created_at": "<ISO8601>", "session_id": "<id-инициатора>", "initiator": "<skill-name>"}` — session_id хранится только для диагностики, не участвует в поиске/очистке файла.
 - **TTL:** 10 минут от mtime. Хук игнорирует файл с mtime > 10 мин назад (защита от sticky-state при kill -9 / краше CLI).
-- **Очистка:** (а) явная — финал шага в `/audit-installation`; (б) Stop-hook (`protocol-stop-gate.sh` — добавить очистку для текущего session-id); (в) TTL — mtime > 10 мин.
+- **Очистка:** (а) явная — финал шага в `/audit-installation`; (б) Stop-hook (`protocol-stop-gate.sh` — безусловный `rm -f /tmp/iwe-dry-run.flag`, без привязки к `CLAUDE_SESSION_ID`); (в) TTL — mtime > 10 мин.
+- **Известное ограничение единого файла:** Stop любой параллельной сессии снимет активный dry-run другой сессии. Модель угроз контракта — добросовестный агент/случайный обход, не конкурентная многосессийность вокруг одного smoke-теста (см. §«Не входит в контракт»); TTL и синхронность прогона внутри одного хода инициатора страхуют остаточный риск.
 
 ### Жизненный цикл
 
 ```
 [start]  /audit-installation шаг smoke-test
-         → echo "$payload" > /tmp/iwe-dry-run-${SESSION_ID}.flag
+         → echo "$payload" > /tmp/iwe-dry-run.flag
          → запуск subagent: /run-protocol close day (через Agent tool)
          → ...
-[end]    rm -f /tmp/iwe-dry-run-${SESSION_ID}.flag
+[end]    rm -f /tmp/iwe-dry-run.flag
          → анализ результата subagent'а
 ```
 
@@ -67,19 +68,25 @@ Expected: tool blocked by contract, this is rehearsal failure point
 
 ### Bash matchers
 
-Регулярные выражения для блокировки в `command`:
+v2 (WP-7/BUGTRIAGE2, issue #237): не regex по всей строке команды, а три прохода —
+(1) вырезать кавычные спаны (`'...'`/`"..."` → `QSTR`, кроме psql — SQL матчится по
+оригиналу), (2) разбить нормализованную строку на простые команды по `; & | && || ( ) { } $( ``,
+(3) классифицировать каждый фрагмент по первому слову (после пропуска `VAR=val`/
+`command`/`env`/`nohup`/`time`/`sudo`). Закрывает одновременно subshell-обход
+(`(git commit)`) и ложные срабатывания на текст внутри кавычек (`echo "git commit"`).
+Реализация — `.claude/hooks/dry-run-gate.sh`, секция «Bash matchers».
+
+Классифицируемые команды (по первому слову фрагмента):
 
 ```
-^git\s+(commit|push|pull|reset|merge|rebase|checkout\s+-)
-\s>\s(?!/dev/null)         # перенаправление в файл
-\s>>                        # append в файл
-\bpsql\s+.*-c\s+["'].*INSERT|UPDATE|DELETE|TRUNCATE|DROP|ALTER
-\bcurl\s+.*-X\s+(POST|PUT|DELETE|PATCH)
-\bcurl\s+.*--data
-\b(rm|mv|cp)\s+-r?\s
-\bcat\s+>>?\s
-\btee\s+(?!/dev/null)
-\bsed\s+-i
+git (add|commit|push|pull|reset|merge|rebase|mv|rm), git checkout -*
+rm | mv                     # кроме cleanup собственного sentinel
+tee (не /dev/null)
+sed -i*
+curl -X (POST|PUT|DELETE|PATCH) | curl --data | curl -d
+psql ... (INSERT|UPDATE|DELETE|TRUNCATE|DROP|ALTER)   # матчится по оригиналу (SQL в кавычках)
+bash|sh|zsh|eval|source|.|xargs   # indirect execution — payload неинспектируем после quote-strip
+> файл / >> файл             # редирект в реальный файл (не /dev/null)
 ```
 
 ### MCP-write whitelist
@@ -181,4 +188,5 @@ Subagent после прогона ритуала анализирует transcr
 
 - **v1 (отвергнут):** dry-run флаг в каждом скилле (вариант A на ArchGate v1). Декларативный контракт, LLM могла пропустить флаг.
 - **v2 (отвергнут):** dry-run флаг в `/run-protocol` (F2 на ArchGate v2). Не покрывает авторские inline-скиллы.
-- **v3 (текущий):** sentinel + хук (F3 на ArchGate v3). Покрывает все скиллы независимо от их структуры.
+- **v3 (отвергнут):** sentinel + хук, session-bound имя файла (F3 на ArchGate v3). Покрывал все скиллы независимо от их структуры, но session-bound sentinel не переживал субагентов — issue #237.
+- **v4 (текущий, WP-7/BUGTRIAGE2):** единый sentinel-файл (не session-bound) + разбор Bash-команды на простые сегменты вместо построчного regex. Закрывает 4 дыры, найденные и подтверждённые живым запуском хука: залипание блокировки у субагентов, самоблокирующийся cleanup, subshell-обход, ложные срабатывания на текст в кавычках.

@@ -27,6 +27,9 @@ gates_rationale: "операционный скилл; WP Gate применим 
 
 ## Algorithm
 
+### Шаг 0. Extensions (before)
+`bash .claude/scripts/load-extensions.sh strategy-session before` → Exit 0: Read каждый файл, выполнить. Exit 1: пропустить.
+
 ## Шаг 1. Определить режим
 
 Проверь наличие любого из:
@@ -87,6 +90,8 @@ gates_rationale: "операционный скилл; WP Gate применим 
 
 Скажи: «Готово. Завтра утром можешь сказать "открывай день" — Стратег соберёт DayPlan на сегодня. По понедельникам в 04:00 автоматически готовится session-prep для следующей сессии.»
 
+**Extensions (after):** `bash .claude/scripts/load-extensions.sh strategy-session after` → Exit 0: Read каждый файл, выполнить. Exit 1: пропустить.
+
 ---
 
 ## БЛОКИРУЮЩЕЕ: один шаг за раз
@@ -136,6 +141,8 @@ WIP-лимит (8-15).
 
 **Связка:** discovery даёт контекст приоритетов → планирование его упаковывает. Стратег
 подключается к недельному ритуалу только при триггере пересмотра; иначе — Плановик один.
+
+**Extensions (after):** `bash .claude/scripts/load-extensions.sh strategy-session after` → Exit 0: Read каждый файл, выполнить. Exit 1: пропустить.
 
 <!-- USER-SPACE -->
 <!-- /USER-SPACE -->

@@ -1,6 +1,6 @@
 ---
 schema_version: 1
-updated_at: 2026-06-30T10:03:14Z
+updated_at: 2026-07-07T04:47:51Z
 ---
 # promotion-status.yaml — журнал промоций артефактов из author IWE в FMT
 # see WP-7/PZ-6 (peer-session 2026-05-29-20)
@@ -284,4 +284,34 @@ promotions:
     source_sha: ""
     fmt_sha: ""
     promoted_at: 2026-07-04T05:29:49Z
+    verified_in_clean_env: na
+  - artifact_path: .claude/rules-lazy/drift-guard.md
+    type: rule
+    source_sha: eb41d3d
+    fmt_sha: ""
+    promoted_at: 2026-07-11T14:45:00Z
+    verified_in_clean_env: na
+  - artifact_path: .claude/rules-lazy/new-files-guard.md
+    type: rule
+    source_sha: eb41d3d
+    fmt_sha: ""
+    promoted_at: 2026-07-11T14:45:00Z
+    verified_in_clean_env: na
+  - artifact_path: .claude/rules-lazy/wp-stop-list.md
+    type: rule
+    source_sha: eb41d3d
+    fmt_sha: ""
+    promoted_at: 2026-07-11T14:45:00Z
+    verified_in_clean_env: na
+  - artifact_path: .claude/rules-lazy/hooks-bypass-gate.md
+    type: rule
+    source_sha: 0d1ddf3
+    fmt_sha: ""
+    promoted_at: 2026-07-11T15:10:00Z
+    verified_in_clean_env: na
+  - artifact_path: .claude/rules-lazy/integration-gate.md
+    type: rule
+    source_sha: eb41d3d
+    fmt_sha: ""
+    promoted_at: 2026-07-11T15:10:00Z
     verified_in_clean_env: na

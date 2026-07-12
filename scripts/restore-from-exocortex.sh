@@ -84,6 +84,29 @@ done
 shopt -u nullglob
 log "memory-файлов восстановлено: $mem_count"
 
+# === Шаг 1b: extensions/ → workspace (issue #235: exocortex/extensions/ зеркалится
+# хуком memory-exocortex-sync.sh с 2026-07-11; бэкапы старше этой даты его не содержат) ===
+EXTENSIONS_DST="$WORKSPACE_DIR/extensions"
+if [ -d "$EXOCORTEX_SRC/extensions" ]; then
+    if [ -d "$EXTENSIONS_DST" ] && [ -n "$(ls -A "$EXTENSIONS_DST" 2>/dev/null)" ] && ! $FORCE && ! $DRY_RUN; then
+        warn "extensions/ уже не пуста: $EXTENSIONS_DST — пропуск (для перезаписи — --force)"
+    else
+        run "mkdir -p \"$EXTENSIONS_DST\""
+        ext_count=0
+        shopt -s nullglob
+        for f in "$EXOCORTEX_SRC/extensions"/*.md; do
+            [ -f "$f" ] || continue
+            fname=$(basename "$f")
+            run "cp \"$f\" \"$EXTENSIONS_DST/$fname\""
+            ext_count=$((ext_count + 1))
+        done
+        shopt -u nullglob
+        log "extensions-файлов восстановлено: $ext_count"
+    fi
+else
+    warn "exocortex/extensions/ отсутствует (бэкап старее фикса #235, или extensions/ был пуст) — пропуск"
+fi
+
 # === Шаг 2: CLAUDE.md → workspace root ===
 # issue #217: прямая подстановка {{HOME_DIR}} -> $HOME делает восстановление
 # ОС-агностичным (бэкап пишется на плейсхолдере в day-close.sh, шаг 1).

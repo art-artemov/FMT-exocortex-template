@@ -2,7 +2,7 @@
 name: peer-conversation
 description: Многотуровый диалог писателя (Claude) с напарником (Kimi) по задаче пилота (DP.SC.154). Ведёт turn-loop, обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool.
 argument-hint: "<описание задачи> | --list | --interrupt <session_id> | --finalize <session_id>"
-version: 1.2.0
+version: 1.3.0
 layer: L1
 status: active
 triggers:
@@ -32,6 +32,13 @@ gates_rationale: "операционный скилл; WP Gate применим 
 ## When to use
 
 Многотуровый диалог писателя (Claude) с напарником (Kimi) по задаче пилота (DP.SC.154). Ведёт turn-loop, обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool.
+
+## Scope boundary — не подменяет решения, зарезервированные за пилотом (найдено 2026-07-07)
+
+> Peer-сессия пригодна для: технических решений, дизайна, code review, поиска компромисса между подходами, подготовки кандидатов к решению.
+> **НЕ пригодна** для решений, которые процесс явно закрепляет за человеком (например, R15 Валидатор в `/apply-captures` — accept/reject/defer кандидатов знания; R1 Стратег — приоритеты месяца). Согласие двух агентов между собой — не решение пилота, даже единогласное и хорошо обоснованное.
+>
+> Если задача внутри пир-сессии требует такого решения — писатель обязан остановиться и спросить пилота напрямую в текущем чате (не через turn-файл), прежде чем фиксировать результат. См. `.claude/skills/apply-captures/SKILL.md` раздел «R15 = живой пилот, не агент» и `${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/bugs/bug-2026-07-07-r15-decisions-bypassed-pilot.md` — прецедент, из-за которого добавлено это ограничение.
 
 ## Шаг 0. Режим
 
@@ -108,6 +115,16 @@ Slug = первые 4 латинских слова из задачи строч
 
 `SESSION_ID="${TODAY}-${NUM}-${SLUG}"`
 `SESSION_DIR="${MONTH_DIR}/${SESSION_ID}"`
+
+**1.0 Session-guard open (WP-398, обязательно, ДО любых Write/Edit в сессии).** Синхронизирует пир-сессию с `session-guard.sh` Scope gate — без этого коммит на Шаге 4.5 будет заблокирован pre-commit хуком (mtime файлов сессии старше семафора). WP берётся из Шага 0б (найденный или «day-close»/«unknown», если РП не назначен):
+
+```bash
+IWE_AGENT=claude-code bash "$HOME/IWE/scripts/session-guard.sh" open \
+  --wp "<WP-NNN из Шага 0б>" --agent claude-code \
+  --task "<задача одной строкой>" --slug "$SESSION_ID"
+```
+
+Если команда упала (exit ≠ 0) — не блокировать сессию: сообщить пилоту одной строкой «session-guard open не сработал (<причина>), продолжаю без семафора — на Шаге 4.5 возможна ручная разблокировка через touch/note-file» и идти дальше. Semaphore-файл session-guard создаёт СВОЙ отдельный ORZ-скаффолд (`sessions/<TODAY>-<SESSION_ID>.md`) — это отдельный служебный файл, не путать с closing-файлом пир-сессии из Шага 4.4 (другой путь, другая схема).
 
 **1.1 Создать папку:**
 ```bash
@@ -684,17 +701,75 @@ wp: <WP-NNN или unknown>
 
 ### 4.5 Commit + push
 
+**4.5.0 Заполнить служебный ORZ-скаффолд session-guard** (если Шаг 1.0 создал семафор успешно) — минимально, пойнтером на настоящий отчёт, не дублируя контент:
+
+```bash
+GUARD_ORZ="$HOME/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/sessions/${TODAY}-${SESSION_ID}.md"
+if [ -f "$GUARD_ORZ" ]; then
+  cat > "$GUARD_ORZ" <<EOF
+---
+date: $TODAY
+type: work
+wp: <WP-NNN>
+duration_h: <(end_time - start_time) в часах>
+artifacts: [sessions/$MONTH/$SESSION_ID/report.md]
+agent: claude-code
+---
+
+## Главный инсайт
+
+См. sessions/$MONTH/$SESSION_ID/report.md §4 (зафиксированное решение).
+
+## Контекст
+
+Пир-сессия $SESSION_ID — полная стенограмма и синтез в sessions/$MONTH/$SESSION_ID/.
+
+## Достигнуто
+
+| Артефакт | Описание |
+|----------|----------|
+| sessions/$MONTH/$SESSION_ID/report.md | Итоговый отчёт пир-сессии |
+
+## Ключевые решения
+
+См. report.md §4.
+EOF
+fi
+```
+
+**4.5.1 Commit + push:**
+
 ```bash
 cd "$HOME/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}"
 # pathspec после `--`: commit ТОЛЬКО файлы сессии, не подметаем чужое
 # pre-staged из общего индекса (mis-attribution, см. 2026-06-20-39).
 PATHS=("sessions/$MONTH/$SESSION_ID/" "sessions/00-index.md" "sessions/$MONTH/${TODAY}-${SESSION_SLUG}.md")
+[ -f "$GUARD_ORZ" ] && PATHS+=("$GUARD_ORZ")
 git add "${PATHS[@]}"
 git commit -m "feat(peer): $SESSION_ID — <задача кратко>" -- "${PATHS[@]}"
 git push
 ```
 
-Показать пилоту: «Сессия завершена. Отчёт: `sessions/$MONTH/$SESSION_ID/report.md`»
+**4.5.2 Session-guard close** (best-effort, ПОСЛЕ успешного push — закрывать семафор раньше нельзя, иначе Scope gate на 4.5.1 не найдёт активного семафора):
+
+```bash
+IWE_AGENT=claude-code bash "$HOME/IWE/scripts/session-guard.sh" close --agent claude-code 2>&1 || \
+  echo "session-guard close не прошёл — семафор останется активным до auto-orphan (TTL 30 мин на следующем open), не блокирует пилота"
+```
+
+**Показать пилоту in-chat summary** (прочитать `report.md`, извлечь и вывести):
+
+```
+Сессия завершена.
+
+Ходов: <turns_count> | Роли: <writer_agent> (писатель) · <peer_agent> (напарник) | Эскалаций: <escalations_count>
+
+Решение: <первый пункт §4 из report.md — одна строка на пальцах, без технических кодов>
+
+Подробный отчёт: sessions/<MONTH>/<SESSION_ID>/report.md
+```
+
+Если report.md пустой или субагент-синтезатор не создал его — показать только ссылку без §4.
 
 ---
 

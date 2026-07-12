@@ -22,7 +22,8 @@ from pathlib import Path
 # - extensions/     — пользовательские кастомизации, не перезаписываются
 # - params.yaml     — пользовательский конфиг (авторский)
 # - generate-manifest.sh / update-manifest.json — инструментарий манифеста
-# - README.md / LICENSE / CONTRIBUTING.md / CHANGELOG.md — мета репо (только корень)
+# - README.md / LICENSE / CONTRIBUTING.md / CHANGELOG.md / CODE_OF_CONDUCT.md /
+#   SECURITY.md / PRIVACY.md / CODEOWNERS / CITATION.cff — мета репо (только корень)
 # - .gitkeep        — маркеры пустых папок
 # - .DS_Store       — мусор macOS
 
@@ -35,6 +36,11 @@ _ROOT_ONLY_EXCLUDED_NAMES = frozenset({
     "CONTRIBUTING.md",
     "LICENSE",
     "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "SECURITY.md",
+    "PRIVACY.md",
+    "CODEOWNERS",
+    "CITATION.cff",
 })
 
 # Имена файлов, исключаемые везде независимо от папки.

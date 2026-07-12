@@ -5,11 +5,11 @@
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows%20(WSL)-lightgrey.svg)]()
 [![EN sync](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/TserenTserenov/FMT-exocortex-template/en-draft/badge-data.json)](https://github.com/TserenTserenov/FMT-exocortex-template/tree/en-draft)
 
+<img src="https://raw.githubusercontent.com/TserenTserenov/FMT-exocortex-template/main/docs/assets/orz-cycle.svg" alt="Open, Work, Close — the same cycle at every scale: session, day, week" width="100%">
+
 > Операционная система интеллектуальной работы. Ваши знания. Ваш опыт. Ваша среда — работает поверх любой AI-платформы.
 >
 > **Тип репозитория:** `Base/Форматы` (FMT) — шаблон-дистрибутив. После форка становится вашей персональной средой с ИИ-агентами.
-
-**[English version](README.en.md)**
 
 ---
 
@@ -191,10 +191,13 @@ multiplier_enabled: true    # Мультипликатор IWE
 | **[SETUP-GUIDE.md](docs/SETUP-GUIDE.md)** | Пошаговая установка от чистого компьютера. Требования, режимы (core/full), проверка |
 | **[LEARNING-PATH.md](docs/LEARNING-PATH.md)** | Путь изучения IWE: архитектура, принципы, протоколы, Pack, роли |
 | **[DATA-POLICY.md](docs/DATA-POLICY.md)** | Политика данных: что собирается, где хранится, как удалить |
+| **[DATA-RESIDENCY.md](docs/DATA-RESIDENCY.md)** | Принцип резидентности: данные, которые вы приносите в IWE извне (здоровье, календарь, рабочее время) — куда им можно и нельзя уходить |
 | **[IWE-HELP.md](docs/IWE-HELP.md)** | Быстрая справка и FAQ |
 | **[principles-vs-skills.md](docs/principles-vs-skills.md)** | Почему принципы важнее навыков: генеративная иерархия |
 | **[ONTOLOGY.md](ONTOLOGY.md)** | Онтология: все термины и аббревиатуры IWE |
 | **[CHANGELOG.md](CHANGELOG.md)** | История изменений шаблона |
+
+> Два документа покрывают смежные темы: `DATA-POLICY.md` — про данные, которые платформа собирает о вас; `DATA-RESIDENCY.md` — про данные, которые вы сами приносите в IWE извне.
 
 ---
 

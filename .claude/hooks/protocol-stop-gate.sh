@@ -12,10 +12,11 @@
 set -uo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
-# --- WP-265 Ф5.2: cleanup dry-run sentinel on session end ---
-if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
-    rm -f "/tmp/iwe-dry-run-${CLAUDE_SESSION_ID}.flag" 2>/dev/null || true
-fi
+# --- WP-265 Ф5.2 (v2: WP-7/BUGTRIAGE2, issue #237): cleanup dry-run sentinel on session end.
+# Sentinel — единый файл (не session-bound, см. dry-run-gate.sh) — раньше cleanup целился
+# в session-id-путь, который субагент (пустой/другой CLAUDE_SESSION_ID) никогда не создавал,
+# и реальный sentinel залипал на весь TTL для всех агентов сессии.
+rm -f /tmp/iwe-dry-run.flag 2>/dev/null || true
 
 # --- Infinite loop guard ---
 if [ "${STOP_HOOK_ACTIVE:-}" = "1" ]; then

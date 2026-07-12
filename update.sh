@@ -21,13 +21,14 @@ EXIT_GENERAL=1
 
 trap 'echo "ОШИБКА: update.sh прервался на строке ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
-VERSION="2.3.0"  # fix #226: CLAUDE.md conflict no longer aborts delivery/commit; repair-pass reachable on "up to date"; branch guard before commit
+VERSION="2.4.0"  # fix #229: repair-pass no longer stale-repairs memory files with owner: user in frontmatter; fix #228: hot-budget validator warns when memory/*.md horizon:hot lines exceed threshold
 REPO="TserenTserenov/FMT-exocortex-template" # UPSTREAM-CONST: do not substitute
 BRANCH="main"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/$BRANCH"
 
 CHECK_ONLY=false
 AUTO_YES=false
+FAST_CHECK=false
 
 # Allow extra curl flags via env var (e.g. CURL_OPTS="--insecure" for Windows corporate firewall).
 # shellcheck disable=SC2086  # $CURL_BASE_OPTS intentionally unquoted (multi-token flag)
@@ -49,6 +50,7 @@ esac
 for arg in "$@"; do
     case "$arg" in
         --check|--dry-run)  CHECK_ONLY=true ;;
+        --fast)             FAST_CHECK=true ;;
         --yes)              AUTO_YES=true ;;
         --version)          echo "exocortex-update v$VERSION"; exit 0 ;;
         --help|-h)
@@ -56,6 +58,7 @@ for arg in "$@"; do
             echo ""
             echo "Options:"
             echo "  --check     Показать доступные обновления без применения"
+            echo "  --fast      С --check: сравнить только версию манифеста (без скачивания 300+ файлов, issue #230)"
             echo "  --yes       Применить обновления без подтверждения"
             echo "  --version   Версия скрипта"
             echo "  --help      Эта справка"
@@ -89,8 +92,47 @@ is_personal_config() {
     esac
 }
 
+# is_author_mode — true когда WORKSPACE_DIR/params.yaml объявляет author_mode: true.
+# Автор правит L1 напрямую до промоции в шаблон — расхождение хэша тут не staleness.
+# См. inbox/bugs/bug-2026-07-11-update-sh-author-mode-blind-clobber.md.
+is_author_mode() {
+    local params_file="$WORKSPACE_DIR/params.yaml"
+    [ -f "$params_file" ] || return 1
+    grep -qE '^author_mode:[[:space:]]*true' "$params_file"
+}
+
+# author_diverged FPATH — author_mode: SCRIPT_DIR — git-клон этого самого шаблона,
+# из которого качается upstream. Git — точный арбитр «locally stale vs автор доработал»,
+# не список защищённых путей (issue #238, тот же класс бага, что стёр 66 файлов —
+# guard 86cf080 защитил только .claude/*, а манифест несёт roles/docs/pack-templates/
+# и другие каталоги вне списка). Диверженс = (1) файл dirty/untracked, ИЛИ (2) закоммичен
+# локально, но не в origin/$BRANCH (ещё не запромотирован). Fail-closed: не git-репо
+# или fetch не удался → защищаем (считаем diverged), чтобы не потерять данные молча.
+_AUTHOR_FETCH_DONE=false
+author_diverged() {
+    local fpath="$1"
+    is_author_mode || return 1
+    git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+    if [ "$_AUTHOR_FETCH_DONE" = false ]; then
+        git -C "$SCRIPT_DIR" fetch --quiet origin "$BRANCH" 2>/dev/null || true
+        _AUTHOR_FETCH_DONE=true
+    fi
+    [ -n "$(git -C "$SCRIPT_DIR" status --porcelain --untracked-files=all -- "$fpath" 2>/dev/null)" ] && return 0
+    [ -n "$(git -C "$SCRIPT_DIR" log --oneline "origin/$BRANCH..HEAD" -- "$fpath" 2>/dev/null)" ] && return 0
+    return 1
+}
+
 # === Detect directories ===
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# issue #229: shared frontmatter reader (get_field), sourced by SCRIPT_DIR-relative
+# path. Soft here (no || exit 1): an install upgrading from a pre-2.4.0 version
+# won't have this file locally yet on its very first run — Step 0 self-update
+# replaces update.sh itself and re-execs it before any file propagation happens,
+# so this line runs before the file can exist on disk. Step 5 Apply delivers it
+# (it's now in the manifest) and re-sources it below, right after copying files —
+# that call is the hard-required one, by which point the file is guaranteed present.
+[ -f "$SCRIPT_DIR/.claude/lib/frontmatter.sh" ] && source "$SCRIPT_DIR/.claude/lib/frontmatter.sh"
 
 if [ ! -f "$SCRIPT_DIR/CLAUDE.md" ]; then
     echo "ОШИБКА: Запускайте из корня экзокортекс-репо."
@@ -156,6 +198,22 @@ UPSTREAM_VERSION=$(grep '"version"' "$MANIFEST" | head -1 | sed 's/.*"version"[[
 echo "  Версия upstream: $UPSTREAM_VERSION"
 echo ""
 
+# === Fast check (issue #230): version-only comparison, skips the ~330-file download loop ===
+# Достаточно для светофора Day Open (шаг 5) — полный список изменений всё ещё
+# доступен через `--check` без `--fast`.
+if $CHECK_ONLY && $FAST_CHECK; then
+    LOCAL_MANIFEST="$SCRIPT_DIR/update-manifest.json"
+    LOCAL_VERSION=""
+    [ -f "$LOCAL_MANIFEST" ] && LOCAL_VERSION=$(grep '"version"' "$LOCAL_MANIFEST" | head -1 | sed 's/.*"version"[[:space:]]*:[[:space:]]*"//;s/".*//')
+    if [ -n "$LOCAL_VERSION" ] && [ "$LOCAL_VERSION" = "$UPSTREAM_VERSION" ]; then
+        echo "✓ Версия совпадает с upstream (v$UPSTREAM_VERSION). Обновлений нет."
+    else
+        echo "⚠ Версия отличается: локально v${LOCAL_VERSION:-неизвестно}, upstream v$UPSTREAM_VERSION."
+        echo "  Для полного списка изменений: bash update.sh --check (без --fast)."
+    fi
+    exit 0
+fi
+
 # === Repair-pass для critical runtime files (issue #226) ===
 # Закрывает два gap-а:
 #   (1) «UNCHANGED ⇒ файл отсутствует» — ручное удаление / сбой предыдущего update.
@@ -183,8 +241,15 @@ repair_pass() {
                         cp "$SCRIPT_DIR/$fpath" "$mem_dst"
                         echo "  ⟲ $fpath → memory/ (repair)"
                         REPAIRED=$((REPAIRED + 1))
+                    elif [ -r "$mem_dst" ] && [ "$(get_field "$mem_dst" owner)" = "user" ]; then
+                        : # issue #229: owner: user в frontmatter — пилот владеет файлом, stale-repair не применяется никогда
                     elif is_personal_config "$fname"; then
-                        : # личный L4-конфиг существует — НЕ stale-repair (персонализация ≠ дефолт по хешу)
+                        : # личный L4-конфиг без frontmatter (day-rhythm-config.yaml) — НЕ stale-repair
+                    elif is_author_mode; then
+                        # issue #238: та же дыра, что уже закрыта для .claude/*-веток ниже —
+                        # автор мог доработать live-копию memory-файла напрямую, stale-repair
+                        # молча затирал бы её версией из SCRIPT_DIR.
+                        echo "  ⚠ $fpath — author_mode: memory/ рабочая копия не тронута. Сверь: diff \"$SCRIPT_DIR/$fpath\" \"$mem_dst\""
                     elif [ -r "$mem_dst" ] && [ "$(hash_file "$SCRIPT_DIR/$fpath")" != "$(hash_file "$mem_dst")" ]; then
                         cp "$SCRIPT_DIR/$fpath" "$mem_dst"
                         echo "  ⟲ $fpath → memory/ (stale repair)"
@@ -192,7 +257,7 @@ repair_pass() {
                     fi
                 fi
                 ;;
-            .claude/skills/*|.claude/hooks/*|.claude/rules/*|.claude/rules-lazy/*|.claude/lib/*|.claude/config/*|.claude/detectors/*|.claude/scripts/*|.claude/agents/*|.claude/styles/*|.claude/templates/*|.claude/settings.json)
+            .claude/skills/*|.claude/hooks/*|.claude/rules/*|.claude/rules-lazy/*|.claude/lib/*|.claude/config/*|.claude/detectors/*|.claude/scripts/*|.claude/agents/*|.claude/styles/*|.claude/templates/*)
                 dst="$WORKSPACE_DIR/$fpath"
                 if [ ! -f "$dst" ]; then
                     mkdir -p "$(dirname "$dst")"
@@ -200,10 +265,28 @@ repair_pass() {
                     case "$fpath" in *.sh) chmod +x "$dst" ;; esac
                     echo "  ⟲ $fpath → workspace (repair)"
                     REPAIRED=$((REPAIRED + 1))
+                elif [ -r "$dst" ] && is_author_mode && [ "$(hash_file "$SCRIPT_DIR/$fpath")" != "$(hash_file "$dst")" ]; then
+                    echo "  ⚠ $fpath — author_mode: рабочая копия не тронута. Сверь: diff \"$SCRIPT_DIR/$fpath\" \"$dst\""
                 elif [ -r "$dst" ] && [ "$(hash_file "$SCRIPT_DIR/$fpath")" != "$(hash_file "$dst")" ]; then
                     cp "$SCRIPT_DIR/$fpath" "$dst"
                     case "$fpath" in *.sh) chmod +x "$dst" ;; esac
                     echo "  ⟲ $fpath → workspace (stale repair)"
+                    REPAIRED=$((REPAIRED + 1))
+                fi
+                ;;
+            .claude/settings.json)
+                # bug-2026-07-11: settings.json mixes L1 platform defaults with L4 user
+                # hooks/permissions (custom security hooks, additionalDirectories, allow-list).
+                # Treating it like a pure-L1 path (skills/hooks/rules/...) made every "hash
+                # differs from template" stale-repair silently clobber the user's own hooks
+                # back to the generic template — a live regression found and fixed live in
+                # this file (see inbox/bugs/bug-2026-07-11-update-sh-settings-json-clobber.md).
+                # Only seed on first install; never overwrite an existing file here.
+                dst="$WORKSPACE_DIR/$fpath"
+                if [ ! -f "$dst" ]; then
+                    mkdir -p "$(dirname "$dst")"
+                    cp "$SCRIPT_DIR/$fpath" "$dst"
+                    echo "  ⟲ $fpath → workspace (repair, new install)"
                     REPAIRED=$((REPAIRED + 1))
                 fi
                 ;;
@@ -340,7 +423,13 @@ if [ "$TOTAL_CHANGES" -eq 0 ]; then
     # issue #226: TOTAL_CHANGES=0 значит SCRIPT_DIR уже совпадает с upstream — но
     # workspace мог остаться stale (прерванный предыдущий запуск). Чиним прямо тут,
     # иначе repair-pass ниже никогда не выполнится (недостижим после этого exit).
-    repair_pass
+    # bug-2026-07-11-update-sh-author-mode-blind-clobber: repair_pass() пишет файлы
+    # на диск — под --check (без --fast) это ложное «превью без изменений».
+    if $CHECK_ONLY; then
+        echo "  ℹ Режим --check: repair-pass пропущен (может чинить workspace, запусти без --check)."
+    else
+        repair_pass
+    fi
     echo "✓ Всё актуально. Обновлений нет. ($UNCHANGED файлов проверено)"
     exit 0
 fi
@@ -425,10 +514,18 @@ echo "Применяю обновления..."
 
 APPLIED=0
 REMOVED=0
+AUTHOR_SKIPPED=0
+APPLIED_PATHS=()
 
 for f in "${NEW_FILES[@]}"; do
+    if author_diverged "$f"; then
+        echo "  ⚠ $f — author_mode: локально изменён/удалён, не восстанавливаю. Сверь: git -C \"$SCRIPT_DIR\" status -- \"$f\""
+        AUTHOR_SKIPPED=$((AUTHOR_SKIPPED + 1))
+        continue
+    fi
     mkdir -p "$SCRIPT_DIR/$(dirname "$f")"
     cp "$TMPDIR_UPDATE/files/$f" "$SCRIPT_DIR/$f"
+    APPLIED_PATHS+=("$f")
     # Make scripts executable
     case "$f" in *.sh) chmod +x "$SCRIPT_DIR/$f" ;; esac
     echo "  + $f"
@@ -436,6 +533,17 @@ for f in "${NEW_FILES[@]}"; do
 done
 
 for f in "${UPDATED_FILES[@]}"; do
+    # issue #238: author_mode-guard ДО всех спецкейсов ниже (CLAUDE.md 3-way merge,
+    # SKILL.md USER-SPACE preserve, generic cp) — иначе несмёрженная авторская правка
+    # в любом из них та же участь, что уже стёрла 66 файлов (86cf080 закрыл только
+    # .claude/*-ветку в repair_pass()/Step 6, не эту, более раннюю точку входа).
+    if author_diverged "$f"; then
+        echo "  ⚠ $f — author_mode: несмёрженные правки, файл не тронут."
+        echo "    Сверь: diff \"$TMPDIR_UPDATE/files/$f\" \"$SCRIPT_DIR/$f\""
+        AUTHOR_SKIPPED=$((AUTHOR_SKIPPED + 1))
+        continue
+    fi
+    APPLIED_PATHS+=("$f")
     # Special handling for CLAUDE.md: 3-way merge preserving user customizations
     if [ "$f" = "CLAUDE.md" ] && [ -f "$SCRIPT_DIR/$f" ]; then
         BASE_FILE="$SCRIPT_DIR/.claude.md.base"
@@ -508,6 +616,17 @@ for f in "${UPDATED_FILES[@]}"; do
     fi
     APPLIED=$((APPLIED + 1))
 done
+
+# issue #229: hard-require frontmatter.sh now — NEW_FILES/UPDATED_FILES above have
+# just delivered it to disk if this is the first run after upgrading from a
+# pre-2.4.0 install (the soft source near SCRIPT_DIR could not find it yet then).
+# Everything below this point (repair_pass, Step 6 memory copy, hot-budget
+# validator) calls get_field(), so a missing file here is a real delivery bug
+# (manifest/git tracking), not a bootstrap-ordering race — fail loudly.
+source "$SCRIPT_DIR/.claude/lib/frontmatter.sh" || {
+    echo "ОШИБКА: .claude/lib/frontmatter.sh отсутствует после применения обновлений." >&2
+    exit 1
+}
 
 # Detect pre-existing nested conflict markers before we propagate merged files.
 # This prevents stacking new 3-way merges on top of unresolved ones (issue #31).
@@ -796,11 +915,21 @@ if [ -d "$CLAUDE_MEMORY_DIR" ]; then
         case "$f" in
             memory/*.md|memory/*.yaml|memory/*.yml)
                 fname=$(basename "$f")
+                dst="$CLAUDE_MEMORY_DIR/$fname"
                 if [ "$fname" != "MEMORY.md" ]; then
-                    if is_personal_config "$fname" && [ -f "$CLAUDE_MEMORY_DIR/$fname" ]; then
+                    # issue #229: same owner:user guard as repair_pass() — this loop runs on
+                    # every update.sh call (not just repair), so it's the more common path
+                    # that was clobbering user-owned memory files.
+                    if [ -f "$dst" ] && [ "$(get_field "$dst" owner)" = "user" ]; then
+                        echo "  ✓ $fname — owner: user, не перезаписан"
+                    elif is_personal_config "$fname" && [ -f "$dst" ]; then
                         echo "  ✓ $fname — личный L4-конфиг, не перезаписан"
+                    elif is_author_mode && [ -f "$dst" ]; then
+                        # issue #238: тот же класс, что уже закрыт для .claude/*-веток —
+                        # эта ветка тоже слепо копировала SCRIPT_DIR поверх live-копии.
+                        echo "  ⚠ $fname — author_mode: memory/ рабочая копия не тронута. Сверь: diff \"$SCRIPT_DIR/$f\" \"$dst\""
                     else
-                        cp "$SCRIPT_DIR/$f" "$CLAUDE_MEMORY_DIR/$fname"
+                        cp "$SCRIPT_DIR/$f" "$dst"
                         MEM_UPDATED=$((MEM_UPDATED + 1))
                     fi
                 fi
@@ -820,6 +949,10 @@ for f in "${NEW_FILES[@]}" "${UPDATED_FILES[@]}"; do
         .claude/skills/*/SKILL.md)
             src="$SCRIPT_DIR/$f"
             dst="$WORKSPACE_DIR/$f"
+            if is_author_mode && [ -f "$dst" ]; then
+                echo "  ⚠ $f — author_mode: рабочая копия не тронута. Сверь: diff \"$src\" \"$dst\""
+                continue
+            fi
             mkdir -p "$(dirname "$dst")"
             # 1. Extract USER_SECTION from workspace before overwriting
             if [ -f "$dst" ]; then
@@ -854,12 +987,28 @@ for f in "${NEW_FILES[@]}" "${UPDATED_FILES[@]}"; do
                 echo "  ✓ $f → workspace"
             fi
             ;;
-        .claude/skills/*|.claude/hooks/*|.claude/rules/*|.claude/rules-lazy/*|.claude/lib/*|.claude/config/*|.claude/detectors/*|.claude/scripts/*|.claude/agents/*|.claude/styles/*|.claude/templates/*|.claude/settings.json)
+        .claude/skills/*|.claude/hooks/*|.claude/rules/*|.claude/rules-lazy/*|.claude/lib/*|.claude/config/*|.claude/detectors/*|.claude/scripts/*|.claude/agents/*|.claude/styles/*|.claude/templates/*)
             src="$SCRIPT_DIR/$f"
             dst="$WORKSPACE_DIR/$f"
+            if is_author_mode && [ -f "$dst" ]; then
+                echo "  ⚠ $f — author_mode: рабочая копия не тронута. Сверь: diff \"$src\" \"$dst\""
+                continue
+            fi
             mkdir -p "$(dirname "$dst")"
             cp "$src" "$dst"
             echo "  ✓ $f → workspace"
+            ;;
+        .claude/settings.json)
+            # See repair_pass() comment above (bug-2026-07-11) — never blind-overwrite,
+            # workspace copy carries user hooks/permissions the template doesn't have.
+            dst="$WORKSPACE_DIR/$f"
+            if [ ! -f "$dst" ]; then
+                mkdir -p "$(dirname "$dst")"
+                cp "$SCRIPT_DIR/$f" "$dst"
+                echo "  ✓ $f → workspace (new install)"
+            else
+                echo "  ⚠ $f — платформа обновила hooks/permissions, workspace-копия НЕ тронута (несёт пользовательские хуки). Сверь вручную: diff \"$SCRIPT_DIR/$f\" \"$dst\""
+            fi
             ;;
     esac
 done
@@ -868,6 +1017,32 @@ done
 # Выполняется ПОСЛЕ propagation, чтобы repair не дублировал работу NEW_FILES/UPDATED_FILES.
 # Определение функции — см. repair_pass() перед Step 2 (нужна там же для early-exit ветки).
 repair_pass
+
+# === Step 5e: Hot-budget validator (issue #228) ===
+# Политика CLAUDE.md §4: суммарно ≤150 строк в memory/*.md с horizon: hot.
+# Warning-only (не hard-fail) — превышение не должно блокировать доставку остального
+# (тот же принцип, что и CLAUDE.md conflict handling, issue #226).
+HOT_BUDGET_LIMIT=150
+if [ -d "$CLAUDE_MEMORY_DIR" ]; then
+    HOT_LINES=0
+    HOT_FILES=()
+    for mem_file in "$CLAUDE_MEMORY_DIR"/*.md; do
+        [ -f "$mem_file" ] || continue
+        if [ "$(get_field "$mem_file" horizon)" = "hot" ]; then
+            # awk NR (not wc -l) — wc -l counts newlines and undercounts by 1
+            # for files without a trailing newline, silently hiding an overrun.
+            n=$(awk 'END{print NR}' "$mem_file")
+            HOT_LINES=$((HOT_LINES + n))
+            HOT_FILES+=("$(basename "$mem_file"): $n")
+        fi
+    done
+    if [ "$HOT_LINES" -gt "$HOT_BUDGET_LIMIT" ]; then
+        echo ""
+        echo "  ⚠ HOT-бюджет превышен: $HOT_LINES строк (лимит $HOT_BUDGET_LIMIT) в $CLAUDE_MEMORY_DIR"
+        for entry in "${HOT_FILES[@]}"; do echo "      - $entry"; done
+        echo "    Понизьте horizon: hot → warm для части файлов или сократите содержимое."
+    fi
+fi
 
 # (Step 6b removed — repo rename no longer supported, no link migration needed)
 
@@ -1113,7 +1288,16 @@ fi
 
 if ! $SKIP_COMMIT; then
     if ! git diff --quiet 2>/dev/null || [ -n "$(git ls-files --others --exclude-standard 2>/dev/null)" ]; then
-        git add -A
+        if is_author_mode; then
+            # issue #238: стейджить только реально применённые файлы update.sh (APPLIED_PATHS),
+            # иначе незапромоченные авторские правки в SCRIPT_DIR попадут в коммит
+            # «chore: update» с неверной атрибуцией (выглядит как часть update, а не авторская работа).
+            for fpath in "${APPLIED_PATHS[@]}"; do
+                git add "$fpath" 2>/dev/null || true
+            done
+        else
+            git add -A
+        fi
         git commit -m "chore: update from upstream template v$UPSTREAM_VERSION" --no-verify 2>&1 | sed 's/^/  /'
         echo "  ✓ Изменения закоммичены"
     else
@@ -1148,6 +1332,10 @@ SUMMARY_MSG="  Обновление завершено ($APPLIED файлов"
 [ "$REMOVED" -gt 0 ] && SUMMARY_MSG="$SUMMARY_MSG, $REMOVED удалено"
 SUMMARY_MSG="$SUMMARY_MSG)"
 echo "$SUMMARY_MSG"
+if [ "${AUTHOR_SKIPPED:-0}" -gt 0 ]; then
+    echo "  ⚠ author_mode: $AUTHOR_SKIPPED файлов пропущено (несмёрженные локальные правки)."
+    echo "    Синхронизация — через promote-скрипты, либо вручную после git push."
+fi
 echo "=========================================="
 echo ""
 echo "Перезапустите Claude Code для применения обновлений в memory/."

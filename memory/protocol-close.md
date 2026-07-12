@@ -34,13 +34,15 @@ schema_version: 1
 > «Закрывай» = push сразу без вопросов (пользователь дал согласие словом).
 > **Day Close ≠ Quick Close.** Day Close самодостаточен — Quick Close внутри него не повторять.
 
-### Шаги (4 обязательных)
+### Шаги (5 обязательных)
 
-1. **Pre-commit checks → Commit + Push**
+1. **Pre-commit checks → Commit + Push (промежуточный — не потерять работу сессии)**
 
    **1a. Pre-commit checks (БЛОКИРУЮЩЕЕ).** `bash .claude/scripts/load-extensions.sh protocol-close checks` — exit 0 → `Read` каждый файл из вывода (alphabetic) → выполнить. Exit 1 → пропустить. Поддерживает `extensions/protocol-close.checks.md` И `extensions/protocol-close.checks.<suffix>.md`. **При ❌ commit запрещён** — исправить, повторить checks, только потом 1b. Семантика идентична Day/Week Close (см. `run-protocol/SKILL.md` Шаг 1b).
 
    **1b. Commit + Push (БЛОКИРУЮЩЕЕ).** `git status --short` по ВСЕМ репо, которых касалась сессия (не только governance). Незафиксированные изменения → `git add <specific paths>` → commit → push. Затем убедиться что `git status` чист. Только после этого переходить к шагу 2.
+
+   > **Не финальная фиксация.** Шаги 2–3 ниже пишут файлы (WP context, KE, Session-Close Feeder, MEMORY.md) — после них дерево снова грязное. Не рапортовать «закоммичено ✅» до шага 4 (issue #249: порядок шагов сам гарантировал незакоммиченный хвост).
 
 2. **WP Context File** — обновить секцию «Осталось» (structured формат):
    - in_progress → structured handoff
@@ -74,6 +76,8 @@ schema_version: 1
 
 3. **MEMORY.md** — обновить статус РП (одна строка: `in_progress` / `done`)
 
+4. **Финальный git status + Commit + Push (БЛОКИРУЮЩЕЕ).** Шаги 2–3 выше — писатели: WP context, `captures.md`, MEMORY.md, `memory/*.md` (через KE). `git status --short` по ВСЕМ репо, которых касалась сессия (минимум: workspace root, где физически лежат `MEMORY.md`/`memory/*.md`, + governance-репо, где лежит WP context). Незафиксированное → commit → push. Только чистый `git status` во всех репо даёт право писать «Git: закоммичено ✅» в отчёте (шаг ниже).
+
 ### Формат «Осталось»
 
 ```markdown
@@ -96,7 +100,7 @@ schema_version: 1
 ```
 **РП:** #N — [название]
 **Статус:** done / in_progress
-**Git:** закоммичено + запушено ✅
+**Git:** [результат шага 4 — закоммичено + запушено ✅, только если финальный `git status` во всех репо чист]
 **EXTENSION POINT (protocol-close after):** `bash .claude/scripts/load-extensions.sh protocol-close after` — exit 0 → `Read` каждый файл из вывода (alphabetic) → выполнить. Exit 1 → пропустить. Поддерживает `extensions/protocol-close.after.md` И `extensions/protocol-close.after.<suffix>.md`.
 **Handoff:** → WP context «Осталось» обновлён / done
 ```
@@ -110,7 +114,7 @@ schema_version: 1
 
 ### Чеклист Quick Close
 
-- [ ] Всё закоммичено и запушено
+- [ ] Всё закоммичено и запушено (шаг 4 — финальный, ПОСЛЕ записи знания, не шаг 1)
 - [ ] WP Context: «Осталось» записано (или done помечен)
 - [ ] KE: «Что узнали» маршрутизировано (или «нет нового знания»)
 - [ ] MEMORY.md: статус РП обновлён

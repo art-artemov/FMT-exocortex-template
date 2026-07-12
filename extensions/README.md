@@ -6,7 +6,7 @@
 
 ## Dry-run контракт (БЛОКИРУЮЩЕЕ для extensions)
 
-> **Полный контракт:** [memory/dry-run-contract.md](../memory/dry-run-contract.md). Когда `/audit-installation` smoke-тестит ритуал, он создаёт sentinel `/tmp/iwe-dry-run-${SESSION_ID}.flag` и ожидает, что **никто не пишет**.
+> **Полный контракт:** [memory/dry-run-contract.md](../memory/dry-run-contract.md). Когда `/audit-installation` smoke-тестит ритуал, он создаёт sentinel `/tmp/iwe-dry-run.flag` (единый файл, не session-bound — issue #237) и ожидает, что **никто не пишет**.
 
 PreToolUse-хук `dry-run-gate.sh` блокирует Write/Edit/git-write/MCP-write автоматически. Но **extensions, которые запускают собственный bash или вызывают exotic tools** (бинарные API, прямой psql) — могут обойти хук.
 
@@ -15,8 +15,7 @@ PreToolUse-хук `dry-run-gate.sh` блокирует Write/Edit/git-write/MCP-
 Если extension содержит write-логику (создание файла, INSERT в БД, отправка сообщения), **в начале** должна быть проверка sentinel:
 
 ```bash
-SID="${CLAUDE_SESSION_ID:-noid}"
-if [ -f "/tmp/iwe-dry-run-${SID}.flag" ]; then
+if [ -f "/tmp/iwe-dry-run.flag" ]; then
     echo "[extension <name>] dry-run active, skipping write steps"
     exit 0
 fi

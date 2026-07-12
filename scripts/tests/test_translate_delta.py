@@ -70,7 +70,7 @@ def test_first_run_without_state_translates_full_category_d_set(monkeypatch, rep
 
     monkeypatch.setattr(translate, "translate_file", fake_translate_file)
     monkeypatch.setattr(translate, "_find_repo_root", lambda _cwd: root)
-    monkeypatch.setattr(translate, "anthropic", type("Stub", (), {"Anthropic": lambda: None}))
+    monkeypatch.setattr(translate, "_make_client", lambda: None)
 
     args = _stub_args(root, root / "en-out", state_file=None)
     exit_code = translate.run_delta(args, MANIFEST, glossary={})
@@ -93,7 +93,7 @@ def test_second_run_with_state_translates_only_changed_file(monkeypatch, repo):
 
     monkeypatch.setattr(translate, "translate_file", fake_translate_file)
     monkeypatch.setattr(translate, "_find_repo_root", lambda _cwd: root)
-    monkeypatch.setattr(translate, "anthropic", type("Stub", (), {"Anthropic": lambda: None}))
+    monkeypatch.setattr(translate, "_make_client", lambda: None)
 
     state_file = root / "state" / ".translation-state.yaml"
     state_file.parent.mkdir(parents=True)
@@ -141,7 +141,7 @@ def test_delta_output_passes_delivery_checks(monkeypatch, repo):
 
     monkeypatch.setattr(translate, "translate_file", fake_translate_file)
     monkeypatch.setattr(translate, "_find_repo_root", lambda _cwd: root)
-    monkeypatch.setattr(translate, "anthropic", type("Stub", (), {"Anthropic": lambda: None}))
+    monkeypatch.setattr(translate, "_make_client", lambda: None)
 
     output_dir = root / "en-out"
     args = _stub_args(root, output_dir, state_file=None)

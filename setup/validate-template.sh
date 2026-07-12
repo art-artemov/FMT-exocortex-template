@@ -185,14 +185,18 @@ if [ "$MODE" = "staged" ] && [ "$(cd "$TEMPLATE_DIR" && git status --porcelain 2
 fi
 [ "$CHECK1_FAIL" -eq 0 ] && echo "PASS"
 
+# Общий список расширений для чеков 2 и 3 (issue #247 п.2: count и print раньше
+# сканировали разные наборы --include, из-за чего FAIL (N hits) мог не показать
+# ни одной строки, если попадание было только в *.json/*.plist).
+HARDCODE_SCAN_INCLUDES=(--include="*.md" --include="*.sh" --include="*.json" --include="*.plist")
+
 # 2. Нет захардкоженных /Users/ путей [pristine only]
 # В installed-режиме setup.sh легитимно подставил $WORKSPACE_DIR → /Users/<user>/...
 echo -n "[2/5] Hardcoded /Users/ paths... "
 if [ "$MODE" = "installed" ]; then
     echo "SKIP (installed mode — /Users/ подставлен setup'ом)"
 else
-    count=$(grep -rn '/Users/' "$TEMPLATE_DIR" --include="*.md" --include="*.sh" \
-            --include="*.json" --include="*.plist" \
+    count=$(grep -rn '/Users/' "$TEMPLATE_DIR" "${HARDCODE_SCAN_INCLUDES[@]}" \
             --exclude='validate-template.sh' --exclude='setup.sh' \
             --exclude='CHANGELOG.md' 2>/dev/null \
             | grep -v '/Users/\.\.\./' \
@@ -200,7 +204,7 @@ else
             | wc -l | tr -d ' ' || true)
     if [ "$count" -gt 0 ]; then
         echo "FAIL ($count hits)"
-        grep -rn '/Users/' "$TEMPLATE_DIR" --include="*.md" --include="*.sh" \
+        grep -rn '/Users/' "$TEMPLATE_DIR" "${HARDCODE_SCAN_INCLUDES[@]}" \
             --exclude='validate-template.sh' --exclude='setup.sh' \
             --exclude='CHANGELOG.md' 2>/dev/null \
             | grep -v '/Users/\.\.\./' \
@@ -217,8 +221,7 @@ echo -n "[3/5] Hardcoded /opt/homebrew paths... "
 if [ "$MODE" = "installed" ]; then
     echo "SKIP (installed mode — CLAUDE_PATH может быть /opt/homebrew/...)"
 else
-    count=$(grep -rn '/opt/homebrew' "$TEMPLATE_DIR" --include="*.md" --include="*.sh" \
-            --include="*.json" --include="*.plist" \
+    count=$(grep -rn '/opt/homebrew' "$TEMPLATE_DIR" "${HARDCODE_SCAN_INCLUDES[@]}" \
             --exclude='validate-template.sh' --exclude='setup.sh' \
             --exclude='CHANGELOG.md' 2>/dev/null \
             | grep -v 'README.md' \
@@ -228,7 +231,7 @@ else
             | wc -l | tr -d ' ' || true)
     if [ "$count" -gt 0 ]; then
         echo "FAIL ($count hits)"
-        grep -rn '/opt/homebrew' "$TEMPLATE_DIR" --include="*.md" --include="*.sh" \
+        grep -rn '/opt/homebrew' "$TEMPLATE_DIR" "${HARDCODE_SCAN_INCLUDES[@]}" \
             --exclude='validate-template.sh' --exclude='setup.sh' \
             --exclude='CHANGELOG.md' 2>/dev/null \
             | grep -v 'README.md' | grep -v 'PLATFORM-COMPAT.md' \

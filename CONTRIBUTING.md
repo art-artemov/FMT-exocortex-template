@@ -72,6 +72,8 @@ Before contributing, understand how IWE is structured:
 
 **Key rule:** User customizations go in `extensions/` and `params.yaml`, never in platform files. This ensures `update.sh` works cleanly.
 
+> Pilot-facing version (Russian, no contribution context assumed): [docs/onboarding/architecture-layers.md](docs/onboarding/architecture-layers.md).
+
 ---
 
 ## Promoting a Practice (keep the guide in sync)
@@ -155,9 +157,7 @@ See [extensions/README.md](extensions/README.md) for the full extension API, nam
 
 ## Code of Conduct
 
-- Be respectful and constructive
-- Focus on the work, not the person
-- Help others learn — IWE is about amplifying thinking, including in collaboration
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md). Be respectful and constructive, focus on the work rather than the person, and help others learn — IWE is about amplifying thinking, including in collaboration.
 
 ---
 

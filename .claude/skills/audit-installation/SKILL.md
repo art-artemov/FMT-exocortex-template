@@ -92,22 +92,16 @@ Coverage: N/4
 
 ### Алгоритм
 
-1. **Получить SESSION_ID:**
+1. **Создать sentinel** (единый файл, не session-bound — см. dry-run-gate.sh; issue #237 п.2 закрыл рассинхрон создания/очистки по CLAUDE_SESSION_ID, который у субагентов пуст/иной):
    ```bash
-   SID="${CLAUDE_SESSION_ID:-$(uuidgen 2>/dev/null || date +%s%N)}"
+   echo "{\"created_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"session_id\":\"${CLAUDE_SESSION_ID:-unknown}\",\"initiator\":\"audit-installation\"}" > /tmp/iwe-dry-run.flag
    ```
-2. **Создать sentinel:**
-   ```bash
-   # SID гарантирует сессионную изоляцию при параллельных аудитах.
-   # Хук использует glob *.flag — intentional asymmetry. См. dry-run-gate.sh:30.
-   echo "{\"created_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"session_id\":\"$SID\",\"initiator\":\"audit-installation\"}" > /tmp/iwe-dry-run-${SID}.flag
-   ```
-3. **Запустить subagent** через Agent tool (subagent_type=general-purpose, модель Sonnet) с промптом:
+2. **Запустить subagent** через Agent tool (subagent_type=general-purpose, модель Sonnet) с промптом:
 
    ```
    Запусти ритуал /run-protocol close day по обычной процедуре. Не изобретай — следуй SKILL.md как написано.
 
-   ВАЖНО: в текущем окружении активен sentinel /tmp/iwe-dry-run-${SID}.flag — это означает dry-run mode.
+   ВАЖНО: в текущем окружении активен sentinel /tmp/iwe-dry-run.flag — это означает dry-run mode.
    PreToolUse-хук dry-run-gate.sh заблокирует любой write-tool (Write/Edit/git-write/MCP-write).
    Это ожидаемо — твоя задача дойти максимально далеко, фиксируя на каком шаге упёрся.
 
@@ -119,12 +113,12 @@ Coverage: N/4
    - Заключение: ✅/⚠️/❌
    ```
 
-4. **Дождаться завершения subagent'а.**
-5. **Очистить sentinel:**
+3. **Дождаться завершения subagent'а.**
+4. **Очистить sentinel:**
    ```bash
-   rm -f /tmp/iwe-dry-run-${SID}.flag
+   rm -f /tmp/iwe-dry-run.flag
    ```
-6. **Сформировать секцию 6 отчёта:**
+5. **Сформировать секцию 6 отчёта:**
    ```markdown
    ## 6. Ритуал smoke-test (/run-protocol close day)
 

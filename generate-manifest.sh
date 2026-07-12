@@ -30,10 +30,35 @@ SKIP_PATTERNS=(
 )
 
 # === Исключения, которые идут в excluded_paths (dev-only, не раздаются пользователям) ===
+# issue #247 (корень #246): раньше здесь стоял общий "scripts/" — весь каталог
+# считался dev-only, и update.sh никогда не доставлял ни один из 92 файлов
+# пользователям, вопреки docs/DATA-POLICY.md. Полный анализ графа ссылок
+# (peer-session 2026-07-11-11) показал, что это неверно: большинство скриптов
+# зовутся из доставляемых skills/hooks (иногда транзитивно — day-open-pipeline.sh
+# запускается через launchd, а не напрямую из skill, и это не ловится grep-ом).
+# Решение по итогам ЭМОГССБ: default = доставлять scripts/ целиком; explicit
+# exclude только для скриптов, у которых НЕТ ни одной ссылки из доставляемого
+# артефакта (проверено — только .github/workflows/* или ничего). Ошибка в эту
+# сторону (лишний dev-скрипт доставлен) безвредна; обратная (нужный скрипт не
+# доставлен) — воспроизводит #246. EXCLUDED_SCRIPTS ниже — короткий список,
+# не растущий с каждым новым skill (в отличие от прежнего allow-list на *доставку*).
 EXCLUDED_PATTERNS=(
-    "scripts/"
     "scripts/tests/"
     "docs/developer/"
+)
+
+EXCLUDED_SCRIPTS=(
+    "scripts/check-component-parity.sh"        # CI-only: validate-template.yml + verify-template-integrity.sh
+    "scripts/check-manifest-rename-coverage.py" # CI-only: validate-template.yml
+    "scripts/verify-template-integrity.sh"      # локальное зеркало CI-гейта для контрибьюторов шаблона, не для пользователей
+    "scripts/translate.py"                      # CI-only: translate-sync.yml (синхронизация EN-доков автором шаблона)
+    "scripts/delivery_checks.py"                # CI-only: translate-sync.yml
+    "scripts/audit-ad-hoc-roles.py"             # нет ссылок ни из одного доставляемого артефакта
+    "scripts/agent-dashboard.py"                # только scripts/tests/, нет ссылок из доставляемого
+    "scripts/generate-helper-catalog.py"        # нет ссылок из доставляемого
+    "scripts/iwe-trace.py"                      # нет ссылок из доставляемого
+    "scripts/session-dispatcher-tsekh.py"       # нет ссылок из доставляемого
+    "scripts/iwe-catalog-list.py"               # ссылается только docs/maintaining-skills.md (сам dev-only)
 )
 
 EXCLUDED_EXACT=(
@@ -42,6 +67,7 @@ EXCLUDED_EXACT=(
     "docs/BROWSER-CI-TEMPLATE.md"
     "docs/maintaining-skills.md"
     "docs/release-audit-log.md"
+    "${EXCLUDED_SCRIPTS[@]}"
 )
 
 # === Исключения из files, но не в excluded_paths (пользовательское пространство) ===
@@ -55,6 +81,11 @@ FILES_EXCLUDE_EXACT=(
     "README.en.md"
     "CONTRIBUTING.md"
     "LICENSE"
+    "CODE_OF_CONDUCT.md"
+    "SECURITY.md"
+    "PRIVACY.md"
+    "CODEOWNERS"
+    "CITATION.cff"
     "params.yaml"
     "extensions/day-close.after.md"
     "extensions/mcp-user.json"

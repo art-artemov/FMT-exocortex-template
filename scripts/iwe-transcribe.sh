@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# iwe-transcribe.sh — транскрипция аудио/видео через MLX Whisper (Apple Silicon)
+# routing: executor=script  deterministic=true  skill=transcribe  optimization_priority=2
+# see DP.SC.159, DP.ROLE.059
+#
+# Usage: iwe-transcribe.sh <path/to/file.mp3|mp4|m4a|wav>
+
+set -euo pipefail
+
+VENV="$HOME/.local/share/mlx-whisper/.venv-whisper"
+MODEL="$HOME/.local/share/mlx-whisper/mlx_models/large-v3"
+
+if [[ $# -lt 1 ]]; then
+  echo "Usage: iwe-transcribe.sh <audio-file>" >&2
+  exit 1
+fi
+
+FILE="${*:-}"
+
+if [[ ! -f "$FILE" ]]; then
+  echo "ERROR: file not found: $FILE" >&2
+  exit 1
+fi
+
+if ! "$VENV/bin/python" -c "import mlx_whisper" 2>/dev/null; then
+  echo "ERROR: mlx_whisper not available in $VENV" >&2
+  echo "Setup: python3 -m venv '$VENV' && '$VENV/bin/pip' install mlx-whisper" >&2
+  exit 1
+fi
+
+"$VENV/bin/python" - "$FILE" "$MODEL" << 'EOF'
+import sys, json
+import mlx_whisper
+
+file_path, model_path = sys.argv[1], sys.argv[2]
+result = mlx_whisper.transcribe(
+    file_path,
+    path_or_hf_repo=model_path,
+    language="ru",
+    word_timestamps=True,
+)
+print(result["text"])
+EOF
