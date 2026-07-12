@@ -1,8 +1,7 @@
 """Persistent storage and querying of consent state for data needs."""
 
 import os
-import json
-import time
+import yaml
 from pathlib import Path
 from typing import Dict, Optional, Literal
 from datetime import datetime
@@ -31,41 +30,23 @@ class ResidencyState:
     def _ensure_file_exists(self) -> None:
         """Create empty state file if it doesn't exist."""
         if not self.state_file.exists():
-            self.state_file.write_text("# Data residency consent state\n# Auto-generated\n\nfunctions: {}\n")
+            self._save_state({})
 
     def _load_state(self) -> dict:
-        """Load current state from yaml (simple dict format)."""
+        """Load current state from yaml."""
         try:
             content = self.state_file.read_text()
-            # Minimal YAML parsing - just extract the dict
-            if "functions:" in content:
-                lines = content.split('\n')
-                state = {}
-                for line in lines:
-                    if line.startswith('  '):
-                        # Parse: "  function_id: {status: granted, granted_at: ...}"
-                        parts = line.strip().split(': ', 1)
-                        if len(parts) == 2:
-                            func_id = parts[0]
-                            try:
-                                func_state = json.loads(parts[1].replace("'", '"'))
-                                state[func_id] = func_state
-                            except json.JSONDecodeError:
-                                pass
-                return state
-        except (OSError, IOError):
-            pass
-        return {}
+            doc = yaml.safe_load(content) or {}
+            return doc.get("functions") or {}
+        except (OSError, IOError, yaml.YAMLError):
+            return {}
 
     def _save_state(self, state: dict) -> None:
         """Save state to yaml file atomically."""
-        lines = ["# Data residency consent state", "# Auto-generated", ""]
-        lines.append("functions:")
-        for func_id, func_state in sorted(state.items()):
-            lines.append(f"  {func_id}: {json.dumps(func_state)}")
-        lines.append("")
+        doc = {"functions": state}
+        header = "# Data residency consent state\n# Auto-generated\n\n"
+        content = header + yaml.safe_dump(doc, default_flow_style=False, sort_keys=True, allow_unicode=True)
 
-        content = '\n'.join(lines)
         tmp_file = self.state_file.with_suffix('.tmp')
         tmp_file.write_text(content)
         tmp_file.replace(self.state_file)
