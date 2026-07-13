@@ -302,6 +302,13 @@ case "$1" in
         if [ "$DAY_OF_WEEK" -eq "$STRATEGY_DAY_NUM" ]; then
             log "Strategy day ($STRATEGY_DAY_NAME): running session prep"
             run_claude "session-prep" "claude-sonnet-4-6"
+            # WP-484 Ф3: session-prep's LLM prompt never calls day-open-scaffold.sh,
+            # so health/GitHub-issues/Scout/world data is absent from WeekPlan on
+            # strategy_day. This deterministic pass fills that gap post-hoc — see
+            # week-open-day-section-patch.sh header for the full rationale. Author-only
+            # script, not yet seeded for template users — WARN, don't fail, if absent.
+            bash "$WORKSPACE/scripts/week-open-day-section-patch.sh" "$DATE" >> "$LOG_FILE" 2>&1 \
+                || log "WARN: week-open-day-section-patch failed or absent (rc=$?)"
             notify_telegram "session-prep"
         else
             log "Morning: running day plan"
@@ -333,6 +340,9 @@ case "$1" in
     "session-prep")
         log "Manual: running session prep"
         run_claude "session-prep" "claude-sonnet-4-6"
+        # WP-484 Ф3: see comment on the "morning" branch above — same gap, same fix.
+        bash "$WORKSPACE/scripts/week-open-day-section-patch.sh" "$DATE" >> "$LOG_FILE" 2>&1 \
+            || log "WARN: week-open-day-section-patch failed or absent (rc=$?)"
         notify_telegram "session-prep"
         ;;
     "day-plan")
