@@ -285,13 +285,17 @@ esac
 # Определяем какой сценарий запускать
 case "$1" in
     "morning")
-        # Определяем нужный сценарий: strategy_day → session-prep, иначе → day-plan
-        if [ "$DAY_OF_WEEK" -eq "$STRATEGY_DAY_NUM" ]; then
-            SCENARIO="session-prep"
-        else
-            SCENARIO="day-plan"
+        if [ "$DAY_OF_WEEK" -ne "$STRATEGY_DAY_NUM" ]; then
+            # WP-484 (2026-07-14): day-open-pipeline.sh (com.iwe.day-open, 01:00) now owns
+            # daily DayPlan generation — deterministic scaffold + 19-point checklist. This
+            # "day-plan" scenario predates it (Feb 2026 vs Jul 2026) and was never retired;
+            # both running independently produced two uncoordinated DayPlans on 2026-07-14,
+            # one via unconstrained LLM free-write that included a fabricated figure.
+            log "Non-strategy day: day-plan retired — day-open-pipeline.sh (01:00) owns this"
+            exit 0
         fi
 
+        SCENARIO="session-prep"
         # Защита от повторного запуска (RunAtLoad + CalendarInterval race condition)
         acquire_lock "$SCENARIO"
         if already_ran_today "$SCENARIO"; then
@@ -299,15 +303,16 @@ case "$1" in
             exit 0
         fi
 
-        if [ "$DAY_OF_WEEK" -eq "$STRATEGY_DAY_NUM" ]; then
-            log "Strategy day ($STRATEGY_DAY_NAME): running session prep"
-            run_claude "session-prep" "claude-sonnet-4-6"
-            notify_telegram "session-prep"
-        else
-            log "Morning: running day plan"
-            run_claude "day-plan" "claude-sonnet-4-6"
-            notify_telegram "day-plan"
-        fi
+        log "Strategy day ($STRATEGY_DAY_NAME): running session prep"
+        run_claude "session-prep" "claude-sonnet-4-6"
+        # WP-484 Ф3: session-prep's LLM prompt never calls day-open-scaffold.sh,
+        # so health/GitHub-issues/Scout/world data is absent from WeekPlan on
+        # strategy_day. This deterministic pass fills that gap post-hoc — see
+        # week-open-day-section-patch.sh header for the full rationale. Author-only
+        # script, not yet seeded for template users — WARN, don't fail, if absent.
+        bash "$WORKSPACE/scripts/week-open-day-section-patch.sh" "$DATE" >> "$LOG_FILE" 2>&1 \
+            || log "WARN: week-open-day-section-patch failed or absent (rc=$?)"
+        notify_telegram "session-prep"
         ;;
     "evening")
         log "Evening: running evening review"
@@ -333,6 +338,9 @@ case "$1" in
     "session-prep")
         log "Manual: running session prep"
         run_claude "session-prep" "claude-sonnet-4-6"
+        # WP-484 Ф3: see comment on the "morning" branch above — same gap, same fix.
+        bash "$WORKSPACE/scripts/week-open-day-section-patch.sh" "$DATE" >> "$LOG_FILE" 2>&1 \
+            || log "WARN: week-open-day-section-patch failed or absent (rc=$?)"
         notify_telegram "session-prep"
         ;;
     "day-plan")

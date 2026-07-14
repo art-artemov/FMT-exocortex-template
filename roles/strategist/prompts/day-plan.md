@@ -29,7 +29,7 @@ DAYPLAN_FILE="$_IWE/{{GOVERNANCE_REPO}}/current/DayPlan $DATE.md"
 
 # Если файла нет — создать через scaffold (если доступен)
 if [ ! -f "$DAYPLAN_FILE" ]; then
-  _SCAFFOLD="$_IWE/scripts/day-open-scaffold.sh"
+  _SCAFFOLD="${IWE_SCRIPTS:-$_IWE/scripts}/day-open-scaffold.sh"
   if [ -f "$_SCAFFOLD" ]; then
     bash "$_SCAFFOLD" "$DATE" > "$DAYPLAN_FILE"
     SCAFFOLD_EXIT=$?
@@ -43,7 +43,7 @@ if [ ! -f "$DAYPLAN_FILE" ]; then
       exit 1
     fi
   else
-    echo "WARN: day-open-scaffold.sh not found at $_IWE/scripts/ — создаю минимальный DayPlan, PENDING-маркеры заполнит LLM"
+    echo "WARN: day-open-scaffold.sh not found at ${IWE_SCRIPTS:-$_IWE/scripts} — создаю минимальный DayPlan, PENDING-маркеры заполнит LLM"
     cat > "$DAYPLAN_FILE" <<FRONTMATTER
 ---
 type: daily-plan

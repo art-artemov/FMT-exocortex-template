@@ -314,7 +314,7 @@ fi
 
 # === Hindsight L2 retain — writer-only per-turn (opt-in via env) ===
 HINDSIGHT_SCRIPT="$SCRIPT_DIR/hindsight_trigger.py"
-if [ "${IWE_HINDSIGHT_RETAIN:-}" = "1" ] && [ -n "$KIMI_OUTPUT" ] && [ -x "$HINDSIGHT_SCRIPT" ]; then
+if [ "${IWE_HINDSIGHT_RETAIN:-}" = "1" ] && [ -n "$KIMI_OUTPUT" ] && [ -f "$HINDSIGHT_SCRIPT" ]; then
   {
     echo "{\"action\":\"retain\",\"source\":\"kimi-peer\",\"text\":$(echo "$KIMI_OUTPUT" | head -c 4000 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}" \
     | python3 "$HINDSIGHT_SCRIPT" 2>/dev/null || true

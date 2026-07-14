@@ -156,7 +156,9 @@ DAYPLAN_NAME="DayPlan $DATE.md"
 DAYPLAN_PATH="$CURRENT_DIR/$DAYPLAN_NAME"
 WEEKPLAN_PATH=$(ls "$CURRENT_DIR"/WeekPlan\ W*.md 2>/dev/null | head -1 || true)
 WP_REGISTRY="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/docs/WP-REGISTRY.md"
-CP_PROFILE="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/memory/cp-profile.json"
+# WP-7 Ф-DRIFT-DATA-PIPELINES D1 (13.07): было memory/cp-profile.json, который не
+# писал ни один механизм. update-derived-snapshot.py (шаг 1.5 выше) уже пишет сюда.
+CP_PROFILE="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/WP-425/cache/derived_snapshot.json"
 CALENDAR_OUT="$IWE/.tmp/calendar-$DATE.txt"
 LLM_PROXY_URL="${LLM_PROXY_URL:-http://localhost:18765}"
 PROXY_PORT="${PROXY_PORT:-18765}"
@@ -306,6 +308,15 @@ mv "$SCAFFOLD_TEMP" "$DAYPLAN_PATH"
 echo "  Scaffold OK: $DAYPLAN_PATH"
 
 # ============================================
+# 3.5. Bottleneck patch (deterministic, BEFORE LLM sees the placeholder — WP-484 Ф2)
+# Must run before LLM Fill: llm-fill.py fills whole <details> chunks generically and
+# would hand-write "Горлышко недели" content without the BY-SCRIPT marker, which
+# day-open.checks.md hard-blocks as an anti-cheat violation.
+# ============================================
+echo "=== 3.5. Bottleneck patch ==="
+bash "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/day-open-bottleneck-patch.sh" "$DAYPLAN_PATH" 2>&1 || true
+
+# ============================================
 # 4. LLM Fill (per-section)
 # ============================================
 echo "=== 4. LLM Fill ==="
@@ -341,22 +352,15 @@ python3 "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/day-open-budget-patch.
   --priorities "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/current/priorities.yaml" 2>&1 || true
 
 # ============================================
-# 5. Checks
+# 4.6. Sync + archive stale DayPlans (moved ahead of Checks — WP-484 Ф2)
+# BUGFIX (2026-07-13): this used to run in step 6, AFTER Checks (step 5) — but one of
+# the checks (day-open.checks.md «current/ без зависших DayPlan») hard-blocks commit
+# if any non-today DayPlan sits in current/. Archiving only after that check had
+# already failed meant the pipeline could never self-heal a leftover from a Day Close
+# that ran late or incompletely: the one mechanism able to fix the condition always
+# ran too late to prevent the block it was fixing.
 # ============================================
-echo "=== 5. Checks ==="
-CHECKS_OUT=$(bash "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/day-open-checks-runner.sh" "$DAYPLAN_PATH" 2>&1)
-CHECKS_EXIT=$?
-echo "$CHECKS_OUT"
-
-if [ $CHECKS_EXIT -ne 0 ]; then
-  tg_notify "❌ DayPlan checks failed for $DATE. Commit blocked. Fix and retry."
-  abort "Checks failed — see output above"
-fi
-
-# ============================================
-# 6. Commit + Push
-# ============================================
-echo "=== 6. Commit + Push ==="
+echo "=== 4.6. Sync + archive ==="
 cd "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}" || abort "Cannot cd to repo"
 
 # Sync with remote to avoid non-fast-forward push (race with other agents)
@@ -400,6 +404,25 @@ bash "$IWE/scripts/session-guard.sh" note-file "$DAYPLAN_PATH" --agent "$SG_AGEN
 for f in "${ARCHIVED_PATHS[@]+"${ARCHIVED_PATHS[@]}"}"; do
   bash "$IWE/scripts/session-guard.sh" note-file "$ARCHIVE_DIR/$(basename "$f")" --agent "$SG_AGENT"
 done
+
+# ============================================
+# 5. Checks
+# ============================================
+echo "=== 5. Checks ==="
+CHECKS_OUT=$(bash "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/day-open-checks-runner.sh" "$DAYPLAN_PATH" 2>&1)
+CHECKS_EXIT=$?
+echo "$CHECKS_OUT"
+
+if [ $CHECKS_EXIT -ne 0 ]; then
+  tg_notify "❌ DayPlan checks failed for $DATE. Commit blocked. Fix and retry."
+  abort "Checks failed — see output above"
+fi
+
+# ============================================
+# 6. Commit + Push
+# ============================================
+echo "=== 6. Commit + Push ==="
+cd "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}" || abort "Cannot cd to repo"
 
 git add "$DAYPLAN_PATH"
 git add "$ARCHIVE_DIR/" 2>/dev/null || true

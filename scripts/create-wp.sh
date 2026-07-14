@@ -116,10 +116,14 @@ print(result)
 " 2>/dev/null || echo "wp-$(echo "$TITLE" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | cut -c1-30)")
 fi
 
-WP_FILE="$INBOX/WP-${WP_NUM}-${SLUG}.md"
+# Inbox convention (WP-434): every WP is a folder inbox/WP-N/ with main file WP-N.md.
+# Slug is dropped from the filename (lives in title: frontmatter); archive stub keeps it.
+WP_DIR="$INBOX/WP-${WP_NUM}"
+WP_FILE="$WP_DIR/WP-${WP_NUM}.md"
+mkdir -p "$WP_DIR"
 
 echo "🚀 Создаю WP-${WP_NUM}: $TITLE"
-echo "   Файл: inbox/WP-${WP_NUM}-${SLUG}.md"
+echo "   Папка: inbox/WP-${WP_NUM}/WP-${WP_NUM}.md"
 echo "   Бюджет: $BUDGET | Приоритет: $PRIORITY"
 
 # --- Сформировать строки таблицы связок ---
@@ -232,7 +236,7 @@ if insert_at is None:
     print("❌ Не найден заголовок таблицы REGISTRY", file=sys.stderr)
     sys.exit(1)
 
-repo_cell = repo if repo else "{}/inbox/WP-{}-*.md".format(gov_repo, wp_num)
+repo_cell = repo if repo else "{}/inbox/WP-{}/".format(gov_repo, wp_num)
 new_row = "| {} | {} | **{}** | ⏳ | {} | {} |\n".format(
     wp_num, priority, title, repo_cell, budget
 )
@@ -243,6 +247,14 @@ with open(registry_path, "w", encoding="utf-8") as f:
 
 print("   ✅ REGISTRY: строка {} добавлена".format(wp_num))
 PYEOF
+
+# Post-write verification (issue #256): create-wp.sh once reported success here
+# without the row actually landing in REGISTRY — the writer above has no retry/lock,
+# so confirm the row is really there before moving on.
+if ! grep -qF "| ${WP_NUM} |" "$REGISTRY"; then
+  echo "❌ REGISTRY write verification FAILED: строка WP-${WP_NUM} не найдена после записи" >&2
+  exit 1
+fi
 
 # --- Шаг 3: WeekPlan ---
 echo "4/6 WeekPlan..."
@@ -272,7 +284,7 @@ new_row = "| {} | {} | **{}** — [описание] | {} | pending | W{} | {} |
 
 anchor = next((a for a in ["**Бюджет недели:**", "**Бюджет итого:**"] if a in content), None)
 if anchor:
-    content = content.replace(anchor, new_row + anchor)
+    content = content.replace(anchor, new_row + anchor, 1)
     with open(weekplan_path, "w", encoding="utf-8") as f:
         f.write(content)
     print("   ✅ WeekPlan: строка WP-{} добавлена".format(wp_num))
@@ -346,16 +358,17 @@ echo ""
 echo "ℹ️  Linear: создать issue вручную или через MCP"
 echo "   Linear MCP → create_issue title='WP-${WP_NUM} ${TITLE}' teamId=TSR"
 
-# --- Удалить consent file ---
+# --- Consent file остаётся в папке WP для аудит-следа ---
+# Ранее consent file удалялся здесь; это ломало последующие wp-gate-check
+# редактирования в той же сессии. Файл сохраняется; уборка по усмотрению пилота.
 if [[ "$SKIP_CONSENT" -eq 0 && -f "$CONSENT_FILE" ]]; then
-  rm -f "$CONSENT_FILE"
   echo ""
-  echo "🗑  Consent file удалён: $CONSENT_FILE"
+  echo "ℹ️  Consent file сохранён: $CONSENT_FILE"
 fi
 
 echo ""
 echo "✅ WP-${WP_NUM} создан: $TITLE"
-echo "   context: inbox/WP-${WP_NUM}-${SLUG}.md"
+echo "   context: inbox/WP-${WP_NUM}/WP-${WP_NUM}.md"
 echo "   archive: archive/wp-contexts/WP-${WP_NUM}-${SLUG}.md"
 echo "   Следующий шаг: заполнить «Проблема», «Артефакт», «Фазы» в context file"
 echo "   Не забыть: Linear issue"
