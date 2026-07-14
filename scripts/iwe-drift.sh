@@ -34,6 +34,9 @@ else
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# iwe-env-bootstrap.sh sets its own top-level SCRIPT_DIR when sourced, clobbering ours —
+# save this script's own directory under a distinct name before sourcing (issue #259).
+IWE_DRIFT_SCRIPT_DIR="$SCRIPT_DIR"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/../.claude/lib/iwe-env-bootstrap.sh" || exit 1
 MANIFEST="${MANIFEST:-$IWE_ROOT/.claude/sync-manifest.yaml}"
@@ -136,7 +139,9 @@ collect() {
         # такие пары молча трактовались как mtime-lag (source==derived → lag всегда 0 → всегда "ok").
         case "$check" in
             script:*)
-                local helper_path="$IWE_ROOT/${check#script:}"
+                # issue #259: хелперы шаблонные (живут рядом со scripts/iwe-drift.sh), а не
+                # часть workspace-root — резолвим относительно SCRIPT_DIR, не IWE_ROOT.
+                local helper_path="$IWE_DRIFT_SCRIPT_DIR/../${check#script:}"
                 local script_status
                 if [ ! -f "$helper_path" ]; then
                     script_status="missing"
@@ -145,6 +150,10 @@ collect() {
                 else
                     case "$?" in
                         2) script_status="critical" ;;
+                        # 1/3: хелпер нашёлся и запустился, но источник пары не подходит для
+                        # этой инсталляции (например нет WP-REGISTRY.md) — не путать с "missing"
+                        # (сам хелпер не найден).
+                        1|3) script_status="unavailable" ;;
                         *) script_status="missing" ;;
                     esac
                 fi

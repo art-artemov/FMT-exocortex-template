@@ -26,6 +26,9 @@ set -uo pipefail
 
 # Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# iwe-env-bootstrap.sh sets its own top-level SCRIPT_DIR when sourced below, clobbering
+# ours — save this script's own directory under a distinct name first (issue #262).
+TEMPLATE_SCRIPTS_DIR="$SCRIPT_DIR"
 # Bootstrap sets IWE_ROOT/WORKSPACE_DIR/etc. It may be ABSENT on some hosts — tsekh-1's
 # extension sync does not copy .claude/lib/ — so source it only if present and never let
 # its absence abort the scaffold (the old `|| exit 1` killed every run on tsekh-1, which
@@ -398,7 +401,7 @@ render_bot_qa() {
   fi
   echo
   # Шаг 5 SKILL: core smoke синхронно. Раньше оставлялся PENDING-placeholder (bug-2026-06-12).
-  local smoke_script="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/day-open-smoke.sh" smoke_json
+  local smoke_script="$TEMPLATE_SCRIPTS_DIR/day-open-smoke.sh" smoke_json
   if [ -f "$smoke_script" ]; then
     smoke_json=$(bash "$smoke_script" 2>/dev/null)
     if [ -n "$smoke_json" ]; then
@@ -585,8 +588,10 @@ render_iwe_status() {
   last_watchdog_log=$(ls -t "$HOME/logs/synchronizer/feedback-watchdog-"*.log 2>/dev/null | head -1 || echo "")
   local last_feedback_triage_log
   last_feedback_triage_log=$(ls -t "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/logs/feedback-triage"*.log 2>/dev/null | head -1 || echo "")
+  # issue #261: старая маска ловила только legacy-метки (iwe.scheduler и т.п.), под которые
+  # не попадают ни current per-role юниты, ни даже шаблонный com.exocortex.scheduler.plist.
   local has_launchd_unit=false
-  if launchctl list 2>/dev/null | grep -qE "iwe\.(scheduler|feedback-watchdog|synchronizer|feedback-triage)"; then
+  if launchctl list 2>/dev/null | grep -qE "com\.(exocortex\.scheduler|strategist\.morning|strategist\.weekreview|extractor\.inbox-check)"; then
     has_launchd_unit=true
   fi
 
@@ -653,15 +658,15 @@ auto_generated: true
 
 ## Симптом (auto-detected)
 
-- launchctl: юнит \`iwe.scheduler\` или \`iwe.feedback-watchdog\` отсутствует
+- launchctl: ни один из юнитов \`com.exocortex.scheduler\`, \`com.strategist.morning\`, \`com.strategist.weekreview\`, \`com.extractor.inbox-check\` не зарегистрирован
 - Последний лог \`~/logs/synchronizer/feedback-watchdog-*.log\` старше 24ч (или отсутствует)
 - Mode A классификация (см. peer-сессия 2026-05-30-07 §Gap 3)
 
 ## Action items
 
 1. Проверить \`~/Library/LaunchAgents/\` на наличие plist
-2. \`bash $IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/install-launchd.sh\` для регистрации
-3. Запустить руками: \`bash \${IWE_SCHEDULER_PATH:-$IWE/scripts/scheduler.sh} --dry-run\`
+2. Переустановить роли: \`bash setup.sh\` (секция [5/6]) — либо вручную по \`roles/ROLE-CONTRACT.md\`
+3. Запустить руками: \`bash \${IWE_SCRIPTS:-$IWE/FMT-exocortex-template/scripts}/../roles/synchronizer/scripts/scheduler.sh --dry-run\` (legacy-скрипт, актуален только если ваша инсталляция ещё не мигрировала на per-role юниты)
 
 ## Auto-generation note
 
@@ -759,7 +764,7 @@ render_fleeting_notes() {
 
 # --- Section: Gate-метрики (WP-423 Ф6.4) ---
 render_gate_metrics() {
-  local script="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/gate-metrics.sh"
+  local script="$TEMPLATE_SCRIPTS_DIR/gate-metrics.sh"
   local log="${HOME}/.iwe/gate-decisions.jsonl"
   echo "<details>"
   echo "<summary><b>Gate-метрики</b></summary>"
@@ -1026,7 +1031,7 @@ $SELF_DEV_BLOCK
 
 После priorities.yaml — дополнить из carry-over и SWEEP_WP_LIST теми РП, которых нет в priorities.yaml и которые ещё open.
 Применить mandatory_daily_wps + daily_checkpoint_wps из day-rhythm-config.yaml.
-KE-строка: bash $IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/ke-queue-stats.sh --dayplan-row (реальный бюджет, не литерал «1h»).
+KE-строка: bash $TEMPLATE_SCRIPTS_DIR/ke-queue-stats.sh --dayplan-row (реальный бюджет, не литерал «1h»).
 Active WPs to include (из sweep + WeekPlan union): $SWEEP_WP_LIST
 -->
 
