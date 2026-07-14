@@ -226,6 +226,7 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - `b4d08a2` fix(v0.35.5): orphan-detection TypeError + DS-strategy validator + root detection (#214 #215)
 - `212fa2f` fix(setup): include rules-lazy in dry-run and section message
 - `b7d75a8` fix(template): verify-template-integrity mirrors CI contract+smoke jobs
+- `0200a93` fix(template): close manifest drift + setup/update rules-lazy gap, wire parity gate
 
 
 ## [0.35.5] — 2026-06-30
