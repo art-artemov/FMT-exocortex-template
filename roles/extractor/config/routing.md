@@ -12,8 +12,7 @@
 
 | Домен | Pack | Префикс | Путь |
 |-------|------|---------|------|
-| Цифровая платформа (Humdes: web.push, web.pdf, инфраструктура, мобильные приложения) | PACK-digital-platform | DP | {{WORKSPACE_DIR}}/PACK-digital-platform/pack/digital-platform/ |
-| Поведение агента (роли, security, верификация) | PACK-autonomous-agents | AS | {{WORKSPACE_DIR}}/PACK-autonomous-agents/pack/autonomous-agents/ |
+| _Твой домен (напр. Machine Learning)_ | _PACK-my-domain_ | _MD_ | _{{WORKSPACE_DIR}}/PACK-my-domain/pack/my-domain/_ |
 
 <!-- Удали пример выше и добавь свои Pack'и. Формат:
 | Домен (ключевые слова) | Имя Pack-репо | Короткий префикс (2-3 буквы) | Путь к pack/ директории |
