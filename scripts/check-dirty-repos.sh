@@ -42,9 +42,6 @@ check_repo() {
 echo "🔍 Скан IWE репозиториев..."
 echo ""
 
-# Workspace root — тоже может быть git-репо (не только вложенные)
-check_repo "$IWE_DIR" "IWE (корень)"
-
 # Top-level repos
 for dir in "$IWE_DIR"/*/; do
     [ -d "$dir/.git" ] && check_repo "$dir" "$(basename "$dir")"

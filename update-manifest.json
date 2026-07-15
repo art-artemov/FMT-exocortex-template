@@ -1348,6 +1348,18 @@
     },
     {
       "path": "update.sh"
+    },
+    {
+      "path": "scripts/verify-context-budget.sh"
+    },
+    {
+      "path": "scripts/generate-hot-files-list.sh"
+    },
+    {
+      "path": "scripts/hot-files.list"
+    },
+    {
+      "path": "scripts/median-ratio.conf"
     }
   ],
   "excluded_paths": [
