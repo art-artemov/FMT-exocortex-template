@@ -22,3 +22,5 @@ scripts/sync-communication-style.yaml
 
 # macOS metadata
 .DS_Store
+__pycache__/
+*.pyc

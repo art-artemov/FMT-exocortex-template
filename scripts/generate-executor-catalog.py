@@ -24,7 +24,10 @@ from typing import Optional
 SKILLS_DIR = Path.home() / "IWE" / ".claude" / "skills"
 DEFAULT_OUTPUT = Path.home() / "IWE" / os.environ.get("IWE_GOVERNANCE_REPO", "DS-strategy") / "scripts" / "executor-catalog.yaml"
 
-VALID_EXECUTORS = {"script", "haiku", "sonnet", "opus", "mcp-direct"}
+# issue #222: таксономия де-факто — нормативного источника в docs/ нет,
+# список описывает реально используемые режимы исполнения скиллов.
+# agent = прогон как subagent; script+judgment = скрипт с LLM-слоем суждения.
+VALID_EXECUTORS = {"script", "haiku", "sonnet", "opus", "mcp-direct", "agent", "script+judgment"}
 FRONTMATTER_RE = re.compile(r'^---\n(.*?)\n---\n', re.DOTALL)
 ROUTING_BLOCK_RE = re.compile(
     r'^routing:\n((?:[ \t]+[^\n]+\n?)*)',

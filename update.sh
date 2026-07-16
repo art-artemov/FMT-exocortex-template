@@ -365,6 +365,18 @@ while IFS='|' read -r fpath fdesc; do
         # Existing file — compare hashes
         LOCAL_HASH=$(hash_file "$SCRIPT_DIR/$fpath")
         REMOTE_HASH=$(hash_file "$REMOTE_FILE")
+        # issue #254: merge-managed файл (3-way merge, напр. CLAUDE.md) законно
+        # расходится с upstream локальными кастомизациями → local≠remote всегда.
+        # Для таких файлов детектор сравнивает base↔remote: upstream не двигался
+        # с последнего merge — «без изменений». Детект по наличию .base-файла.
+        MERGE_BASE="$(dirname "$fpath")/.$(basename "$fpath" | tr '[:upper:]' '[:lower:]').base"
+        if [ -f "$SCRIPT_DIR/$MERGE_BASE" ]; then
+            BASE_HASH=$(hash_file "$SCRIPT_DIR/$MERGE_BASE")
+            if [ "$BASE_HASH" = "$REMOTE_HASH" ]; then
+                UNCHANGED=$((UNCHANGED + 1))
+                continue
+            fi
+        fi
         if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
             DIFF_COUNT=$(diff "$SCRIPT_DIR/$fpath" "$REMOTE_FILE" 2>/dev/null | grep -c '^[<>]' || true); DIFF_COUNT=${DIFF_COUNT:-?}
             UPDATED_FILES+=("$fpath")
@@ -1207,6 +1219,8 @@ fi
 # === Step 6e: Replace local manifest with downloaded remote manifest ===
 # Replaces entire manifest (files + deprecated_files + version), not just version field.
 # This ensures validators (D1/D9/D10) and future updates see the correct file list.
+# Fork-local exclusions live in update-manifest.local.json (issue #247) —
+# never written by this script, merged by check-manifest-coverage.py and 6f below.
 if [ -f "$MANIFEST" ]; then
     cp "$MANIFEST" "$SCRIPT_DIR/update-manifest.json" \
         && echo "  • update-manifest.json: заменён remote manifest (v$UPSTREAM_VERSION)"
@@ -1232,6 +1246,21 @@ known = {_path(e) for e in manifest.get("files", [])}
 deprecated = {_path(e) for e in manifest.get("deprecated_files", [])}
 all_known = known | deprecated
 
+# Fork-local exclusions (issue #247): files the user deliberately keeps in L1
+# directories are not orphans. Same schema as manifest excluded_paths.
+local_manifest_path = os.path.join(script_dir, "update-manifest.local.json")
+local_excluded = []
+if os.path.isfile(local_manifest_path):
+    try:
+        with open(local_manifest_path) as f:
+            local_excluded = [_path(e) for e in json.load(f).get("excluded_paths", [])]
+    except (json.JSONDecodeError, TypeError) as exc:
+        print(f"  [warn] update-manifest.local.json unreadable, ignored: {exc}")
+
+def _locally_excluded(rel):
+    return any(rel == e.rstrip("/") or rel.startswith(e.rstrip("/") + "/")
+               for e in local_excluded)
+
 L1_DIRS = [".claude/hooks", ".claude/rules", ".claude/skills"]
 L1_PREFIXES = ["memory/protocol-"]
 
@@ -1244,7 +1273,7 @@ for base in L1_DIRS:
         for fname in files:
             full = os.path.join(root, fname)
             rel = os.path.relpath(full, script_dir)
-            if rel not in all_known:
+            if rel not in all_known and not _locally_excluded(rel):
                 tag = "[maybe-L3]" if "extensions/" in rel else "[orphan]"
                 orphans.append((tag, rel))
 
@@ -1312,8 +1341,8 @@ fi
 # Раньше использовали $SCRIPT_DIR (FMT) → файла там нет → hint никогда не показывался.
 ENV_FILE="${WORKSPACE_DIR}/.exocortex.env"
 if [ -f "$ENV_FILE" ]; then
-    ENV_WS=$(grep -E '^WORKSPACE_DIR=' "$ENV_FILE" | head -1 | cut -d= -f2-)
-    ENV_GOV=$(grep -E '^GOVERNANCE_REPO=' "$ENV_FILE" | head -1 | cut -d= -f2-)
+    ENV_WS=$(grep -E '^WORKSPACE_DIR=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+    ENV_GOV=$(grep -E '^GOVERNANCE_REPO=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
     USER_STRATEGY="${ENV_WS:-}/${ENV_GOV:-DS-strategy}/docs/Strategy.md"
     if [ -f "$USER_STRATEGY" ] && ! grep -qF 'IWE-INITIAL-NEEDED' "$USER_STRATEGY"; then
         if grep -qE '^created: YYYY-MM-DD$|^updated: YYYY-MM-DD$' "$USER_STRATEGY" 2>/dev/null; then

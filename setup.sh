@@ -378,16 +378,19 @@ else
 # Do not add shell commands — only KEY=VALUE lines are allowed.
 
 # === Core (substituted into runtime files via build-runtime.sh) ===
-GITHUB_USER=$GITHUB_USER
-WORKSPACE_DIR=$WORKSPACE_DIR
-CLAUDE_PATH=$CLAUDE_PATH
-CLAUDE_PROJECT_SLUG=$CLAUDE_PROJECT_SLUG
-TIMEZONE_HOUR=$TIMEZONE_HOUR
-TIMEZONE_DESC=$TIMEZONE_DESC
-HOME_DIR=$HOME_DIR
-GOVERNANCE_REPO=$GOVERNANCE_REPO
-IWE_TEMPLATE=$IWE_TEMPLATE_PATH
-IWE_RUNTIME=$IWE_RUNTIME_PATH
+# issue #223: значения ВСЕГДА в кавычках — файл читается через `source`,
+# непроцитированное значение с пробелом (напр. TIMEZONE_DESC=4:00 UTC)
+# ломает sourcing: bash трактует хвост как команду ("UTC: command not found").
+GITHUB_USER="$GITHUB_USER"
+WORKSPACE_DIR="$WORKSPACE_DIR"
+CLAUDE_PATH="$CLAUDE_PATH"
+CLAUDE_PROJECT_SLUG="$CLAUDE_PROJECT_SLUG"
+TIMEZONE_HOUR="$TIMEZONE_HOUR"
+TIMEZONE_DESC="$TIMEZONE_DESC"
+HOME_DIR="$HOME_DIR"
+GOVERNANCE_REPO="$GOVERNANCE_REPO"
+IWE_TEMPLATE="$IWE_TEMPLATE_PATH"
+IWE_RUNTIME="$IWE_RUNTIME_PATH"
 
 # === Platform LLM Proxy (optional own API key for unlimited usage) ===
 PLATFORM_LLM_PROXY_URL=https://llm.aisystant.com/v1

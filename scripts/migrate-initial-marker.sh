@@ -46,8 +46,8 @@ if [ -z "$TARGET" ]; then
     SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
     ENV_FILE="$(dirname "$SCRIPT_DIR")/.exocortex.env"
     if [ -f "$ENV_FILE" ]; then
-        WS=$(grep -E '^WORKSPACE_DIR=' "$ENV_FILE" | head -1 | cut -d= -f2-)
-        GOV=$(grep -E '^GOVERNANCE_REPO=' "$ENV_FILE" | head -1 | cut -d= -f2-)
+        WS=$(grep -E '^WORKSPACE_DIR=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+        GOV=$(grep -E '^GOVERNANCE_REPO=' "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
         if [ -n "$WS" ] && [ -n "$GOV" ]; then
             TARGET="$WS/$GOV/docs/Strategy.md"
         fi

@@ -316,7 +316,7 @@ echo ""
 # ---------- Раздел 4: User customizations (L3) ----------
 #
 # L3 живёт в 3-х местах: extensions/, params.yaml (отличия от skeleton),
-# AUTHOR-ONLY зоны в .claude/rules/distinctions.md.
+# AUTHOR-ONLY зоны в extensions/*.md.
 # Цель — показать, что после restore личные кастомизации на месте.
 # Это **информационная** секция: отсутствие L3 ≠ failure (новый пилот ещё
 # ничего не настроил). Verdict выносит Аудитор содержательно.

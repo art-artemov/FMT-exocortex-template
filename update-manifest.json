@@ -1035,6 +1035,9 @@
       "path": "scripts/backup-icloud.sh"
     },
     {
+      "path": "scripts/build-active-wp.py"
+    },
+    {
       "path": "scripts/changelog-append.sh"
     },
     {
@@ -1059,6 +1062,9 @@
       "path": "scripts/check-wp-format.py"
     },
     {
+      "path": "scripts/check-wp-transfer-completeness.sh"
+    },
+    {
       "path": "scripts/claude-peer-adapter.sh"
     },
     {
@@ -1078,6 +1084,9 @@
     },
     {
       "path": "scripts/create-wp.sh"
+    },
+    {
+      "path": "scripts/day-close-prepare.sh"
     },
     {
       "path": "scripts/day-close.sh"
@@ -1119,6 +1128,9 @@
       "path": "scripts/generate-executor-catalog.py"
     },
     {
+      "path": "scripts/generate-hot-files-list.sh"
+    },
+    {
       "path": "scripts/generate-skills-catalog.sh"
     },
     {
@@ -1132,6 +1144,9 @@
     },
     {
       "path": "scripts/hook-promote.sh"
+    },
+    {
+      "path": "scripts/hot-files.list"
     },
     {
       "path": "scripts/iwe-agent-dispatcher.py"
@@ -1183,6 +1198,9 @@
     },
     {
       "path": "scripts/llm-proxy-launcher.sh"
+    },
+    {
+      "path": "scripts/median-ratio.conf"
     },
     {
       "path": "scripts/memory-active-wp-update.sh"
@@ -1299,6 +1317,9 @@
       "path": "scripts/validate-skill.sh"
     },
     {
+      "path": "scripts/verify-context-budget.sh"
+    },
+    {
       "path": "scripts/verify-manifest.sh"
     },
     {
@@ -1348,18 +1369,6 @@
     },
     {
       "path": "update.sh"
-    },
-    {
-      "path": "scripts/verify-context-budget.sh"
-    },
-    {
-      "path": "scripts/generate-hot-files-list.sh"
-    },
-    {
-      "path": "scripts/hot-files.list"
-    },
-    {
-      "path": "scripts/median-ratio.conf"
     }
   ],
   "excluded_paths": [
@@ -1383,8 +1392,11 @@
     "scripts/session-dispatcher-tsekh.py",
     "scripts/tests/conftest.py",
     "scripts/tests/test_agent_dashboard.py",
+    "scripts/tests/test_day_close_prepare.py",
     "scripts/tests/test_delivery_content.py",
     "scripts/tests/test_delivery_formal.py",
+    "scripts/tests/test_dry_run_gate.py",
+    "scripts/tests/test_manifest_coverage_local.py",
     "scripts/tests/test_skill_promote.py",
     "scripts/tests/test_translate_delta.py",
     "scripts/tests/test_translate_parse.py",

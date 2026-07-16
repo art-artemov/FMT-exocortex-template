@@ -225,7 +225,23 @@ if [ "$TOOL_NAME" = "Bash" ]; then
                 echo "$CMD" | grep -qiE '(INSERT|UPDATE|DELETE|TRUNCATE|DROP|ALTER)[[:space:]]' \
                     && block "$CMD (SQL write)"
                 ;;
-            bash|sh|zsh|eval|source|.|xargs)
+            bash|sh|zsh)
+                # Whitelist read-only helpers (issue #264): явно перечисленные
+                # read-only скрипты-перечислители разрешены под dry-run — их
+                # payload инспектируем по коду скрипта (write-путей нет).
+                # Список синхронизирован с memory/dry-run-contract.md §Bash matchers;
+                # добавление = правка контракта + этого case + code review.
+                # Абсолютный путь привязан к $HOME/IWE и захардкожен (review-01 High,
+                # review-02 H1): glob */.claude/... пропускал /tmp-подделку, а
+                # ${IWE_ROOT:-...} открывал тот же обход через env-инъекцию.
+                shift
+                WL_ABS="$HOME/IWE/.claude/scripts/load-extensions.sh"
+                case "${1:-}" in
+                    .claude/scripts/load-extensions.sh|"$WL_ABS") ;;
+                    *) block "$CMD (indirect execution under dry-run)" ;;
+                esac
+                ;;
+            eval|source|.|xargs)
                 block "$CMD (indirect execution under dry-run)"
                 ;;
         esac

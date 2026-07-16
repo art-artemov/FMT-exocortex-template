@@ -17,6 +17,7 @@
 #   bash iwe-drift.sh --critical       # только critical
 #   bash iwe-drift.sh --top N          # топ N по lag
 #   bash iwe-drift.sh --manifest PATH  # указать путь к манифесту
+#   bash iwe-drift.sh --activity       # кандидаты на "спящий" режим (§ activity_checks:)
 #
 # Требования: bash, git, stat, awk (POSIX). Без внешних зависимостей.
 # Формат вывода: markdown-таблица, пригодная для вставки в DayPlan/Week Report.
@@ -46,6 +47,7 @@ TOP_N=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --critical) MODE="critical"; shift ;;
+        --activity) MODE="activity"; shift ;;
         --top) TOP_N="$2"; shift 2 ;;
         --manifest) MANIFEST="$2"; shift 2 ;;
         -h|--help)
@@ -59,6 +61,86 @@ done
 if [ ! -f "$MANIFEST" ]; then
     echo "Manifest not found: $MANIFEST" >&2
     exit 1
+fi
+
+# Парсинг секции activity_checks: (независимая от pairs: секции выше в манифесте)
+parse_activity() {
+    local manifest="$1"
+    awk '
+        /^activity_checks:/ { started = 1; next }
+        !started { next }
+        /^  - id:/ {
+            if (id != "") print_record()
+            id = clean_prefix($0, "^  - id:")
+        }
+        /^    action:/           { action = clean_quoted(clean_prefix($0, "^    action:")) }
+        /^    expected_per_period:/ { expected = clean_prefix($0, "^    expected_per_period:") }
+        /^    period_days:/      { period = clean_prefix($0, "^    period_days:") }
+        /^    commit_pattern_regex:/ { regex = clean_quoted(clean_prefix($0, "^    commit_pattern_regex:")) }
+        /^    dormant_after_periods:/ { dormant = clean_prefix($0, "^    dormant_after_periods:") }
+        END { if (id != "") print_record() }
+
+        function clean_prefix(line, pat,    v) {
+            v = line
+            sub(pat, "", v)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", v)
+            return v
+        }
+        function clean_quoted(v) {
+            gsub(/^"|"$/, "", v)
+            return v
+        }
+        function print_record() {
+            printf "%s\t%s\t%s\t%s\t%s\t%s\n", id, action, expected, period, regex, dormant
+            id=""; action=""; expected=""; period=""; regex=""; dormant=""
+        }
+    ' "$manifest"
+}
+
+# Кандидаты в "спящий режим": N окон подряд (dormant_after_periods) без
+# коммита, совпавшего с commit_pattern_regex, считая от сегодня назад.
+report_activity() {
+    local manifest="$1"
+    local tmp
+    tmp=$(mktemp)
+    parse_activity "$manifest" > "$tmp"
+
+    echo "## Кандидаты в «спящий» режим ($(date +%Y-%m-%d))"
+    echo ""
+
+    local found=0
+    while IFS=$'\t' read -r id action expected period regex dormant; do
+        [ -z "$id" ] && continue
+
+        local window all_windows_empty=1 since_days until_days count
+        for window in $(seq 0 $(( dormant - 1 ))); do
+            since_days=$(( (window + 1) * period ))
+            until_days=$(( window * period ))
+            count=$(git -C "$IWE_ROOT" log --oneline -E \
+                --since="${since_days} days ago" --until="${until_days} days ago" \
+                --grep="$regex" 2>/dev/null | wc -l | tr -d '[:space:]')
+            if [ "$count" -ge "$expected" ]; then
+                all_windows_empty=0
+                break
+            fi
+        done
+
+        if [ "$all_windows_empty" -eq 1 ]; then
+            found=1
+            printf -- "- **%s** (%s): не сработало %s окон подряд (по %s дней) — предъявить пользователю в M6.\n" \
+                "$id" "$action" "$dormant" "$period"
+        fi
+    done < "$tmp"
+    rm -f "$tmp"
+
+    if [ "$found" -eq 0 ]; then
+        echo "_Кандидатов нет — все T-действия сработали хотя бы раз в последних окнах._"
+    fi
+}
+
+if [ "$MODE" = "activity" ]; then
+    report_activity "$MANIFEST"
+    exit 0
 fi
 
 # Получить mtime файла в днях от сегодня (использует $_STAT_FLAG, определяется выше)

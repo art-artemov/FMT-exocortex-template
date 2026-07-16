@@ -96,10 +96,21 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-07-14
+
+
+
+
+
+
+## [Unreleased] — обновлено 2026-07-16
 
 ### Added
 
+- `d450902` feat(day-close): token-discipline execution model — digest + subagent phases (#234)
+- `f4ca48e` feat(manifest): update-manifest.local.json — fork-local exclusions survive update.sh (#247)
+- `c65f9d0` feat(WP-450 S-50): promote hot-files.list auto-discovery to FMT
+- `33ebbf9` feat(WP-450): promote verify-context-budget.sh to FMT (S-50)
+- `4bebc58` feat: complete gate-metrics.sh promotion — manifest coverage + changelog
 - `39421f0` feat(strategist): вызвать week-open-day-section-patch после session-prep (WP-484 Ф3)
 - `dd011fa` feat(hindsight): deliver hindsight_trigger.py + hindsight_adapter.py, closing L2 integration gap (#252)
 - `046aec3` feat(wp-450-ф5): промоция hooks-bypass-gate.md + integration-gate.md
@@ -131,6 +142,11 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `d68413b` docs: regenerate [Unreleased] CHANGELOG after #234 promotion
+- `a5697c3` docs: regenerate [Unreleased] CHANGELOG after #247 local-manifest feature
+- `387dd77` docs: regenerate [Unreleased] CHANGELOG after issue sweep (#264/#240/#222/#223/#254/#234)
+- `750eaf6` chore: remove __pycache__ .pyc from tree + gitignore (sync 238a5c1 garbage)
+- `8e69322` docs: regenerate [Unreleased] CHANGELOG after #263 fix
 - `806ba4c` docs(changelog): add cec81a3 (DayPlan follow-up to #248)
 - `82b1cc8` docs(changelog): sync Unreleased section — #248/#251/#252 fixes, thank VxxxlBxxxxv
 - `67571f3` docs(changelog): thank den317 for #247/#249/#250 reports
@@ -153,6 +169,20 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `1c62621` fix(day-close): language-tolerant postcondition patterns 9a/9b (#234)
+- `5ab284f` fix(executor-catalog): VALID_EXECUTORS += agent, script+judgment (#222)
+- `655d385` fix(setup,update): quote env values (#223) + merge-managed base↔remote detector (#254)
+- `6ffb54a` fix(pre-commit): manifest-coverage — block только staged, whole-repo WARN (#240)
+- `e67ca20` fix(dry-run-gate): restore #237 v2 matcher + whitelist read-only bash helpers (#264)
+- `8a611bf` fix(validate-template): restore staged mode + dynamic TEMPLATE_DIR (sync 238a5c1 regression)
+- `7e5be12` fix: resolve WP-REGISTRY schema drift cluster (#263)
+- `fc763e4` fix(WP-450): promote missing checklists.md pointer + ailev↔IWE glossary
+- `8b61285` fix(changelog): restore 0200a93 entry dropped by the auto-regeneration step
+- `0e933ee` fix(audit-installation): mark github_status as subscription-gated
+- `d55b855` fix(day-close): correct check-index-health.py path
+- `51f30fc` fix(iwe-drift): resolve script: helpers relative to the template, not IWE_ROOT
+- `b0d1fe0` fix(day-open-scaffold): resolve template-owned scripts locally, not via governance repo
+- `40c2d70` fix(strategist): retire redundant day-plan scenario on non-strategy-days (WP-484)
 - `a007d15` fix(create-wp): три отставших фикса из root-версии — папка WP-434, consent-file, WeekPlan replace-limit
 - `3c82107` fix(day-open): CP_PROFILE указывал на несуществующий cp-profile.json
 - `7cbd225` fix: 3 template bugs from bot-flagged issue sweep (#253, #255, #256)
