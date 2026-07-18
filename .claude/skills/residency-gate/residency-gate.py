@@ -8,9 +8,9 @@ from typing import List, Optional
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from lib.parser import ManifestParser, DataNeed
+from lib.parser import ManifestParser, ManifestError, DataNeed
 from lib.state import ResidencyState
-from lib.consent import ResidencyGate
+from lib.consent import ResidencyGate, PreGrantError, load_pre_grant_entries
 
 
 def main():
@@ -43,6 +43,10 @@ def main():
             print(json.dumps({"allowed": allowed, "blocking": blocking}))
             sys.exit(0 if allowed else 1)
 
+        except (ManifestError, PreGrantError) as e:
+            # Fail closed: a malformed declaration or pre-grant list blocks activation.
+            print(json.dumps({"allowed": False, "blocking": [str(e)]}))
+            sys.exit(1)
         except (OSError, IOError) as e:
             print(json.dumps({"error": str(e)}))
             sys.exit(1)
@@ -111,6 +115,17 @@ def main():
         else:
             print(json.dumps(all_consents, indent=2))
         sys.exit(0)
+
+    elif command == "validate-pre-grant":
+        # validate-pre-grant [file] — deterministic check for the Week Close audit scan
+        pre_grant_file = Path(sys.argv[2]) if len(sys.argv) > 2 else None
+        try:
+            entries = load_pre_grant_entries(pre_grant_file)
+            print(json.dumps({"valid": True, "entries": sorted(entries)}))
+            sys.exit(0)
+        except PreGrantError as e:
+            print(json.dumps({"valid": False, "error": str(e)}))
+            sys.exit(1)
 
     elif command == "reset":
         # reset <function_id>

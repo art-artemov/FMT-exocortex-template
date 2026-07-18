@@ -2,7 +2,7 @@
 """build-active-wp.py — пересборка current/active-wp.md из docs/WP-REGISTRY.md.
 
 Source-of-truth: WP-REGISTRY.md (markdown-таблица).
-Вывод: current/active-wp.md — открытые РП (🔄 ⏳ 🧪) сверху, закрытые (✅ 📦 ↗️) ниже,
+Вывод: current/active-wp.md — открытые РП (🔄 ⏳ 🧪 🚧 ⏸) сверху, закрытые (✅ 📦 ↗️ ❌) ниже,
 обе секции по убыванию номера РП.
 
 Usage:
@@ -11,9 +11,16 @@ Usage:
   без флагов        — перезаписывает active-wp.md
   --check           — exit 1 если active-wp.md расходится с реестром (pre-commit guard)
   --deep-check      — exit 1 если есть orphan WP-NNN (в реестре нет inbox/archive файла,
-                       или файл есть, а в реестре нет). Day Open / periodic reconciliation.
+                       или файл есть, а в реестре нет) ЛИБО строка реестра не
+                       классифицируется (неизвестный статус, битые колонки).
+                       Day Open / periodic reconciliation.
   --semantic-check  — exit 1 если статус в реестре расходится с placement (active WP
                        только в archive/, или closed WP только в inbox/). Week Close.
+
+Инвариант (bug WP-285, 2026-07-16): строка с номером РП НИКОГДА не сбрасывается молча.
+Неизвестный статус/битые колонки → строка учитывается в orphan-детекции + явный
+PARSE-WARN. Раньше строка с «⏸» выпадала из парсера целиком, и deep-check ложно
+сообщал «нет строки в WP-REGISTRY.md», а РП исчезал из active-wp.md.
 
   see peer-session 2026-06-01-21-wp-registry-drift-guard
 """
@@ -29,9 +36,14 @@ OUTPUT = ROOT / "current" / "active-wp.md"
 INBOX_DIR = ROOT / "inbox"
 ARCHIVE_DIR = ROOT / "archive" / "wp-contexts"
 
-ACTIVE_STATUSES = {"🔄", "⏳", "🧪", "🚧"}
-CLOSED_STATUSES = {"✅", "📦", "↗️", "❌"}
+# Статусы храним без U+FE0F (emoji variation selector): «↗️» и «↗» — один статус.
+ACTIVE_STATUSES = {"🔄", "⏳", "🧪", "🚧", "⏸"}
+CLOSED_STATUSES = {"✅", "📦", "↗", "❌"}
 ALL_STATUSES = ACTIVE_STATUSES | CLOSED_STATUSES
+
+
+def norm_status(token: str) -> str:
+    return token.replace("\ufe0f", "")
 
 # Строка-РП: `| 312 | P2 | **Название** | 🔄 | repo | 8h |`
 # Done-вариант: `| ~~306~~ | ~~P3~~ | ~~Название~~ | ✅ | ~~repo~~ | ~~4h~~ |`
@@ -41,33 +53,44 @@ ROW_RE = re.compile(r"^\|\s*(?:~~)?(?:\*\*)?(\d{1,4})(?:\*\*)?(?:~~)?\s*\|")
 WP_NAME_RE = re.compile(r"^WP-(\d{1,4})(?:[-.].*|/)?$")
 
 
-def parse_registry(text: str) -> list[dict]:
-    rows = []
-    for line in text.splitlines():
+def parse_registry(text: str) -> tuple[list[dict], list[str]]:
+    """Разбор реестра. Строка с номером РП никогда не сбрасывается молча:
+    непарсибельные попадают в rows (для orphan-детекции) + в problems (PARSE-WARN)."""
+    rows: list[dict] = []
+    problems: list[str] = []
+    for lineno, line in enumerate(text.splitlines(), 1):
         m = ROW_RE.match(line)
         if not m:
             continue
         wp = int(m.group(1))
         cols = [c.strip() for c in line.strip("|").split("|")]
         if len(cols) < 6:
-            continue
-        status = cols[3]
+            problems.append(
+                f"WP-{wp} (строка {lineno}): колонок < 6 — строка учтена в реестре, "
+                f"но не попадает в active-wp.md."
+            )
+            cols = cols + [""] * (6 - len(cols))
         # Очистка от ~~ и пробелов; берём только первый токен, чтобы
         # принять варианты вида "🔄 Ф4" (статус + пометка фазы).
-        status_raw = status.replace("~~", "").strip()
-        status_clean = status_raw.split()[0] if status_raw else ""
-        if status_clean not in ALL_STATUSES:
-            continue
+        status_raw = cols[3].replace("~~", "").strip()
+        token = status_raw.split()[0] if status_raw else ""
+        status = norm_status(token)
+        if status not in ALL_STATUSES:
+            problems.append(
+                f"WP-{wp} (строка {lineno}): неизвестный статус {token!r} — строка учтена "
+                f"в реестре, но не попадает ни в открытые, ни в закрытые active-wp.md."
+            )
         rows.append({
             "wp": wp,
             "project": cols[1].replace("~~", "").strip(),
             "name": cols[2].strip(),
-            "status": status_clean,
+            "status": status,
+            "status_display": token,
             "repo": cols[4].strip(),
             "budget": cols[5].strip(),
             "raw": line,
         })
-    return rows
+    return rows, problems
 
 
 def clean_status_in_row(raw: str, status: str) -> str:
@@ -97,7 +120,7 @@ def render(rows: list[dict]) -> str:
         out = ["| # | P | Название | Ст | Репо | Бюджет |",
                "|---:|---|------------------|:--:|------------------|------:|"]
         for r in items:
-            out.append(clean_status_in_row(r["raw"], r["status"]))
+            out.append(clean_status_in_row(r["raw"], r["status_display"]))
         return "\n".join(out) + "\n"
 
     lines = [
@@ -119,6 +142,7 @@ def render(rows: list[dict]) -> str:
         "| ⏳ | pending |",
         "| 🧪 | passive testing (ждёт замечаний по триггеру) |",
         "| 🚧 | blocked |",
+        "| ⏸ | paused (на паузе, РП открыт) |",
         "| 📦 | archived / → MAPSTRATEGIC |",
         "| ↗️ | merged в другой РП |",
         "| ❌ | cancelled |",
@@ -267,13 +291,18 @@ def main() -> int:
         print(f"build-active-wp: REGISTRY не найден: {REGISTRY}", file=sys.stderr)
         return 2
 
-    rows = parse_registry(REGISTRY.read_text(encoding="utf-8"))
+    rows, parse_problems = parse_registry(REGISTRY.read_text(encoding="utf-8"))
     if not rows:
         print("build-active-wp: ни одной РП-строки не распознано — проверь схему таблицы", file=sys.stderr)
         return 2
+    if parse_problems and not (deep_mode or semantic_mode):
+        report_issues("PARSE-WARN (строки реестра вне классификации)", parse_problems)
 
     if deep_mode or semantic_mode:
         total = 0
+        if parse_problems:
+            report_issues("PARSE-WARN (строки реестра вне классификации)", parse_problems)
+            total += len(parse_problems)
         if deep_mode:
             issues = deep_check(rows)
             report_issues("DEEP-CHECK (orphans)", issues)

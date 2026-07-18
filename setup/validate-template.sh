@@ -95,6 +95,9 @@ for pattern in "tserentserenov" "PACK-MIM" "aist_bot_newarchitecture" \
         hits=""
         while IFS= read -r f; do
             case "$f" in
+                guide-kit/*) continue ;;  # vendored copy is derived-only (WP-483) — checked by its upstream CI
+            esac
+            case "$f" in
                 *.md|*.sh|*.py|*.json|*.plist|*.yaml) ;;
                 *) continue ;;
             esac
@@ -112,7 +115,7 @@ for pattern in "tserentserenov" "PACK-MIM" "aist_bot_newarchitecture" \
         count=$(grep -rn "$pattern" "$TEMPLATE_DIR" --include="*.md" --include="*.sh" \
                 --include="*.py" --include="*.json" --include="*.plist" --include="*.yaml" \
                 --exclude='validate-template.sh' --exclude='LEARNING-PATH.md' \
-                --exclude='CHANGELOG.md' 2>/dev/null \
+                --exclude='CHANGELOG.md' --exclude-dir='guide-kit' 2>/dev/null \
                 | grep -v 'github.com/' | grep -v 'docs/adr/' | wc -l | tr -d ' ' || true)
     fi
     if [ "$count" -gt 0 ]; then
@@ -124,7 +127,7 @@ for pattern in "tserentserenov" "PACK-MIM" "aist_bot_newarchitecture" \
             grep -rn "$pattern" "$TEMPLATE_DIR" --include="*.md" --include="*.sh" \
                 --include="*.py" --include="*.json" --include="*.plist" \
                 --exclude='validate-template.sh' --exclude='LEARNING-PATH.md' \
-                --exclude='CHANGELOG.md' 2>/dev/null \
+                --exclude='CHANGELOG.md' --exclude-dir='guide-kit' 2>/dev/null \
                 | grep -v 'github.com/' | grep -v 'docs/adr/' | head -3 || true
         fi
         CHECK1_FAIL=1
@@ -188,7 +191,10 @@ fi
 # Общий список расширений для чеков 2 и 3 (issue #247 п.2: count и print раньше
 # сканировали разные наборы --include, из-за чего FAIL (N hits) мог не показать
 # ни одной строки, если попадание было только в *.json/*.plist).
-HARDCODE_SCAN_INCLUDES=(--include="*.md" --include="*.sh" --include="*.json" --include="*.plist")
+# --exclude-dir=guide-kit: vendored byte-identical release slice (WP-483) —
+# the CI drift gate forbids in-place edits, so scanning it here would deadlock
+# two blocking gates; its own upstream CI is responsible for content checks.
+HARDCODE_SCAN_INCLUDES=(--include="*.md" --include="*.sh" --include="*.json" --include="*.plist" --exclude-dir="guide-kit")
 
 # 2. Нет захардкоженных /Users/ путей [pristine only]
 # В installed-режиме setup.sh легитимно подставил $WORKSPACE_DIR → /Users/<user>/...

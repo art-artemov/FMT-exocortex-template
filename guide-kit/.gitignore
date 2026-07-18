@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+.DS_Store
+
+# user data — never committed, even in examples
+profile.yaml
+residency.yaml
+.structurer/
+
+# real runtime config (may hold llm_api_key) — commit guide-kit.config.yaml.example instead
+guide-kit.config.yaml

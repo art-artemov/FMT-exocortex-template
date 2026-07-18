@@ -18,6 +18,7 @@
 set -euo pipefail
 
 # === КОНФИГУРАЦИЯ (настроить при установке) ===
+# Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/../.claude/lib/iwe-env-bootstrap.sh" || exit 1
@@ -74,9 +75,11 @@ do_backup() {
 
   # Mirror *.md/*.yaml/*.yml from auto-memory; --delete prunes files removed upstream.
   # CLAUDE.md is excluded so the workspace copy below isn't deleted by --delete.
+  # -L (copy-links) dereferences symlinks so target content is copied, not the link —
+  # prevents a self-referencing ELOOP symlink from recurring here (WP-7 DOC8).
   # day-rhythm-config.yaml is excluded here and handled separately via merge (see below)
   # to preserve user-configured keys (e.g. calendar_ids) from being overwritten by template defaults.
-  rsync -a --delete \
+  rsync -aL --delete \
     --exclude='CLAUDE.md' \
     --exclude='day-rhythm-config.yaml' \
     --include='*.md' --include='*.yaml' --include='*.yml' \
@@ -130,6 +133,22 @@ PYEOF
   log "  Синхронизировано: $count файлов → $EXOCORTEX_DST/"
 }
 
+# iwe_repo_dirs — печатает поддиректории с .git, дедуплицированные по реальному
+# физическому пути (repo-symlink алиас иначе считается отдельным репозиторием
+# наравне с оригиналом — двойной reindex одного источника, найдено 2026-07-17).
+iwe_repo_dirs() {
+  local repo real seen=""
+  for repo in "$@"; do
+    [ -d "$repo/.git" ] || continue
+    real=$(cd -P "$repo" 2>/dev/null && pwd) || continue
+    case " $seen " in
+      *" $real "*) continue ;;
+    esac
+    seen="$seen $real"
+    echo "$repo"
+  done
+}
+
 # --- Шаг 2: Knowledge-MCP reindex ---
 do_reindex() {
   log "Шаг 2/3: Knowledge-MCP reindex"
@@ -159,8 +178,7 @@ PYEOF
 
   # Определяем, какие Pack/DS были изменены сегодня
   local l2_sources="" l4_sources=""
-  for repo in "$WORKSPACE_DIR"/PACK-* "$WORKSPACE_DIR"/DS-*; do
-    [ -d "$repo/.git" ] || continue
+  while IFS= read -r repo; do
     local repo_name
     repo_name=$(basename "$repo")
     local today_commits
@@ -181,7 +199,7 @@ PYEOF
         log "  ⚠ $repo_name: не в sources — пропуск"
       fi
     fi
-  done
+  done < <(iwe_repo_dirs "$WORKSPACE_DIR"/PACK-* "$WORKSPACE_DIR"/DS-*)
 
   if [ -z "$l2_sources" ] && [ -z "$l4_sources" ]; then
     log "  Нет изменений в индексируемых источниках — пропуск reindex"

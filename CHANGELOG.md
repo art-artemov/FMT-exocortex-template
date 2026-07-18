@@ -102,10 +102,22 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-07-16
+
+
+
+## [Unreleased] — обновлено 2026-07-18
 
 ### Added
 
+- `5aabac2` feat(wp483): sync guide-kit v0.1.1 into template
+- `ae900f3` feat(wp485): доставить 4 скрипта Kimi Standalone из root в шаблон
+- `262c313` feat(l1-skills): добавить USER-SPACE маркеры в agent-fault и audit-installation
+- `017235c` feat(wp483-f4): deliver guide-kit v0.1.0 to the template (demo catalog + work_section)
+- `fee0f85` feat(template-sync): промоция слим-ядра CLAUDE.md + hot-каркаса из авторского IWE
+- `8c9c305` feat(wp415): provenance-free iwesys publication
+- `63c2ec5` feat(wp415): Cyrillic gate — publish-to-iwesys rejects any Cyrillic
+- `58b8602` feat(residency-gate): mandatory schema_version + pilot-approved pre-grant.yaml (WP-476 F1 cond. 2/6, pilot decisions 2026-07-16)
+- `078f66c` feat(wp483-f4): guide-kit → template sync tooling (vendored-by-tag model)
 - `d450902` feat(day-close): token-discipline execution model — digest + subagent phases (#234)
 - `f4ca48e` feat(manifest): update-manifest.local.json — fork-local exclusions survive update.sh (#247)
 - `c65f9d0` feat(WP-450 S-50): promote hot-files.list auto-discovery to FMT
@@ -142,6 +154,10 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- `e9cf822` refactor(scripts): удалить избыточный незащищённый template-sync.sh
+- `917d950` docs: regenerate [Unreleased] CHANGELOG after guide-kit v0.1.0 delivery (017235c)
+- `3b1941a` revert(claude-md): вернуть шаблонный distinctions.md — не мирроить авторский
+- `dd273fd` docs(changelog): thank July issue reporters — maxborovik, art-artemov, 277zdwvw9f-pixel, alexfirstoff, alexmetasky, AVNechaev, VxxxlBxxxxv
 - `d68413b` docs: regenerate [Unreleased] CHANGELOG after #234 promotion
 - `a5697c3` docs: regenerate [Unreleased] CHANGELOG after #247 local-manifest feature
 - `387dd77` docs: regenerate [Unreleased] CHANGELOG after issue sweep (#264/#240/#222/#223/#254/#234)
@@ -169,6 +185,16 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `5dcff24` fix(wp485): доставить 4 скрипта, обещанных уже промотированными SKILL.md (Ф4)
+- `0b20534` fix(templ): issue funnel 266 — доставка session-guard.sh + SessionEnd fail-safe
+- `eb612ec` fix(day-open/day-close): дедупликация repo-symlink алиасов в циклах по репозиториям
+- `8d4217b` fix(templ): issue funnel 266 — .gitignore для audit-логов + опечатка в CLAUDE.md
+- `662188d` fix(claude-md): добавить недостающий .claude/rules-lazy/blocking-rules-full.md
+- `188653a` fix(wp415): 3 gaps found by review — CHANGELOG heading drop, broken in-page anchors, incomplete author-attribution regex
+- `d69d6f6` fix(wp485): Ф3 ч.2 — синхронизация 5 скриптов root↔шаблон
+- `af12f9c` fix(residency-gate): mark_pre_granted becomes a warning no-op (verifier finding, WP-476)
+- `b1679da` fix(wp-485): подключить check-wp-transfer-completeness.sh к Week Close шаблона
+- `c5488d4` fix(wp-485): 4 живых бага в скриптах шаблона — восстановление регрессии
 - `1c62621` fix(day-close): language-tolerant postcondition patterns 9a/9b (#234)
 - `5ab284f` fix(executor-catalog): VALID_EXECUTORS += agent, script+judgment (#222)
 - `655d385` fix(setup,update): quote env values (#223) + merge-managed base↔remote detector (#254)
@@ -255,8 +281,6 @@ Versioning: [Semantic Versioning](https://semver.org/).
 - `0b5e140` fix(extractor): guard против запуска сырого файла шаблона + правка примеров
 - `b4d08a2` fix(v0.35.5): orphan-detection TypeError + DS-strategy validator + root detection (#214 #215)
 - `212fa2f` fix(setup): include rules-lazy in dry-run and section message
-- `b7d75a8` fix(template): verify-template-integrity mirrors CI contract+smoke jobs
-- `0200a93` fix(template): close manifest drift + setup/update rules-lazy gap, wire parity gate
 
 
 ## [0.35.5] — 2026-06-30

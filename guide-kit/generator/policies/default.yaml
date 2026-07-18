@@ -1,0 +1,25 @@
+# guide-kit default content policy.
+#
+# required_attribution_slots: what must have an honest source in decision_log,
+# or adapter.py hard-fails instead of silently emitting an empty/fabricated
+# result. accepted_methods — which extraction_method values satisfy the slot.
+#
+# llm_assisted_confidence — a CONSTANT set by the policy author. adapter.py
+# does not compute it and does not take it from the LLM's self-assessment
+# (peer-session review: an LLM self-assessment would turn
+# the hard-fail into decoration).
+#
+# Both required slots below allow llm-assisted by default — otherwise a
+# portable profile without a curriculum (Marina/David, per the concept's worked examples) would
+# reliably fail every run, and an "honest gap" would turn into a
+# "non-functional product".
+
+required_attribution_slots:
+  - slot: narrative
+    accepted_methods: [direct, derived, llm-assisted]
+    llm_assisted_confidence: 0.4
+  - slot: plan_day.element_choice
+    accepted_methods: [direct, derived, llm-assisted]
+    llm_assisted_confidence: 0.3
+
+optional_attribution_slots: ["*"]

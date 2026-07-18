@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# routing: helper  skill=week-close  called-by=sonnet
+# routing: helper  called-by=day-close  deterministic=true
 # see DP.SC.159, DP.ROLE.059
 # archive-done-wp.sh — атомарная архивация завершённого РП
 # see DP.M.010, DP.SC.033 (WP-297)
+# see WP-5 (фаза «Проверка полноты переноса перед архивацией inbox/WP-N»,
+# 2026-07-10) — переписан под папочную конвенцию WP-434 + подключён
+# check-wp-transfer-completeness.sh
 #
 # Шаги:
-#   1. Найти inbox/WP-{N}-*.md по номеру
-#   2. Обновить frontmatter: status → done
-#   3. git mv inbox/ → archive/wp-contexts/
+#   1. Найти inbox/WP-{N}/WP-{N}.md (папочная конвенция WP-434);
+#      fallback — устаревший плоский inbox/WP-{N}-*.md.
+#   2. Прогнать check-wp-transfer-completeness.sh (warn-not-block).
+#   3. Обновить frontmatter: status → done.
+#   4. git mv папку (или файл) inbox/ → archive/wp-contexts/.
 #
 # Использование:
 #   bash archive-done-wp.sh <WP_NUM> [IWE_ROOT]
@@ -22,6 +27,10 @@ GOV_REPO="${IWE_GOVERNANCE_REPO:-DS-strategy}"
 INBOX="$IWE/$GOV_REPO/inbox"
 ARCHIVE="$IWE/$GOV_REPO/archive/wp-contexts"
 STRATEGY_REPO="$IWE/$GOV_REPO"
+# check-wp-transfer-completeness.sh lives next to this script — resolve relative to
+# self so both the root copy and the promoted template copy find their own sibling.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CHECK_SCRIPT="$SCRIPT_DIR/check-wp-transfer-completeness.sh"
 
 if [[ -z "$WP_NUM" ]]; then
   echo "Использование: $0 <WP_NUM> [IWE_ROOT]" >&2
@@ -31,27 +40,56 @@ fi
 # Убрать префикс WP- если передали
 WP_NUM="${WP_NUM#WP-}"
 
-# Найти файл
-WP_FILE=$(find "$INBOX" -maxdepth 1 -name "WP-${WP_NUM}-*.md" 2>/dev/null | head -1)
+WP_DIR="$INBOX/WP-${WP_NUM}"
+WP_FILE_FOLDER="$WP_DIR/WP-${WP_NUM}.md"
+WP_FILE_FLAT=$(find "$INBOX" -maxdepth 1 -name "WP-${WP_NUM}-*.md" 2>/dev/null | head -1)
 
-if [[ -z "$WP_FILE" ]]; then
-  echo "❌ WP-${WP_NUM}: файл не найден в $INBOX" >&2
+if [[ -f "$WP_FILE_FOLDER" ]]; then
+  MODE="folder"
+  WP_FILE="$WP_FILE_FOLDER"
+elif [[ -n "$WP_FILE_FLAT" ]]; then
+  MODE="flat"
+  WP_FILE="$WP_FILE_FLAT"
+  echo "⚠️  WP-${WP_NUM}: найден только устаревший плоский файл (не папочная конвенция WP-434)" >&2
+else
+  echo "❌ WP-${WP_NUM}: не найден ни $WP_FILE_FOLDER, ни плоский inbox/WP-${WP_NUM}-*.md" >&2
   exit 1
 fi
 
 FILENAME=$(basename "$WP_FILE")
-ARCHIVE_TARGET="$ARCHIVE/$FILENAME"
 
-echo "📦 Архивирую WP-${WP_NUM}: $FILENAME"
+if [[ "$MODE" == "folder" ]]; then
+  ARCHIVE_TARGET="$ARCHIVE/WP-${WP_NUM}"
+  MOVE_SRC="inbox/WP-${WP_NUM}"
+  MOVE_DST="archive/wp-contexts/WP-${WP_NUM}"
+else
+  ARCHIVE_TARGET="$ARCHIVE/$FILENAME"
+  MOVE_SRC="inbox/$FILENAME"
+  MOVE_DST="archive/wp-contexts/$FILENAME"
+fi
 
-# Guard (issue #224): create-wp.sh уже создал pending-заготовку по этому же
-# пути (Шаг 2/6 "archive stub") — перезаписываем только саму pending-заготовку,
-# не случайный уже-заполненный §Закрытие. Проверка ДО правки inbox-файла —
-# иначе при отказе inbox остаётся тронутым (frontmatter уже переписан), а
-# archive нет: смоук-тест 2026-07-05 поймал именно этот порядок как баг.
-if [[ -f "$ARCHIVE_TARGET" ]] && ! grep -q "^status: pending" "$ARCHIVE_TARGET"; then
-  echo "❌ $ARCHIVE_TARGET уже существует и не помечен status: pending — не перезаписываю, проверьте вручную" >&2
-  exit 1
+echo "📦 Архивирую WP-${WP_NUM} ($MODE): $FILENAME"
+
+# Проверка полноты переноса (warn-not-block) — WP-5, 2026-07-10
+if [[ -x "$CHECK_SCRIPT" ]]; then
+  bash "$CHECK_SCRIPT" "$WP_NUM" "$IWE" || true
+fi
+
+# Guard (issue #224): create-wp.sh уже мог создать pending-заготовку по этому
+# же пути (Шаг 2/6 "archive stub") — перезаписываем только саму
+# pending-заготовку, не случайный уже-заполненный §Закрытие. Проверка ДО
+# правки inbox-файла — иначе при отказе inbox остаётся тронутым (frontmatter
+# уже переписан), а archive нет: смоук-тест 2026-07-05 поймал именно этот
+# порядок как баг.
+if [[ -e "$ARCHIVE_TARGET" ]]; then
+  STUB_FILE="$ARCHIVE_TARGET"
+  [[ -d "$ARCHIVE_TARGET" ]] && STUB_FILE="$ARCHIVE_TARGET/WP-${WP_NUM}.md"
+  if [[ ! -f "$STUB_FILE" ]] || ! grep -q "^status: pending" "$STUB_FILE" 2>/dev/null; then
+    echo "❌ $ARCHIVE_TARGET уже существует и не помечен status: pending — не перезаписываю, проверьте вручную" >&2
+    exit 1
+  fi
+  # Это pending-заготовка — безопасно освободить путь под git mv.
+  rm -rf "$ARCHIVE_TARGET"
 fi
 
 # 1. Обновить frontmatter status → done
@@ -103,19 +141,26 @@ cp "$TMP" "$WP_FILE"
 rm -f "$TMP"
 
 # 2. git mv (из STRATEGY_REPO); -f — см. guard-комментарий выше (issue #224)
-if ! git -C "$STRATEGY_REPO" mv -f "inbox/$FILENAME" "archive/wp-contexts/$FILENAME" 2>/dev/null; then
+if ! git -C "$STRATEGY_REPO" mv -f "$MOVE_SRC" "$MOVE_DST" 2>/dev/null; then
   echo "⚠️  git mv -f не удался — пробую обычный mv + ручной re-stage"
-  mkdir -p "$ARCHIVE"
-  mv "$WP_FILE" "$ARCHIVE_TARGET"
-  git -C "$STRATEGY_REPO" add "archive/wp-contexts/$FILENAME" 2>/dev/null
-  git -C "$STRATEGY_REPO" rm --cached "inbox/$FILENAME" 2>/dev/null
+  mkdir -p "$(dirname "$STRATEGY_REPO/$MOVE_DST")"
+  mv "$STRATEGY_REPO/$MOVE_SRC" "$STRATEGY_REPO/$MOVE_DST"
+  git -C "$STRATEGY_REPO" add "$MOVE_DST" 2>/dev/null
+  if [[ "$MODE" == "folder" ]]; then
+    git -C "$STRATEGY_REPO" rm -r --cached "$MOVE_SRC" 2>/dev/null
+  else
+    git -C "$STRATEGY_REPO" rm --cached "$MOVE_SRC" 2>/dev/null
+  fi
 fi
 
-echo "✅ WP-${WP_NUM} → archive/wp-contexts/$FILENAME"
-echo "   Следующий шаг: обновить WP-REGISTRY.md + коммит"
+echo "✅ WP-${WP_NUM} → $MOVE_DST"
+echo "   Следующий шаг: сверить WP-REGISTRY.md (если статус там ещё не done) + коммит"
 
 # ОПТ-7: уведомление related.enables
-ENABLES=$(python3 - "$ARCHIVE_TARGET" "$WP_NUM" <<'PYEOF'
+ARCHIVED_FILE="$STRATEGY_REPO/$MOVE_DST"
+[[ "$MODE" == "folder" ]] && ARCHIVED_FILE="$STRATEGY_REPO/$MOVE_DST/WP-${WP_NUM}.md"
+
+ENABLES=$(python3 - "$ARCHIVED_FILE" "$WP_NUM" <<'PYEOF'
 import sys, re
 
 archive_file, closed_wp = sys.argv[1], sys.argv[2]

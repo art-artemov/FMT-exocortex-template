@@ -123,6 +123,15 @@ Kimi инициирует сессию, пишет начальную позиц
 
 Claude инициирует сессию и вызывает Kimi через `scripts/kimi-peer-adapter.sh`.
 
+### Kimi standalone (без Клода)
+
+Kimi работает один, без напарника — для headless-задач по расписанию (`kimi-wp-queue.sh`) или ручных standalone-сессий.
+
+- `scripts/session-guard.sh open --wp WP-N --task "..." --agent kimi` — обязательное открытие сессии до правок.
+- `scripts/kimi-standalone-preflight.sh` — hard gate: проверяет, что сессия открыта и не устарела (порог `IWE_SESSION_STALE_THRESHOLD`, по умолчанию 30 мин), останавливает работу если нет.
+- `scripts/kimi-auto-heartbeat.sh --interval 120` — фоновый heartbeat сразу после открытия сессии, чтобы `kimi-session-watchdog.sh` не считал сессию зависшей.
+- `scripts/kimi-whisper-safe.sh` — безопасная обёртка транскрипции аудио (см. `docs/PLATFORM-COMPAT.md`, опциональные зависимости `ffmpeg`/`openai-whisper`).
+
 ## Handoff с Claude
 
 Когда задача передаётся между Kimi и Claude, используйте один из механизмов из `docs/inter-agent-handoff.md`:

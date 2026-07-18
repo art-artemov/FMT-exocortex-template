@@ -56,6 +56,7 @@ notify() {
 - **/opt/homebrew/bin** — Apple Silicon macOS. В plist PATH — подставляется шаблоном, но не универсален.
 - **Предотвращение сна** — скрипты определяют ОС автоматически: `caffeinate -diu` (macOS) / `systemd-inhibit` (Linux). На macOS **не используется** флаг `-s` — он игнорируется когда Optimized Battery Charging переключает профиль питания на батарею.
 - **Пробуждение ноутбука** — macOS: `pmset repeat wakeorpoweron`, Linux: `rtcwake` / systemd timer `WakeSystem=true`, Windows: Task Scheduler. Для macOS-ноутбуков рекомендуется `pmset -b sleep 0` (запрет idle sleep на батарейном профиле).
+- **`scripts/kimi-whisper-safe.sh`** — опциональные зависимости `ffmpeg` + `openai-whisper` (Python-пакет), не входят в базовую установку шаблона. Скрипт сам проверяет `ffprobe`/`whisper` в PATH и завершается с понятной ошибкой, если их нет — устанавливать по необходимости.
 
 ## Как проверить
 

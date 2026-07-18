@@ -96,6 +96,9 @@
       "path": ".claude/hooks/rule-engine.sh"
     },
     {
+      "path": ".claude/hooks/session-end-status.sh"
+    },
+    {
       "path": ".claude/hooks/wp-gate-reminder.sh"
     },
     {
@@ -124,6 +127,9 @@
     },
     {
       "path": ".claude/process-pattern-catalog.yaml"
+    },
+    {
+      "path": ".claude/rules-lazy/blocking-rules-full.md"
     },
     {
       "path": ".claude/rules-lazy/drift-guard.md"
@@ -324,10 +330,16 @@
       "path": ".claude/skills/residency-gate/lib/state.py"
     },
     {
+      "path": ".claude/skills/residency-gate/pre-grant.yaml"
+    },
+    {
       "path": ".claude/skills/residency-gate/residency-gate.py"
     },
     {
       "path": ".claude/skills/residency-gate/tests/test_parser.py"
+    },
+    {
+      "path": ".claude/skills/residency-gate/tests/test_pre_grant.py"
     },
     {
       "path": ".claude/skills/restore-exocortex/SKILL.md"
@@ -622,6 +634,156 @@
     },
     {
       "path": "extensions/protocol-open.after.fault.md"
+    },
+    {
+      "path": "guide-kit/.gitignore"
+    },
+    {
+      "path": "guide-kit/FORMAT.md"
+    },
+    {
+      "path": "guide-kit/HOW-IT-WORKS.md"
+    },
+    {
+      "path": "guide-kit/LICENSE"
+    },
+    {
+      "path": "guide-kit/README.md"
+    },
+    {
+      "path": "guide-kit/demo/README.md"
+    },
+    {
+      "path": "guide-kit/demo/cards/CAT.002.A1.json"
+    },
+    {
+      "path": "guide-kit/demo/cards/CAT.003.METHOD.001.json"
+    },
+    {
+      "path": "guide-kit/demo/curriculum/M-D1.md"
+    },
+    {
+      "path": "guide-kit/generator/adapter.py"
+    },
+    {
+      "path": "guide-kit/generator/conftest.py"
+    },
+    {
+      "path": "guide-kit/generator/horizons.py"
+    },
+    {
+      "path": "guide-kit/generator/llm_backends/__init__.py"
+    },
+    {
+      "path": "guide-kit/generator/llm_backends/anthropic.py"
+    },
+    {
+      "path": "guide-kit/generator/llm_backends/local.py"
+    },
+    {
+      "path": "guide-kit/generator/llm_backends/openai_compatible.py"
+    },
+    {
+      "path": "guide-kit/generator/onboarding_ctas.py"
+    },
+    {
+      "path": "guide-kit/generator/personal_export.py"
+    },
+    {
+      "path": "guide-kit/generator/planner.py"
+    },
+    {
+      "path": "guide-kit/generator/policies/default.yaml"
+    },
+    {
+      "path": "guide-kit/generator/prompt.md"
+    },
+    {
+      "path": "guide-kit/generator/render_work_section_runner.py"
+    },
+    {
+      "path": "guide-kit/generator/test_acceptance_backends.py"
+    },
+    {
+      "path": "guide-kit/generator/test_adapter_work_section.py"
+    },
+    {
+      "path": "guide-kit/generator/test_demo_catalog.py"
+    },
+    {
+      "path": "guide-kit/generator/test_horizons.py"
+    },
+    {
+      "path": "guide-kit/generator/test_onboarding_ctas.py"
+    },
+    {
+      "path": "guide-kit/generator/test_personal_export.py"
+    },
+    {
+      "path": "guide-kit/generator/test_work_section.py"
+    },
+    {
+      "path": "guide-kit/generator/test_zero_upload.py"
+    },
+    {
+      "path": "guide-kit/generator/work_section.py"
+    },
+    {
+      "path": "guide-kit/guide-kit.config.yaml.example"
+    },
+    {
+      "path": "guide-kit/structurer/classify.py"
+    },
+    {
+      "path": "guide-kit/structurer/extractors.py"
+    },
+    {
+      "path": "guide-kit/structurer/freshness.py"
+    },
+    {
+      "path": "guide-kit/structurer/homes.py"
+    },
+    {
+      "path": "guide-kit/structurer/media.py"
+    },
+    {
+      "path": "guide-kit/structurer/quarantine.py"
+    },
+    {
+      "path": "guide-kit/structurer/residency.py"
+    },
+    {
+      "path": "guide-kit/structurer/sidecar.py"
+    },
+    {
+      "path": "guide-kit/structurer/signals.py"
+    },
+    {
+      "path": "guide-kit/structurer/test_classify.py"
+    },
+    {
+      "path": "guide-kit/structurer/test_extractors.py"
+    },
+    {
+      "path": "guide-kit/structurer/test_freshness.py"
+    },
+    {
+      "path": "guide-kit/structurer/test_media.py"
+    },
+    {
+      "path": "guide-kit/structurer/test_quarantine.py"
+    },
+    {
+      "path": "guide-kit/structurer/test_residency.py"
+    },
+    {
+      "path": "guide-kit/structurer/test_sidecar.py"
+    },
+    {
+      "path": "guide-kit/tests/acceptance/stub_llm_server.py"
+    },
+    {
+      "path": "guide-kit/tests/acceptance/test_p1_clean_machine.sh"
     },
     {
       "path": "memory/MEMORY.md"
@@ -1032,6 +1194,9 @@
       "path": "scripts/archive-done-wp.sh"
     },
     {
+      "path": "scripts/artifactor.py"
+    },
+    {
       "path": "scripts/backup-icloud.sh"
     },
     {
@@ -1086,6 +1251,9 @@
       "path": "scripts/create-wp.sh"
     },
     {
+      "path": "scripts/day-close-lock.sh"
+    },
+    {
       "path": "scripts/day-close-prepare.sh"
     },
     {
@@ -1102,6 +1270,9 @@
     },
     {
       "path": "scripts/day-open-pipeline.sh"
+    },
+    {
+      "path": "scripts/day-open-preflight.sh"
     },
     {
       "path": "scripts/day-open-scaffold.sh"
@@ -1161,6 +1332,9 @@
       "path": "scripts/iwe-bug-report.sh"
     },
     {
+      "path": "scripts/iwe-consent.sh"
+    },
+    {
       "path": "scripts/iwe-drift-helpers/check-arch-version.sh"
     },
     {
@@ -1179,10 +1353,16 @@
       "path": "scripts/iwe-transcribe.sh"
     },
     {
+      "path": "scripts/iwe-w-reflection.sh"
+    },
+    {
       "path": "scripts/ke-classify.sh"
     },
     {
       "path": "scripts/ke-queue-stats.sh"
+    },
+    {
+      "path": "scripts/kimi-auto-heartbeat.sh"
     },
     {
       "path": "scripts/kimi-compaction-watchdog.sh"
@@ -1192,6 +1372,12 @@
     },
     {
       "path": "scripts/kimi-session-watchdog.sh"
+    },
+    {
+      "path": "scripts/kimi-standalone-preflight.sh"
+    },
+    {
+      "path": "scripts/kimi-whisper-safe.sh"
     },
     {
       "path": "scripts/lesson-close.sh"
@@ -1263,6 +1449,9 @@
       "path": "scripts/server-news.sh"
     },
     {
+      "path": "scripts/session-guard.sh"
+    },
+    {
       "path": "scripts/settings-promote.sh"
     },
     {
@@ -1300,9 +1489,6 @@
     },
     {
       "path": "scripts/sync_feedback_to_memory.py"
-    },
-    {
-      "path": "scripts/template-sync.sh"
     },
     {
       "path": "scripts/test-route-task.sh"
@@ -1387,6 +1573,8 @@
     "scripts/check-manifest-rename-coverage.py",
     "scripts/delivery_checks.py",
     "scripts/generate-helper-catalog.py",
+    "scripts/guide-kit-sync-state.yaml",
+    "scripts/guide-kit-sync.sh",
     "scripts/iwe-catalog-list.py",
     "scripts/iwe-trace.py",
     "scripts/session-dispatcher-tsekh.py",

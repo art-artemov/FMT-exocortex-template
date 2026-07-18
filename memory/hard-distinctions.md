@@ -18,56 +18,21 @@ description: "Операционный файл памяти IWE"
 > Источник: FPF (A.7 Strict Distinction)
 > Архив устаревших различений: `hard-distinctions_archive.md` (WP-7 Ф-2 trim 2026-04-25).
 
-## 1. Персона ≠ Память ≠ Контекст (модель пользовательских данных, DP.D.052 v2)
+## 1. Персона ≠ Память ≠ Контекст (модель пользовательских данных, DP.D.052)
 
 > Заменяет прежний термин «Цифровой двойник / ЦД» как монолитную сущность.
 > Критерий разделения слоёв — **writer + owner (source-of-truth)**.
-> v2 (2026-05-31, peer-сессия 2026-05-31-11): таблица расщеплена на 4 оси (Writer / Identity-anchor / State-storage / Snapshot-unit) вместо склейки Owner+Артефакт; добавлено различение Носитель ≠ Персона ≠ Декларация (см. §1.1).
-> SoTA 2025-2026: Letta (**human block** = коррелят нашей Персоны, не persona block — там self-агента); Mem0 (structured attributes vs raw memories); LangMem (semantic/episodic/procedural); Anthropic Memory tool; OLM literature (Bull&Kay 2007 — Learner Profile vs Learner Model); Solid (W3C user pod); Honcho — отвергаемая альтернатива (unified peer pattern, конфликт с GDPR/audit/capture-flow).
+> SoTA 2025-2026: Letta (persona/human/archival/recall blocks), Mem0 (structured attributes vs raw memories), LangMem (semantic/episodic/procedural), Anthropic Memory tool.
 
-### Три слоя — четыре оси (v2, 2026-05-31)
+### Три слоя пользовательской модели
 
-| Слой | Writer | Identity-anchor | State-storage | Snapshot-unit |
-|------|--------|-----------------|---------------|---------------|
-| **Персона** | пользователь (или агент по поручению + acceptance) | Ory `subject_id` (UUID immutable; для Pre-Grant — `subscription_grants.claim_token`) | Git (PACK-personal, governance-репо, captures, preferences) + Neon refs (`persona_grants`) | Git commit + frontmatter `valid_from` |
-| **Память** | платформа автоматически | Ory `subject_id` (FK через `persona_grants`) | Neon (Observed events + Derived aggregates) | Event log offset + Derived snapshot version |
-| **Контекст** (= Проекция) | агент в runtime | Ory `subject_id` (read для адресации) | Эфемерно (память процесса) | LLM-prompt assembly id |
+| Слой | Writer | Owner (source-of-truth) | Где физически |
+|------|--------|-------------------------|---------------|
+| **Персона** | пользователь (или агент по его поручению + acceptance) | пользователь — его Git-репо | PACK-personal, DS-strategy, captures, fleeting-notes, preferences (CLAUDE.md, extensions), Ory identity (декларируемые факты) |
+| **Память** | платформа автоматически | платформа — Neon | События (activity-hub #3), платежи (#4), расчёты/baseline/potential/indicators (#5 — бывший узкий ЦД), подписки-контракты (#1), проекции паков (#2 индекс) |
+| **Контекст** | агент в runtime | runtime (не хранится долго) | Промпт-сборка под один LLM-вызов |
 
-**Distributed identity pattern.** Identity-anchor живёт отдельно от content и refs — это стандартный паттерн federated identity систем (Cameron 2005; OAuth2 RFC 6749/7591; W3C DID 2022; Ory «decoupled identity»). Централизованная таблица `personas` в Neon была бы дублированием Ory subject_id → отвергнуто.
-
-### Тест границы (v2 — по новым осям)
-
-| Удалить | Что пропадёт | Что останется |
-|---------|--------------|---------------|
-| Identity-anchor (Ory subject_id или claim_token) | Identity Персоны → Персона как entity перестаёт существовать | Декларации в Git как orphan-history; Neon refs с битой FK |
-| Git пользователя (PACK-personal etc.) | Все декларации (содержимое) | Identity-anchor + Neon refs (Персона жива, но без декларации) |
-| Один Git commit | Одна snapshot-версия декларации | Identity, остальные snapshots, Neon refs |
-| Neon `persona_grants` записи | Связь Персоны с Памятью (refs) | Identity-anchor + декларации в Git |
-| Neon целиком | Память пропала | Персона цела (anchor + Git) |
-| Прервать LLM-вызов | Проекция пропала | Персона + Память целы |
-| Носитель перестал заходить | Ничего в платформе не пропадает | Всё (Персона ≠ носитель, см. §1.1) |
-
-### §1.1 Носитель ≠ Персона ≠ Декларация Персоны
-
-> Производное различение, делает явной ось «сущность vs снимок» внутри Персоны. Введено по итогам peer-сессии 2026-05-31-11. Адресует интуицию «в БД хранится не Персона, а её Версия».
-
-| Сущность | Что это | Где живёт | Кто writer |
-|----------|---------|-----------|------------|
-| **Носитель** | Человек в физическом мире | Вне платформы | — |
-| **Персона** | Entity-в-IWE, представляющая одного носителя; **distributed composition** (anchor + declarations + refs) | Ory subject_id + Git PACK-personal + Neon persona_grants | Пользователь (declarations) + Платформа (identity-anchor, refs) |
-| **Декларация Персоны** (Persona Snapshot) | Один срез декларативного содержимого на момент T | Git commit + frontmatter `valid_from` | Пользователь (или агент по поручению с acceptance) |
-
-**Тесты:**
-1. «Носитель перестал заходить → Персона пропала?» — Нет, Персона остаётся как entity внутри платформы.
-2. «Удалить один Git commit → Персона пропала?» — Нет, Персона жива (anchor + остальные commits + Neon refs); пропадёт одна версия декларации.
-3. «Что нужно удалить для полной смерти Персоны?» — Identity-anchor (Ory subject_id или claim_token). Удаление Git/Neon refs — частичная смерть.
-
-**Lifecycle anchor:** Pre-Grant (anchor = `claim_token`, лид/гость до Ory) → Granted (anchor = `subject_id`, после claim flow). Переход односторонний, атомарный.
-
-**Что это меняет в практике:**
-- При обсуждении «хранилища Персоны» — указывать компонент (anchor / declarations / refs).
-- GDPR right-to-be-forgotten: revoke anchor → wipe Git → wipe Neon refs (последовательность, не одна операция).
-- Импорт Letta: наш Persona = их `human block`, **не** `persona block` (= self-описание агента).
+**Тест границы:** «Что пропадёт, если удалю X?» — Git пользователя → Персона. Neon → Память. Прервать LLM-вызов → Контекст.
 
 ### Пять категорий **вне** пользовательской модели
 
@@ -549,3 +514,44 @@ description: "Операционный файл памяти IWE"
 - Качество → степень мастерства
 
 **Подробно:** FPF A.2, R9:43, `.claude/rules/distinctions.md` (Мастерство (роль) ≠ Степень мастерства)
+---
+
+## 33. `primary_program` в profile.md — input ≠ output (peer-session 2026-05-31-31)
+
+> Тонкое уточнение HD §«Программа развития ≠ Primary key выбора руководства» (distinctions.md). После peer-19 был добавлен `primary_program: "research"` в `personal-guide/profile.md` Tseren'а как самодекларация. Это **смешение модели и интерфейса**: программа как **input** превращает её в фильтр, а не в производное от анализа.
+
+| `primary_program` как input | `program_tag_derived` как output |
+|---|---|
+| Записан в `profile.md` самодекларацией пилота | Записан в `lesson/YYYY-MM-DD.md` Портным после рендера |
+| Routing key: render читает → выбирает 1 ветку | Метаданные результата: «какая программа сейчас доминирует» |
+| Lifecycle = до анализа | Lifecycle = после анализа |
+| Пример нарушения: peer-19 Ф-mpr-a dispatcher по `pilot.primary_program` | Пример правильного: lesson frontmatter `program_tag_derived: "ИР + рабочее наставничество"` |
+
+**Канал-специфика:**
+- **Universal channel** (guide.system-school.ru): нет понятия «program пилота». Показывает ЛР+РР+ИР как параллельные ветки навигации. Routing по `primary_program` = false constraint.
+- **Personal channel** (`personal-guide/lesson/`): нет понятия «program пилота» на входе. Портной композирует «руководство за сегодня» поликорнем — lookup в seeds всех применимых программ + merge по `(stage, domain, current_request, dissatisfactions, w_reflection)`. Программа — тег на выходе, не routing key на входе.
+
+**Тест:** «Это поле читается ДО render для выбора пути или пишется ПОСЛЕ render как метаданные результата?»
+- Читается ДО → нарушение (program как routing key)
+- Пишется ПОСЛЕ → правильно (program как output tag)
+
+**Утилиты, не нарушающие distinction:**
+- `_safe_seed_path(filename)` — path-traversal guard, program-agnostic.
+- `resolve_seeds_by_contract(program, stage, domain, roadmap, mode)` — lookup в Pack-personal seeds по (stage, domain). Вызывается N раз с разными roadmap для поликорень-композиции, не 1 раз с одним program.
+- `load_program_roadmap(program)` — читает DS-программный roadmap.yaml. Сам по себе не routing key.
+
+**Нарушающие distinction (deprecated 2026-05-31 peer-31):**
+- `resolve_program(pilot)` — читает `pilot.primary_program`. Это routing key. Deprecated, sole consumer (`render_pilot()`) больше не вызывает.
+
+**Известное ограничение (peer-31):** существующие managed-pilots (включая Tseren'а) до реализации Ф-poly-root-composition получают рендер по legacy ЛР flow (через `generate_guide` / `plan_horizon`). МШС-stub (Ф-A hotfix) маскирует это для МШС-pilots. Это дефер, не баг — fix при реализации S2 (выбор program-tag из runtime-анализа) в Ф-poly-root.
+
+**Подробно:** `.claude/rules/distinctions.md` §«Программа развития ≠ Primary key выбора руководства», `sessions/2026-05/2026-05-31-31-program-tag-not-routing/report.md`.
+
+## 34. SPF ≠ Pack (фреймворк ≠ результат); ось происхождения ≠ ось охвата
+
+
+- **SPF ≠ Pack (фреймворк ≠ его результат).** `SPF` — фреймворк вторых/доменных принципов: требования + процесс (`SPF/`), задаёт форму и критерии домена. `Pack` — результат применения SPF, наполненный учебник домена (`SPF/README.md`: «Pack — результат применения SPF»). Специализация A.7 (Method ≠ Tool, Object ≠ Description).
+- **Pack = DPF Левенчука (НЕ SPF = DPF — раннее утверждение ошибочно).** Левенчук-«DPF» («учебник предметной области», «вторые принципы») это наполненное содержание = IWE-`Pack`. IWE-`SPF` это станок производства Pack; у Левенчука он не вынесен отдельно, живёт внутри FPF (E.8/E.10/F.18/E.21). «Вторые» = «доменные» (синонимы), отказываться от термина не нужно. Асимметрия: `FPF` = фреймворк+содержание; `SPF` = только фреймворк; `Pack` = только содержание.
+- **Две оси, не одна.** `Base/Pack/DS` режут по происхождению/владельцу (fallback chain `DS→Pack→Base`). `FPF/DPF/LPF` — по охвату (универсальное→доменное→локальное). Совмещать обе, не заменять. `Base` ⊇ {ZP, FPF, SPF, FMT-*} — шире одного уровня. `PACK-agent-rules` ≈ LPF (помечен `type: pack` → переклассифицировать до промоции).
+
+**Тест:** «фреймворк или его результат?» → SPF / Pack. «про владельца или про охват?» → Base/Pack/DS / FPF/DPF/LPF.

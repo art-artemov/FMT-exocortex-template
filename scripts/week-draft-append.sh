@@ -87,23 +87,35 @@ if [[ -x "$WAKATIME_CLI" ]]; then
   [[ -z "$WAKA" ]] && WAKA="—"
 fi
 
+# iwe_repo_dirs — печатает поддиректории с .git, дедуплицированные по реальному
+# физическому пути (repo-symlink алиас иначе считается отдельным репозиторием
+# наравне с оригиналом — завышенный счётчик коммитов, найдено 2026-07-17).
+iwe_repo_dirs() {
+  local repo real seen=""
+  for repo in "$@"; do
+    [ -d "$repo/.git" ] || continue
+    real=$(cd -P "$repo" 2>/dev/null && pwd) || continue
+    case " $seen " in
+      *" $real "*) continue ;;
+    esac
+    seen="$seen $real"
+    echo "$repo"
+  done
+}
+
 # 2. Commits across all repos since today 00:00
 COMMITS=0
-for repo in "$WORKSPACE"/*/; do
-  if [[ -d "${repo}.git" ]]; then
-    count=$(git -C "$repo" log --since="today 00:00" --oneline --no-merges 2>/dev/null | wc -l | tr -d ' ')
-    COMMITS=$((COMMITS + count))
-  fi
-done
+while IFS= read -r repo; do
+  count=$(git -C "$repo" log --since="today 00:00" --oneline --no-merges 2>/dev/null | wc -l | tr -d ' ')
+  COMMITS=$((COMMITS + count))
+done < <(iwe_repo_dirs "$WORKSPACE"/*/)
 
 # 3. Closed WPs today (best effort — by commit message)
 WPS_CLOSED=0
-for repo in "$WORKSPACE"/*/; do
-  if [[ -d "${repo}.git" ]]; then
-    count=$(git -C "$repo" log --since="today 00:00" --pretty=%s 2>/dev/null | grep -ciE "(close|done|complete).*(wp-|WP-)[0-9]+" || true)
-    WPS_CLOSED=$((WPS_CLOSED + count))
-  fi
-done
+while IFS= read -r repo; do
+  count=$(git -C "$repo" log --since="today 00:00" --pretty=%s 2>/dev/null | grep -ciE "(close|done|complete).*(wp-|WP-)[0-9]+" || true)
+  WPS_CLOSED=$((WPS_CLOSED + count))
+done < <(iwe_repo_dirs "$WORKSPACE"/*/)
 
 # Поля «Бюджет закрыт» и «Прогресс месяца» — для ручного заполнения
 BUDGET="—"

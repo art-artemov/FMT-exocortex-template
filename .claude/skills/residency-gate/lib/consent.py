@@ -1,20 +1,95 @@
 """ResidencyGate consent controller - Point A (activation) and Point B (lazy)."""
 
-from typing import List, Tuple, Optional, Callable
+import warnings
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Callable
+
+import yaml
+
 from .parser import DataNeed
 from .state import ResidencyState, ConsentStatus
+
+
+DEFAULT_PRE_GRANT_FILE = Path(__file__).parent.parent / "pre-grant.yaml"
+
+
+class PreGrantError(ValueError):
+    """Pre-grant list is malformed; the gate must fail closed, not guess."""
+
+
+def load_pre_grant_entries(path: Optional[Path] = None) -> Dict[str, dict]:
+    """Load and validate the install-time pre-grant list.
+
+    Every entry must carry an explicit pilot approval (approved_by: pilot +
+    approved_at date) — an unapproved entry is a blocking error, not a warning
+    (pilot decision 2026-07-16, WP-475 acceptance criterion 6).
+
+    Returns {function_id: entry}. Missing file → empty dict (nothing pre-granted).
+    """
+    path = path or DEFAULT_PRE_GRANT_FILE
+    if not path.exists():
+        return {}
+    doc = yaml.safe_load(path.read_text()) or {}
+    entries: Dict[str, dict] = {}
+    for i, entry in enumerate(doc.get("pre_granted") or []):
+        function_id = entry.get("function_id")
+        if not function_id:
+            raise PreGrantError(f"pre-grant entry #{i} has no function_id")
+        if entry.get("approved_by") != "pilot":
+            raise PreGrantError(
+                f"pre-grant entry '{function_id}' lacks 'approved_by: pilot' — a new "
+                f"inbound consumer enters the pre-grant list only with explicit pilot approval"
+            )
+        if not entry.get("approved_at"):
+            raise PreGrantError(f"pre-grant entry '{function_id}' lacks approved_at date")
+        entries[function_id] = entry
+    return entries
 
 
 class ResidencyGate:
     """Single controller for all residency consent checks."""
 
-    def __init__(self, state_manager: Optional[ResidencyState] = None):
+    def __init__(
+        self,
+        state_manager: Optional[ResidencyState] = None,
+        pre_grant_file: Optional[Path] = None,
+    ):
         self.state = state_manager or ResidencyState()
-        self.pre_granted_functions = set()
+        self._pre_grant_file = pre_grant_file
+        self._pre_grant_entries: Optional[Dict[str, dict]] = None  # loaded lazily
+
+    def _pre_grants(self) -> Dict[str, dict]:
+        """Pre-grant entries from the durable file; raises PreGrantError on a malformed list."""
+        if self._pre_grant_entries is None:
+            self._pre_grant_entries = load_pre_grant_entries(self._pre_grant_file)
+        return self._pre_grant_entries
 
     def mark_pre_granted(self, function_id: str) -> None:
-        """Register a function as pre-granted (install-time approval by user)."""
-        self.pre_granted_functions.add(function_id)
+        """Deprecated no-op: programmatic self-marking is no longer honored.
+
+        Pre-grant comes only from the pilot-approved pre-grant.yaml (WP-476 F1
+        condition 6). Kept callable so pre-2026-07-16 consumers don't crash on
+        repo-version skew; it grants nothing.
+        """
+        warnings.warn(
+            f"mark_pre_granted('{function_id}') is a no-op — add the function to "
+            f"pre-grant.yaml with explicit pilot approval instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
+    def _is_pre_granted(self, function_id: str, need: DataNeed) -> bool:
+        """Pre-grant applies only to inbound flows explicitly listed by the pilot.
+
+        Outbound flows can never be pre-granted at install time (WP-475
+        acceptance criterion 6). An entry may narrow itself to specific need
+        keys via its optional 'needs' list.
+        """
+        entry = self._pre_grants().get(function_id)
+        if entry is None or need.flow_direction != "inbound":
+            return False
+        allowed = entry.get("needs")
+        return allowed is None or need.key() in allowed
 
     def check_activation(
         self,
@@ -44,11 +119,10 @@ class ResidencyGate:
             elif status == "revoked":
                 blocking.append(f"{need.name}: consent revoked by user")
             elif status == "not_asked":
-                if function_id in self.pre_granted_functions:
+                if self._is_pre_granted(function_id, need):
                     self.state.grant_consent(function_id, need_key)
                     continue
-                else:
-                    blocking.append(f"{need.name}: requires consent (use Point B / lazy check)")
+                blocking.append(f"{need.name}: requires consent (use Point B / lazy check)")
 
         return len(blocking) == 0, blocking
 

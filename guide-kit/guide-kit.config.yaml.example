@@ -1,0 +1,74 @@
+# guide-kit.config.yaml — example configuration.
+# Copy to guide-kit.config.yaml (git-ignored — may hold an API key) and fill in.
+
+# Optional: path to a local copy of curriculum content (worldview elements).
+# Not set → guide-kit still works: the LLM picks a worldview element on its
+# own, and the decision log honestly marks that slot as "llm-assisted".
+curriculum_path: null
+
+# Optional: path to local practice card content (concrete can-do/task/assessment
+# text for a chosen element). Not set → the same graceful fallback as above.
+cards_path: null
+
+# Which backend to use: anthropic | openai_compatible | local
+llm_backend: anthropic
+
+# Required for openai_compatible; optional override for local (default
+# http://localhost:8080/v1, matching most local OpenAI-compatible servers).
+llm_base_url: null
+
+# Model name. Not set → the backend's own default.
+llm_model: null
+
+# API key. Prefer the GUIDE_KIT_LLM_API_KEY environment variable over
+# writing it here — this file is git-ignored either way.
+#
+# Note: one key field serves all three backends. If you switch llm_backend
+# to "local" for privacy, also clear this field (or the env var) — otherwise
+# a leftover cloud-provider key would be sent to whatever llm_base_url points
+# at, which matters if that URL is ever wrong (typo, stale tunnel).
+llm_api_key: null
+
+# Append the two optional invitation blocks (connect to the hosted platform;
+# adopt the full IWE template) at the end of the generated guide. Default true
+# — guide-kit is also meant to be a soft entry point into the platform; turn
+# this off if you never want to see them.
+onboarding_ctas: true
+
+# Link for the platform invitation block. Not set here → defaults to the
+# hosted platform's own public MCP connector (https://mcp.aisystant.com/mcp).
+# Set to "" explicitly to suppress the link line (e.g. a fork of guide-kit
+# that doesn't want to point at this platform yet); set to another URL to
+# point at a different platform entirely.
+platform_connect_url: null
+
+# Merge a local profile.platform.yaml (produced separately by running
+# generator/personal_export.py — see FORMAT.md § Platform pull) into the
+# declared profile.yaml at generation time. Default true. This is a local
+# file merge only — turning it on does NOT itself fetch anything or make
+# any network call; personal_export.py must be run on its own to produce
+# that file in the first place. false — ignore any profile.platform.yaml
+# on disk and use the declared profile as-is.
+personal_export: on
+
+# The optional "what's active" block (README.md § Work section). Read-only,
+# no LLM. off (default) — no section. generic — lists any 2.2-typed file
+# from the structurer's type-index.json, title + link only. iwe — this
+# template's own convention: today's current/DayPlan {date}.md table.
+#
+# Leave this "off" unless you've made a deliberate decision to turn it on —
+# "iwe" surfaces your own work-item titles inside the generated guide, which
+# then travels wherever that guide travels (e.g. a synced personal-guide
+# repository). See DP.SC.053 before setting this to "iwe" on a real
+# installation.
+work_section: off
+
+# Only used when work_section is not "off". Base directory work_section
+# reads from: .structurer/type-index.json for "generic", inbox/WP-{N}/ for
+# "iwe" link resolution. Not set → the current working directory.
+base_path: null
+
+# Only used when work_section: iwe. Path to today's DayPlan file — absolute,
+# or relative to base_path. Not set (or the file doesn't exist yet, e.g. the
+# day hasn't been opened) → an honest empty section, not an error.
+dayplan_path: null

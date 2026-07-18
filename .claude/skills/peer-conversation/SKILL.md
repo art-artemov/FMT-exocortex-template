@@ -119,7 +119,7 @@ Slug = первые 4 латинских слова из задачи строч
 **1.0 Session-guard open (WP-398, обязательно, ДО любых Write/Edit в сессии).** Синхронизирует пир-сессию с `session-guard.sh` Scope gate — без этого коммит на Шаге 4.5 будет заблокирован pre-commit хуком (mtime файлов сессии старше семафора). WP берётся из Шага 0б (найденный или «day-close»/«unknown», если РП не назначен):
 
 ```bash
-IWE_AGENT=claude-code bash "$HOME/IWE/scripts/session-guard.sh" open \
+IWE_AGENT=claude-code bash "${IWE_SCRIPTS:-$HOME/IWE/scripts}/session-guard.sh" open \
   --wp "<WP-NNN из Шага 0б>" --agent claude-code \
   --task "<задача одной строкой>" --slug "$SESSION_ID"
 ```
@@ -753,7 +753,7 @@ git push
 **4.5.2 Session-guard close** (best-effort, ПОСЛЕ успешного push — закрывать семафор раньше нельзя, иначе Scope gate на 4.5.1 не найдёт активного семафора):
 
 ```bash
-IWE_AGENT=claude-code bash "$HOME/IWE/scripts/session-guard.sh" close --agent claude-code 2>&1 || \
+IWE_AGENT=claude-code bash "${IWE_SCRIPTS:-$HOME/IWE/scripts}/session-guard.sh" close --agent claude-code 2>&1 || \
   echo "session-guard close не прошёл — семафор останется активным до auto-orphan (TTL 30 мин на следующем open), не блокирует пилота"
 ```
 
