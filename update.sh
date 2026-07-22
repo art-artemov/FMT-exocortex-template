@@ -80,6 +80,54 @@ hash_file() {
     sha256sum "$1" 2>/dev/null | cut -d' ' -f1
 }
 
+# sed_escape_replacement STR — экранирует &, | и \ для безопасной подстановки
+# STR как replacement в `sed s|...|STR|` (issue #269 verify-фикс). Без этого
+# значение из .exocortex.env, содержащее & (sed: «весь мэтч») или | (наш
+# разделитель) тихо портит подстановку вместо явной ошибки.
+sed_escape_replacement() {
+    printf '%s' "$1" | sed -e 's/[\&|]/\\&/g'
+}
+
+# substitute_claude_placeholders SRC DST — копирует SRC в DST с подставленными
+# {{PLACEHOLDER}} (issue #269). setup.sh подставляет их в workspace/CLAUDE.md И
+# в .claude.md.base при установке; update.sh раньше копировал upstream-файл в
+# 3-way merge и в новый .base сырым — плейсхолдер, который апстрим добавил в
+# CLAUDE.md, приезжал нерезолвленным и застревал в merge-base для всех
+# последующих обновлений. Читает .exocortex.env тем же безопасным парсером,
+# что и Step 5b (только простые KEY=VALUE, без source/eval).
+substitute_claude_placeholders() {
+    local src="$1" dst="$2"
+    local env_file=""
+    [ -f "$WORKSPACE_DIR/.exocortex.env" ] && env_file="$WORKSPACE_DIR/.exocortex.env"
+    [ -z "$env_file" ] && [ -f "$SCRIPT_DIR/.exocortex.env" ] && env_file="$SCRIPT_DIR/.exocortex.env"
+
+    cp "$src" "$dst"
+    [ -z "$env_file" ] && return 0
+    grep -qE '^\s*(source|eval|exec|\.|`|;|\$\()' "$env_file" 2>/dev/null && return 0
+
+    local key value
+    while IFS= read -r line; do
+        case "$line" in \#*|"") continue ;; esac
+        key="${line%%=*}"; value="${line#*=}"
+        key=$(echo "$key" | tr -d '[:space:]')
+        [ -z "$key" ] && continue
+        declare "SUBST_$key=$value"
+    done < "$env_file"
+
+    sed_inplace \
+        -e "s|{{GITHUB_USER}}|$(sed_escape_replacement "${SUBST_GITHUB_USER:-}")|g" \
+        -e "s|{{WORKSPACE_DIR}}|$(sed_escape_replacement "${SUBST_WORKSPACE_DIR:-$WORKSPACE_DIR}")|g" \
+        -e "s|{{CLAUDE_PATH}}|$(sed_escape_replacement "${SUBST_CLAUDE_PATH:-}")|g" \
+        -e "s|{{CLAUDE_PROJECT_SLUG}}|$(sed_escape_replacement "${SUBST_CLAUDE_PROJECT_SLUG:-$CLAUDE_PROJECT_SLUG}")|g" \
+        -e "s|{{TIMEZONE_HOUR}}|$(sed_escape_replacement "${SUBST_TIMEZONE_HOUR:-}")|g" \
+        -e "s|{{TIMEZONE_DESC}}|$(sed_escape_replacement "${SUBST_TIMEZONE_DESC:-}")|g" \
+        -e "s|{{HOME_DIR}}|$(sed_escape_replacement "${SUBST_HOME_DIR:-$HOME}")|g" \
+        -e "s|{{GOVERNANCE_REPO}}|$(sed_escape_replacement "${SUBST_GOVERNANCE_REPO:-}")|g" \
+        -e "s|{{IWE_TEMPLATE}}|$(sed_escape_replacement "${SUBST_IWE_TEMPLATE:-$SCRIPT_DIR}")|g" \
+        -e "s|{{IWE_RUNTIME}}|$(sed_escape_replacement "${SUBST_IWE_RUNTIME:-}")|g" \
+        "$dst"
+}
+
 # Личные L4-конфиги в memory/: update.sh сеет их при ОТСУТСТВИИ (новая инсталляция),
 # но НИКОГДА не перезаписывает поверх существующего — там персональные правки
 # пользователя (напр. calendar_ids, slot-настройки в day-rhythm-config.yaml).
@@ -441,6 +489,27 @@ if [ "$TOTAL_CHANGES" -eq 0 ]; then
         echo "  ℹ Режим --check: repair-pass пропущен (может чинить workspace, запусти без --check)."
     else
         repair_pass
+        # issue #279: TOTAL_CHANGES=0 сравнивает только содержимое файлов, не
+        # версию в update-manifest.json — без этого локальный манифест навсегда
+        # остаётся на старой версии, и --check --fast (сравнивающий только версию)
+        # ложно сообщает об обновлении на каждом следующем прогоне.
+        if [ -f "$MANIFEST" ]; then
+            LOCAL_HASH_BEFORE=$(hash_file "$SCRIPT_DIR/update-manifest.json" 2>/dev/null || true)
+            REMOTE_HASH=$(hash_file "$MANIFEST" 2>/dev/null || true)
+            if [ "$LOCAL_HASH_BEFORE" != "$REMOTE_HASH" ]; then
+                cp "$MANIFEST" "$SCRIPT_DIR/update-manifest.json" \
+                    && echo "  • update-manifest.json: версия синхронизирована (v$UPSTREAM_VERSION)"
+                if is_author_mode; then
+                    git add "$SCRIPT_DIR/update-manifest.json" 2>/dev/null || true
+                else
+                    git add -C "$SCRIPT_DIR" update-manifest.json 2>/dev/null || true
+                fi
+                # pathspec после `--`: коммитить ТОЛЬКО манифест — bare `git commit`
+                # коммитит весь текущий индекс, включая чужое pre-staged (Kimi/Hermes
+                # работают параллельно) под обманчивым "chore: sync..." сообщением.
+                git commit -m "chore: sync update-manifest.json version to v$UPSTREAM_VERSION" --no-verify -- "$SCRIPT_DIR/update-manifest.json" 2>&1 | sed 's/^/  /'
+            fi
+        fi
     fi
     echo "✓ Всё актуально. Обновлений нет. ($UNCHANGED файлов проверено)"
     exit 0
@@ -559,7 +628,8 @@ for f in "${UPDATED_FILES[@]}"; do
     # Special handling for CLAUDE.md: 3-way merge preserving user customizations
     if [ "$f" = "CLAUDE.md" ] && [ -f "$SCRIPT_DIR/$f" ]; then
         BASE_FILE="$SCRIPT_DIR/.claude.md.base"
-        NEW_FILE="$TMPDIR_UPDATE/files/$f"
+        NEW_FILE="$TMPDIR_UPDATE/files/claude-new-substituted.md"
+        substitute_claude_placeholders "$TMPDIR_UPDATE/files/$f" "$NEW_FILE"
         CURRENT_FILE="$SCRIPT_DIR/$f"
 
         if [ -f "$BASE_FILE" ] && command -v git >/dev/null 2>&1; then
@@ -874,6 +944,10 @@ CLAUDE_UPDATED=false
 for f in "${NEW_FILES[@]}" "${UPDATED_FILES[@]}"; do
     if [ "$f" = "CLAUDE.md" ]; then
         # 3-way merge for workspace CLAUDE.md (same logic as repo copy)
+        # WS_NEW уже подставлен (issue #269) — Step 5 выше записал substituted-версию
+        # в $SCRIPT_DIR/CLAUDE.md через substitute_claude_placeholders(); повторный
+        # вызов здесь не нужен и был бы избыточен. Это зависимость от порядка
+        # выполнения циклов, не самодостаточный код — не переставлять Step 5/6 местами.
         WS_BASE="$WORKSPACE_DIR/.claude.md.base"
         WS_CURRENT="$WORKSPACE_DIR/CLAUDE.md"
         WS_NEW="$SCRIPT_DIR/CLAUDE.md"

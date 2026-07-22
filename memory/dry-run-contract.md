@@ -47,7 +47,7 @@ description: "Операционный файл памяти IWE"
 
 ### Контракт
 
-При наличии валидного sentinel-файла (для текущего `SESSION_ID`, mtime ≤ 10 мин) хук блокирует **любой tool-call с побочными эффектами** и возвращает exit 2 с диагностикой:
+При наличии валидного sentinel-файла (единое имя, mtime ≤ 10 мин) хук блокирует **любой tool-call с побочными эффектами** и возвращает exit 2 с диагностикой:
 
 ```
 [dry-run-gate] BLOCKED: <tool> on <path/cmd>
@@ -178,7 +178,7 @@ fi
 
 ```bash
 # В начале extension-скрипта, ДО любого write-действия:
-if [ -f "/tmp/iwe-dry-run-${CLAUDE_SESSION_ID:-noid}.flag" ]; then
+if [ -f "/tmp/iwe-dry-run.flag" ]; then
     echo "[extension] dry-run active, skipping write steps"
     exit 0
 fi

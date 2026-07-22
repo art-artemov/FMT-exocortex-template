@@ -28,7 +28,8 @@ case "$SCRIPT_DIR" in
         ;;
 esac
 
-WORKSPACE="{{WORKSPACE_DIR}}"
+# WP-273 0.29.4 R6.1 fix (issue #271): runtime-резолв вместо build-time {{WORKSPACE_DIR}} — как в strategist.sh.
+WORKSPACE="${IWE_WORKSPACE:-$HOME/IWE}"
 
 # PROMPTS_DIR резолв: $IWE_TEMPLATE → standard FMT → relative (legacy)
 if [ -n "${IWE_TEMPLATE:-}" ] && [ -d "$IWE_TEMPLATE/roles/extractor/prompts" ]; then
@@ -41,9 +42,17 @@ else
     echo "[$(date '+%H:%M:%S')] WARN: legacy PROMPTS_DIR fallback на $PROMPTS_DIR (pre-WP-273). Запустите migrate-to-runtime-target.sh." >&2
 fi
 
-LOG_DIR="{{HOME_DIR}}/logs/extractor"
-CLAUDE_PATH="{{CLAUDE_PATH}}"
-ENV_FILE="{{HOME_DIR}}/.config/aist/env"
+LOG_DIR="$HOME/logs/extractor"
+if [ -n "${CLAUDE_CLI_PATH:-}" ]; then
+    CLAUDE_PATH="$CLAUDE_CLI_PATH"
+elif command -v claude &>/dev/null; then
+    CLAUDE_PATH="$(command -v claude)"
+elif [ -x "$HOME/.npm-global/bin/claude" ]; then
+    CLAUDE_PATH="$HOME/.npm-global/bin/claude"
+else
+    CLAUDE_PATH="{{CLAUDE_PATH}}"  # fallback: build-runtime должен был подставить
+fi
+ENV_FILE="$HOME/.config/aist/env"
 
 # AI CLI: переопределение через переменные окружения (см. strategist.sh)
 AI_CLI="${AI_CLI:-$CLAUDE_PATH}"
@@ -159,7 +168,7 @@ $extra_args"
     log "Completed process: $command_file"
 
     # Commit + push changes (отчёты, помеченные captures)
-    local strategy_dir="$WORKSPACE/{{GOVERNANCE_REPO}}"
+    local strategy_dir="$WORKSPACE/${IWE_GOVERNANCE_REPO:-DS-strategy}"
 
     if [ -d "$strategy_dir/.git" ]; then
         # Очистить staging area
@@ -203,7 +212,7 @@ case "$1" in
         fi
 
         # Быстрая проверка: есть ли captures в inbox
-        CAPTURES_FILE="$WORKSPACE/{{GOVERNANCE_REPO}}/inbox/captures.md"
+        CAPTURES_FILE="$WORKSPACE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/captures.md"
         if [ -f "$CAPTURES_FILE" ]; then
             # WP-7 Ф-EXTRACTOR-FP fix (2026-05-08): grep '^### ' ловил все subheading'и,
             # включая subsections (### Суть / ### Релевантность) внутри analyzed-capture'ов.

@@ -722,10 +722,13 @@ INCEOF
   # issue #241 (остаточная дыра): вызов делает сетевой ls-remote/fetch внутри —
   # без тайм-бокса тот же класс зависания на WSL2 воспроизводится даже после
   # фикса a3d0b95 (тот фикс закрыл только gh issue list ниже по heredoc).
+  # issue #278: полный --check без --fast сравнивает 500+ файлов построчно —
+  # заведомо не укладывается в тайм-бокс, обновление тихо теряется как "проверено".
+  # --fast (issue #230) сравнивает только версию манифеста — секунда вместо минут.
   if [ -d "$IWE/FMT-exocortex-template" ]; then
     local upd_status
     upd_status=$(run_bounded "${ISSUE_SWEEP_TIMEOUT:-10}" bash -c \
-      "cd '$IWE/FMT-exocortex-template' && bash update.sh --check 2>&1 | grep -oE '[0-9]+ обновлен|нет обновлен|актуал' | head -1")
+      "cd '$IWE/FMT-exocortex-template' && bash update.sh --check --fast 2>&1 | grep -oE 'Версия совпадает|Версия отличается' | head -1")
     echo "| Update IWE | 🟢 | ${upd_status:-проверено} |"
   fi
 

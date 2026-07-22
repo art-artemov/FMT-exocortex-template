@@ -4,11 +4,29 @@
 # Optional: path to a local copy of curriculum content (worldview elements).
 # Not set → guide-kit still works: the LLM picks a worldview element on its
 # own, and the decision log honestly marks that slot as "llm-assisted".
+#
+# No platform account at all? Run `python3 scripts/fetch-snapshot.py --out-dir .
+# --today YYYY-MM-DD` once to download a versioned snapshot of the curated
+# CAT.001-003 materials (published as a GitHub Release on this repo — no
+# server, no token). Point this at the extracted baseline/CAT.001 directory.
 curriculum_path: null
 
 # Optional: path to local practice card content (concrete can-do/task/assessment
 # text for a chosen element). Not set → the same graceful fallback as above.
 cards_path: null
+
+# Live fallback for card content when cards_path/demo catalog has no card for
+# the chosen element (DP.SC.060 scenario 1): query the platform's public
+# knowledge-mcp layer instead of leaving the slot empty. No token — public
+# slope only. Default off (a portable install with no network dependency by
+# default); turn on for a connected user who wants always-fresh material
+# instead of demo-catalog-only. Platform unreachable → same graceful
+# degradation as a missing local card (honest gap, not a crash).
+platform_knowledge: off
+
+# Only used when platform_knowledge: on. Not set → the platform's own public
+# MCP connector (https://mcp.aisystant.com/mcp), same default as personal_export.
+platform_knowledge_url: null
 
 # Which backend to use: anthropic | openai_compatible | local
 llm_backend: anthropic

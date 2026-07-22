@@ -48,7 +48,8 @@ LOG_FILE="$LOG_DIR/scheduler-$(date +%Y-%m-%d).log"
 # WP-273 R5 fix (Round 5 Евгения): substituted runners в .iwe-runtime/, но
 # role.yaml — read-only метаданные (не substituted, нет плейсхолдеров) — должны
 # браться из FMT через $IWE_TEMPLATE. notify.sh — также read-only.
-ROLES_DIR_RUNTIME="{{IWE_RUNTIME}}/roles"
+# WP-273 0.29.4 R6.1 fix (issue #271): runtime-резолв вместо build-time {{IWE_RUNTIME}} — как в notify.sh.
+ROLES_DIR_RUNTIME="${IWE_RUNTIME:-${IWE_WORKSPACE:-$HOME/IWE}/.iwe-runtime}/roles"
 ROLES_DIR_TEMPLATE="${IWE_TEMPLATE:-$HOME/IWE/FMT-exocortex-template}/roles"
 # WP-273 0.29.3: silent degradation guard. Если IWE_TEMPLATE пуста — env неполная.
 if [ -z "${IWE_TEMPLATE:-}" ]; then

@@ -1,5 +1,5 @@
 {
-  "version": "0.35.5",
+  "version": "0.36.0",
   "description": "Манифест платформенных файлов FMT-exocortex-template. Используется update.sh для доставки обновлений.",
   "files": [
     {
@@ -387,6 +387,9 @@
       "path": ".claude/skills/vdv/test_cases.md"
     },
     {
+      "path": ".claude/skills/verify-hypotheses/SKILL.md"
+    },
+    {
       "path": ".claude/skills/verify/SKILL.md"
     },
     {
@@ -693,6 +696,9 @@
       "path": "guide-kit/generator/planner.py"
     },
     {
+      "path": "guide-kit/generator/platform_knowledge.py"
+    },
+    {
       "path": "guide-kit/generator/policies/default.yaml"
     },
     {
@@ -720,6 +726,9 @@
       "path": "guide-kit/generator/test_personal_export.py"
     },
     {
+      "path": "guide-kit/generator/test_platform_knowledge.py"
+    },
+    {
       "path": "guide-kit/generator/test_work_section.py"
     },
     {
@@ -730,6 +739,27 @@
     },
     {
       "path": "guide-kit/guide-kit.config.yaml.example"
+    },
+    {
+      "path": "guide-kit/scripts/build-snapshot.py"
+    },
+    {
+      "path": "guide-kit/scripts/fetch-snapshot.py"
+    },
+    {
+      "path": "guide-kit/scripts/publish-snapshot.sh"
+    },
+    {
+      "path": "guide-kit/scripts/test_build_snapshot.py"
+    },
+    {
+      "path": "guide-kit/scripts/test_fetch_snapshot.py"
+    },
+    {
+      "path": "guide-kit/scripts/test_publish_snapshot.sh"
+    },
+    {
+      "path": "guide-kit/scripts/test_snapshot_allowlist.py"
     },
     {
       "path": "guide-kit/structurer/classify.py"
@@ -781,6 +811,9 @@
     },
     {
       "path": "guide-kit/tests/acceptance/stub_llm_server.py"
+    },
+    {
+      "path": "guide-kit/tests/acceptance/stub_mcp_server.py"
     },
     {
       "path": "guide-kit/tests/acceptance/test_p1_clean_machine.sh"
@@ -850,6 +883,9 @@
     },
     {
       "path": "memory/r-questionnaire.md"
+    },
+    {
+      "path": "memory/reference/agent-core.md"
     },
     {
       "path": "memory/repo-type-rules.md"

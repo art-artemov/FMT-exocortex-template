@@ -99,18 +99,17 @@ with open(registry_path, "w", encoding="utf-8") as f:
 print(f"   ✅ REGISTRY: WP-{wp_num} зачёркнут")
 PYEOF
 
-# --- Шаг 2: найти или создать archive/wp-contexts файл ---
-echo "2/3 Дописываю archive/wp-contexts..."
+# --- Шаг 2: создать archive/wp-contexts файл ---
+# issue #280: раньше здесь искали существующий stub от create-wp.sh (Шаг 2/6,
+# убран после TIF7) — с ним close-wp.sh дописывал резюме сюда, а git mv из
+# protocol-close.md падал на "destination exists". Stub больше не создаётся —
+# файл в archive/wp-contexts всегда создаётся здесь, заново, при закрытии.
+echo "2/3 Создаю archive/wp-contexts..."
 
 mkdir -p "$ARCHIVE_DIR"
 
-# Ищем существующий файл для этого WP
-CONTEXT_FILE=$(find "$ARCHIVE_DIR" -name "WP-${WP_NUM}-*.md" 2>/dev/null | sort | head -1)
-
-if [[ -z "$CONTEXT_FILE" ]]; then
-  # Создать новый файл с минимальной структурой
-  # Определить slug из REGISTRY
-  SLUG=$(python3 - "$REGISTRY" "$WP_NUM" <<'PYEOF2'
+# Определить slug из REGISTRY
+SLUG=$(python3 - "$REGISTRY" "$WP_NUM" <<'PYEOF2'
 import sys, re
 registry_path, wp_num = sys.argv[1], sys.argv[2]
 with open(registry_path, "r", encoding="utf-8") as f:
@@ -128,8 +127,11 @@ with open(registry_path, "r", encoding="utf-8") as f:
                 sys.exit(0)
 print("context")
 PYEOF2
-  )
-  CONTEXT_FILE="$ARCHIVE_DIR/WP-${WP_NUM}-${SLUG}.md"
+)
+CONTEXT_FILE="$ARCHIVE_DIR/WP-${WP_NUM}-${SLUG}.md"
+if [[ -f "$CONTEXT_FILE" ]]; then
+  echo "   ℹ️  Файл уже существует (повторный запуск close-wp.sh?), дописываю в него"
+else
   cat > "$CONTEXT_FILE" <<CTXEOF
 ---
 wp: ${WP_NUM}

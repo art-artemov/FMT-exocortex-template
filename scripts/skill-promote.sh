@@ -172,6 +172,25 @@ if [ -n "$IC_BLOCK" ]; then
     done <<< "$IC_BLOCK"
 fi
 
+# -- Replace L3-author marker values with {{PLACEHOLDER}} (WP-5 L1/L3-разделение в скиллах)
+# Marker syntax: <!-- L3-author: KEY=value, в шаблоне → {{PLACEHOLDER}} -->
+# Only quoted occurrences ("value") are substituted — a bare value elsewhere in the file
+# (e.g. an illustrative example) is left untouched. Each marker is processed by line number
+# (not `|`-joined fields) because `value` itself may legitimately contain `|`; substitution
+# uses perl \Q..\E (literal quoting) so sed-special characters in `value` can't break the
+# replacement or be misinterpreted. Marker is blanked to a `value`-free resolved form AFTER
+# a successful substitution — if perl fails, the marker stays in its original (catchable) form.
+while IFS=: read -r lineno marker; do
+    [ -n "$lineno" ] || continue
+    key=$(printf '%s' "$marker" | sed -E 's/^<!-- L3-author: ([A-Za-z_][A-Za-z0-9_]*)=.*/\1/')
+    val=$(printf '%s' "$marker" | sed -E 's/^<!-- L3-author: [A-Za-z_][A-Za-z0-9_]*=(.*), в шаблоне → \{\{[A-Za-z0-9_]+\}\} -->$/\1/')
+    placeholder=$(printf '%s' "$marker" | grep -oE '\{\{[A-Za-z0-9_]+\}\}')
+    [ -n "$key" ] && [ -n "$val" ] && [ -n "$placeholder" ] || continue
+    if perl -i -pe 'BEGIN{$v=shift @ARGV; $p=shift @ARGV} s/\Q"$v"\E/"$p"/g' "$val" "$placeholder" "$DEST/SKILL.md"; then
+        sed_inplace -E "s|<!-- L3-author: ${key}=.*, в шаблоне → \{\{[A-Za-z0-9_]+\}\} -->|<!-- L3-author: ${key} was here, replaced with ${placeholder} -->|" "$DEST/SKILL.md"
+    fi
+done < <(grep -noE '<!-- L3-author: [A-Za-z_][A-Za-z0-9_]*=[^,]+, в шаблоне → \{\{[A-Za-z0-9_]+\}\} -->' "$DEST/SKILL.md" 2>/dev/null)
+
 # Подстановки в .sh скрипты скилла (рекурсивно)
 while IFS= read -r -d '' f; do
     substitute_file "$f"

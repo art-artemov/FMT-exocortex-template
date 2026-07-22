@@ -2,7 +2,7 @@
 # see DP.SC.153
 # НЕ редактировать вручную — перегенерировать через generate-skills-catalog.sh
 #
-generated: 2026-07-07T04:47:41Z
+generated: 2026-07-19T06:33:31Z
 skills_dir: .claude/skills
 
 skills:
@@ -75,7 +75,7 @@ skills:
     - audit-docs
   - id: audit-installation
     name: "audit-installation"
-    description: "Audit a user's IWE installation. Runs scripts/iwe-audit.sh + MCP healthcheck + ritual smoke-test via sentinel mechanism (dry-run-contract.md), passes report to a VR.R.002 Auditor subagent (context isolation) → verdict pass/warn/fail across 6 components (Inventory, L1 drift, DS-strategy, L3 customizations, MCP, ritual). Use after restore from backup, after update.sh, or for weekly verification."
+    description: "Аудит пользовательской инсталляции IWE. Запускает scripts/iwe-audit.sh + MCP healthcheck + smoke-test ритуала через sentinel-механику (контракт dry-run-contract.md), передаёт отчёт subagent'у в роли VR.R.002 Аудитор (context isolation) → verdict ✅/⚠️/❌ по 6 компонентам (Inventory, L1 drift, DS-strategy, L3 customizations, MCP, ритуал). Используй после restore из бэкапа, после update.sh, или при еженедельной сверке."
     version: 1.0.0
     layer: L1
     status: active
@@ -97,6 +97,7 @@ skills:
         - /author-mode
     depends_on: []
     invoked_by:
+    - CLAUDE.md
     - author-mode
   - id: bottleneck-pick
     name: "bottleneck-pick"
@@ -138,7 +139,7 @@ skills:
   - id: day-close
     name: "day-close"
     description: "Протокол закрытия дня (Day Close). Алиас для /run-protocol close day — симметрия с /day-open."
-    version: 1.0.0
+    version: 1.1.0
     layer: L1
     status: active
     triggers:
@@ -376,18 +377,20 @@ skills:
         - /pack-creator
     depends_on: []
     invoked_by:
+    - pack-new
     - pack-creator
   - id: pack-new
     name: "pack-new"
     description: "Create a new Pack — guided flow through SPF: choose domain, name Pack, scaffold structure, fill roadmap."
     version: 0.0.0
     layer: unknown
-    status: active
+    status: provisional
     triggers:
       slash: []
     depends_on: []
     invoked_by:
     - CLAUDE.md
+    - pack-new
     - skill-creator
     - pack-creator
   - id: peer-conversation
@@ -559,6 +562,7 @@ skills:
     - day-close
     - verify
     - kimi-peer-writer
+    - pack-new
     - skill-creator
     - pack-creator
     - audit-docs

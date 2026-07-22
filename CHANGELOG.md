@@ -105,7 +105,34 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 
 
-## [Unreleased] — обновлено 2026-07-18
+
+
+
+
+
+## [Unreleased] — обновлено 2026-07-20
+
+### Added
+
+- feat(wp483): sync guide-kit v0.1.2 into template (снимок Ф9 система №16 + слияние приоритета Портного + degree-контекст)
+- `4484b4c` feat(skill-promote): защита L3-констант через inline-маркер (WP-5)
+- `5aabac2` feat(wp483): sync guide-kit v0.1.1 into template
+
+### Changed
+
+- `c40b041` docs(changelog): thank SDaiBots (#217/#221/#224/#228), AONarchuk (#215), trover97 (#218) — пропущены в прошлых раундах благодарностей
+- `b08403d` chore: release 0.36.0
+- `fb9afa6` docs(changelog): regenerate [Unreleased] after guide-kit v0.1.1 sync
+
+### Fixed
+
+- `3f91860` fix(release): sync README version badge to 0.36.0
+- `b0f675b` fix(scripts): env-fallback для GOVERNANCE_REPO в generate-hot-files-list.sh
+- `1b29b19` fix(strategist): убрать хардкод DS-strategy в DAY_OPEN_PIPELINE (регрессия 238a5c1)
+- `5cd5695` fix(roles): runtime-резолв путей в extractor/synchronizer вместо build-time плейсхолдеров
+
+
+## [0.36.0] — 2026-07-19
 
 ### Added
 
@@ -185,6 +212,9 @@ Versioning: [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- `b0f675b` fix(scripts): env-fallback для GOVERNANCE_REPO в generate-hot-files-list.sh (CI-блокер, найден при релизе)
+- `1b29b19` fix(strategist): убрать хардкод DS-strategy в DAY_OPEN_PIPELINE (регрессия 238a5c1, блокировала CI)
+- `5cd5695` fix(roles): runtime-резолв путей в extractor/synchronizer вместо build-time плейсхолдеров (issue #271)
 - `5dcff24` fix(wp485): доставить 4 скрипта, обещанных уже промотированными SKILL.md (Ф4)
 - `0b20534` fix(templ): issue funnel 266 — доставка session-guard.sh + SessionEnd fail-safe
 - `eb612ec` fix(day-open/day-close): дедупликация repo-symlink алиасов в циклах по репозиториям

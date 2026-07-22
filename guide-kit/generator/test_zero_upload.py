@@ -17,6 +17,7 @@ import pytest
 import yaml
 
 import personal_export as pe
+import platform_knowledge as pk
 from adapter import apply_platform_overlay, generate_daily_plan
 from llm_backends import GenerationResult
 
@@ -93,8 +94,11 @@ class TestPiiCanariesNotInPlatformPayload:
             self._platform_response({"exists": False})
         )
         with patch("urllib.request.urlopen", transport):
-            # fetch_stage calls describe on _STAGE_PATH — body must not contain PII
-            pe.fetch_stage("http://localhost/mcp", "testtoken")
+            # fetch_stage calls describe on _STAGE_PATH — body must not contain PII.
+            # Explicit missing snapshot_cache_path: keeps this test hermetic —
+            # otherwise a real-machine derived_snapshot.json could silently
+            # satisfy the fallback and mask a describe/read regression.
+            pe.fetch_stage("http://localhost/mcp", "testtoken", str(tmp_path / "no-snapshot.json"))
 
         assert transport.captured_bodies, "no requests were made"
         for body in transport.captured_bodies:
@@ -112,7 +116,7 @@ class TestPiiCanariesNotInPlatformPayload:
             self._platform_response({"stage_derived": 2, "stage_label": "Ученик"})
         )
         with patch("urllib.request.urlopen", transport):
-            pe.fetch_stage("http://localhost/mcp", "testtoken")
+            pe.fetch_stage("http://localhost/mcp", "testtoken", str(tmp_path / "no-snapshot.json"))
 
         # At least 2 requests: describe + read
         assert len(transport.captured_bodies) >= 2
@@ -128,7 +132,7 @@ class TestPiiCanariesNotInPlatformPayload:
         monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
 
         out = tmp_path / "profile.platform.yaml"
-        with patch.object(pe, "fetch_stage", return_value=(3, "Профессионал", None)), \
+        with patch.object(pe, "fetch_stage", return_value=(3, "Профессионал", None, "platform")), \
              patch.object(pe, "fetch_rcs", return_value={"W": 4, "source": "computed_from_events"}):
             code = pe.export("http://localhost/mcp", "rcs_path", str(out))
 
@@ -187,7 +191,7 @@ class TestFullPipelineDoesNotTouchPlatformNetwork:
 # ---------------------------------------------------------------------------
 
 class TestQuarantineContentNotInPayloads:
-    def test_quarantine_content_not_in_platform_request(self, monkeypatch):
+    def test_quarantine_content_not_in_platform_request(self, monkeypatch, tmp_path):
         """Personal export requests must never carry quarantine-flagged content."""
         monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
 
@@ -200,7 +204,7 @@ class TestQuarantineContentNotInPayloads:
         with patch("urllib.request.urlopen", transport):
             # Even if quarantine content was somehow in the environment, it must not leak
             with patch.dict(os.environ, {"SOME_LOCAL_VAR": _QUARANTINE_CONTENT}):
-                pe.fetch_stage("http://localhost/mcp", "testtoken")
+                pe.fetch_stage("http://localhost/mcp", "testtoken", str(tmp_path / "no-snapshot.json"))
 
         for body in transport.captured_bodies:
             body_str = body.decode("utf-8", errors="replace")
@@ -217,14 +221,14 @@ class TestQuarantineContentNotInPayloads:
 
         # Platform returns normal RCS data — no quarantine content
         out = tmp_path / "profile.platform.yaml"
-        with patch.object(pe, "fetch_stage", return_value=(2, "Ученик", None)), \
+        with patch.object(pe, "fetch_stage", return_value=(2, "Ученик", None, "platform")), \
              patch.object(pe, "fetch_rcs", return_value={"W": 2}):
             pe.export("http://localhost/mcp", "rcs_path", str(out))
 
         raw = out.read_text()
         assert _QUARANTINE_CONTENT not in raw
 
-    def test_quarantine_content_not_in_platform_request_bodies(self, monkeypatch):
+    def test_quarantine_content_not_in_platform_request_bodies(self, monkeypatch, tmp_path):
         """Platform HTTP request bodies must never contain quarantine-flagged strings.
 
         personal_export only sends tool-name + path in request bodies — there is no
@@ -242,7 +246,7 @@ class TestQuarantineContentNotInPayloads:
                 }).encode()
             )
             with patch("urllib.request.urlopen", transport):
-                pe.fetch_stage("http://localhost/mcp", "testtoken")
+                pe.fetch_stage("http://localhost/mcp", "testtoken", str(tmp_path / "no-snapshot.json"))
 
         for body in transport.captured_bodies:
             body_str = body.decode("utf-8", errors="replace")
@@ -264,6 +268,67 @@ class TestQuarantineContentNotInPayloads:
         assert "type-index" not in source
         assert "type_index" not in source
         assert "quarantine" not in source
+
+
+# ---------------------------------------------------------------------------
+# (1c) platform_knowledge (DP.SC.060 scenario 1) — request bodies must carry
+# only element_id, never profile PII; default-off must not touch the network
+# ---------------------------------------------------------------------------
+
+class TestPlatformKnowledgeRequestsCarryNoPii:
+    def test_request_body_contains_only_element_id(self, tmp_path):
+        """fetch_card_content's only input is element_id — this test proves the
+        request body structurally cannot carry profile PII (nothing else is in scope
+        to leak), the same guarantee test_zero_upload gives personal_export via a
+        dict-argument API rather than a single string."""
+        transport = _CapturingTransport(
+            json.dumps({
+                "jsonrpc": "2.0", "id": 1,
+                "result": {"content": [{"type": "text", "text": "{}"}]},
+            }).encode()
+        )
+        with patch("urllib.request.urlopen", transport):
+            pk.fetch_card_content(f"CAT.001.A1 {_PII_CANARY_EMAIL}")
+
+        assert transport.captured_bodies, "no requests were made"
+        for body in transport.captured_bodies:
+            body_str = body.decode("utf-8", errors="replace")
+            # The email canary is deliberately embedded IN the element_id above
+            # to prove where the boundary actually is: whatever is passed as
+            # element_id is sent as the query verbatim (by design — a catalog
+            # code is not PII), so it appearing here is expected, not a leak.
+            assert _PII_CANARY_EMAIL in body_str, (
+                "sanity check: element_id should be sent verbatim as the query"
+            )
+            # Nothing else from a user profile ever reaches this call in the
+            # real pipeline — generate_daily_plan passes only planner_result's
+            # element_id, never profile fields, to load_card_content — so none
+            # of these three (which were never part of element_id) may appear.
+            assert _PII_CANARY_PHONE not in body_str
+            assert _PII_CANARY_NAME not in body_str
+            assert _PII_CANARY_CARD not in body_str
+
+    def test_default_off_makes_no_platform_call_even_on_local_miss(self, tmp_path):
+        """generate_daily_plan with no config (platform_knowledge defaults to off)
+        must not attempt a platform_knowledge call even when cards_path/demo
+        catalog has no card for the chosen element — relies on the session-wide
+        socket guard to fail loudly if this regresses."""
+        profile_path = tmp_path / "profile.yaml"
+        profile_path.write_text(yaml.dump(_build_fixture_profile()), encoding="utf-8")
+
+        def _fake_llm_ok(*_args, **_kwargs):
+            return GenerationResult(
+                text='{"narrative": "текст", "plan_day": [{"label": "задание", "tomatoes": 1}]}',
+                backend_id="fake",
+                model="fake",
+            )
+
+        with patch("adapter.llm_generate", side_effect=_fake_llm_ok), \
+             patch("adapter.fetch_platform_card") as mock_fetch:
+            result = generate_daily_plan(str(profile_path))
+
+        assert result.ok, getattr(result, "diagnostic", None)
+        mock_fetch.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

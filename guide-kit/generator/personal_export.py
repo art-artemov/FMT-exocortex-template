@@ -18,10 +18,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import yaml
 
@@ -30,6 +31,14 @@ _READ_TOOLS = ("dt_read_digital_twin", "dt_describe_by_path")
 _DEFAULT_PLATFORM_URL = "https://mcp.aisystant.com/mcp"
 _STAGE_PATH = "3_derived/3_4_qualification"
 _DEGREE_PATH = "3_derived/3_8_degree"
+
+# Fallback for fetch_stage() when the live platform is unreachable (WP-149
+# bug-2026-07-12): a periodic local snapshot (WP-425, launchd Sunday 08:00),
+# used only if the platform round-trip fails outright.
+_DEFAULT_SNAPSHOT_CACHE = str(
+    pathlib.Path.home() / "IWE/DS-my-strategy/inbox/WP-425/cache/derived_snapshot.json"
+)
+_SNAPSHOT_STALE_DAYS = 14  # weekly refresh + one missed run of slack
 
 _RCS_COMPACT_KEYS = frozenset({
     "W", "M1", "M2", "M3", "M4", "IT", "A",
@@ -132,37 +141,93 @@ def _read_path(platform_url: str, token: str, path: str) -> dict | None:
         return None
 
 
+def _read_snapshot_fallback(
+    path: str, max_age_days: int = _SNAPSHOT_STALE_DAYS
+) -> tuple[int | None, str | None]:
+    """Read cached stage from the periodic derived_snapshot.json (WP-425) as a
+    fallback for fetch_stage() when the live platform is unreachable.
+
+    Returns (stage, label), or (None, None) if the file is missing, malformed,
+    holds an out-of-range stage, is dated in the future (clock skew / corrupt
+    write — cannot be trusted either way), or is older than max_age_days.
+    Never raises — a broken cache degrades exactly like no cache.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        return None, None
+
+    try:
+        snapshot_date = date.fromisoformat(data["snapshot_date"])
+        stage = int(data["stage_raw"])
+    except (KeyError, ValueError, TypeError):
+        return None, None
+
+    if not 1 <= stage <= 5:
+        return None, None
+
+    age_days = (datetime.now(timezone.utc).date() - snapshot_date).days
+    if age_days < 0 or age_days > max_age_days:
+        print(
+            f"NOTE: резервный снимок {path!r} устарел или датирован будущим "
+            f"({age_days} дн.) — не используется",
+            file=sys.stderr,
+        )
+        return None, None
+
+    return stage, str(data.get("stage_label") or "")
+
+
 def fetch_stage(
-    platform_url: str, token: str
-) -> tuple[int | None, str | None, str | None]:
+    platform_url: str, token: str, snapshot_cache_path: str | None = None
+) -> tuple[int | None, str | None, str | None, str | None]:
     """Fetch stage (mastery level within a role) from 3_derived/3_4_qualification —
     the platform's own field path uses "qualification" in its name, but this is the
     per-role stage (DP.METHOD.020 §2), not the qualification degree (§3, DP.D.252).
 
-    Returns (stage_derived, stage_label, raw_on_parse_failure).
-    Success: (int, str, None). Parse failure: (None, None, raw). Path absent: (None, None, None).
+    If the live platform is unreachable or returns unparseable data, falls back to
+    the periodic local snapshot (WP-425) via _read_snapshot_fallback() — see its
+    docstring for staleness handling.
+
+    Returns (stage_derived, stage_label, raw_on_parse_failure, source).
+    source is "platform" on a live read, "snapshot_cache" on fallback, None if
+    neither has usable data.
+    Success: (int, str, None, source). Parse failure with no usable fallback:
+    (None, None, raw, None). Nothing available anywhere: (None, None, None, None).
     """
-    if not _describe_path(platform_url, token, _STAGE_PATH):
-        return None, None, None
+    stage_derived, stage_label, raw = None, None, None
 
-    data = _read_path(platform_url, token, _STAGE_PATH)
-    if data is None:
-        return None, None, None
+    if _describe_path(platform_url, token, _STAGE_PATH):
+        data = _read_path(platform_url, token, _STAGE_PATH)
+        if data is not None:
+            raw = json.dumps(data, ensure_ascii=False)
+            try:
+                raw_val = data.get("stage_derived") or data.get("stage")
+                stage_derived = int(raw_val or 0)
+                if not 1 <= stage_derived <= 5:
+                    raise ValueError(f"stage_derived={stage_derived} вне диапазона 1-5")
+                stage_label = str(data.get("stage_label") or "")
+            except (ValueError, TypeError) as e:
+                print(
+                    f"WARNING: не удалось разобрать ступень из {_STAGE_PATH!r}: {e}",
+                    file=sys.stderr,
+                )
+                stage_derived, stage_label = None, None
 
-    raw = json.dumps(data, ensure_ascii=False)
-    try:
-        raw_val = data.get("stage_derived") or data.get("stage")
-        stage_derived = int(raw_val or 0)
-        if not 1 <= stage_derived <= 5:
-            raise ValueError(f"stage_derived={stage_derived} вне диапазона 1-5")
-        stage_label = str(data.get("stage_label") or "")
-        return stage_derived, stage_label, None
-    except (ValueError, TypeError) as e:
+    if stage_derived is not None:
+        return stage_derived, stage_label, None, "platform"
+
+    cache_path = snapshot_cache_path or _DEFAULT_SNAPSHOT_CACHE
+    cached_stage, cached_label = _read_snapshot_fallback(cache_path)
+    if cached_stage is not None:
         print(
-            f"WARNING: не удалось разобрать ступень из {_STAGE_PATH!r}: {e}",
+            f"NOTE: платформа недоступна — ступень взята из резервного снимка {cache_path!r}",
             file=sys.stderr,
         )
-        return None, None, raw[:500]
+        return cached_stage, cached_label, None, "snapshot_cache"
+
+    return None, None, (raw[:500] if raw else None), None
 
 
 def fetch_degree(platform_url: str, token: str) -> tuple[str | None, str | None]:
@@ -241,7 +306,12 @@ def fetch_rcs(platform_url: str, token: str, rcs_path: str) -> dict | None:
     return result or None
 
 
-def export(platform_url: str, rcs_path: str | None, output_path: str) -> int:
+def export(
+    platform_url: str,
+    rcs_path: str | None,
+    output_path: str,
+    snapshot_cache_path: str | None = None,
+) -> int:
     """Main export logic. Returns exit code (0=ok, 1=error).
 
     On any error: prints to stderr, does NOT write the output file.
@@ -268,7 +338,9 @@ def export(platform_url: str, rcs_path: str | None, output_path: str) -> int:
 
     fetched_at = datetime.now(timezone.utc).isoformat()
 
-    stage_derived, stage_label, stage_raw = fetch_stage(platform_url, token)
+    stage_derived, stage_label, stage_raw, stage_source = fetch_stage(
+        platform_url, token, snapshot_cache_path
+    )
     degree, degree_certified_at = fetch_degree(platform_url, token)
 
     rcs_data: dict | None = None
@@ -299,9 +371,13 @@ def export(platform_url: str, rcs_path: str | None, output_path: str) -> int:
         rcs_block.setdefault("source", "computed_from_events")
         overlay["rcs"] = rcs_block
 
-    # Provenance: stage_label (parse ok) or stage_label_raw (parse failed)
+    # Provenance: stage_label (parse ok) or stage_label_raw (parse failed).
+    # stage_source is set only for the degraded case (snapshot_cache) — the
+    # live-platform case ("platform") is the implicit default, no need to flag it.
     if stage_derived is not None and stage_label is not None:
         overlay["provenance"] = {"stage_label": stage_label}
+        if stage_source == "snapshot_cache":
+            overlay["provenance"]["stage_source"] = "snapshot_cache"
     elif stage_raw is not None:
         overlay["provenance"] = {"stage_label_raw": stage_raw}
 
@@ -341,9 +417,17 @@ def _build_parser() -> argparse.ArgumentParser:
         default="profile.platform.yaml",
         help="Output file path (default: profile.platform.yaml)",
     )
+    parser.add_argument(
+        "--snapshot-cache",
+        default=_DEFAULT_SNAPSHOT_CACHE,
+        help=(
+            "Path to the periodic derived_snapshot.json (WP-425), used as a stage "
+            f"fallback when the platform is unreachable (default: {_DEFAULT_SNAPSHOT_CACHE})"
+        ),
+    )
     return parser
 
 
 if __name__ == "__main__":
     args = _build_parser().parse_args()
-    sys.exit(export(args.platform_url, args.rcs_path, args.output))
+    sys.exit(export(args.platform_url, args.rcs_path, args.output, args.snapshot_cache))

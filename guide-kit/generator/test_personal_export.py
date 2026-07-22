@@ -12,6 +12,7 @@ import io
 import json
 import os
 import urllib.error
+from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -134,7 +135,7 @@ class TestExportRefusesToOverwriteProfileYaml:
         monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
         target = tmp_path / output_name
         target.write_text("rcs:\n  W: 5\n# user's own declared profile\n", encoding="utf-8")
-        with patch.object(pe, "fetch_stage", return_value=(3, "Профессионал", None)):
+        with patch.object(pe, "fetch_stage", return_value=(3, "Профессионал", None, "platform")):
             code = pe.export("http://x", None, str(target))
         assert code == 1
         assert target.read_text(encoding="utf-8") == "rcs:\n  W: 5\n# user's own declared profile\n"
@@ -207,13 +208,86 @@ class TestDegradations:
     def test_export_no_data_returns_1_no_file(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
         # fetch_stage, fetch_rcs and fetch_degree all return nothing
-        with patch.object(pe, "fetch_stage", return_value=(None, None, None)), \
+        with patch.object(pe, "fetch_stage", return_value=(None, None, None, None)), \
              patch.object(pe, "fetch_rcs", return_value=None), \
              patch.object(pe, "fetch_degree", return_value=(None, None)):
             out = tmp_path / "out.yaml"
             code = pe.export("http://localhost/mcp", None, str(out))
         assert code == 1
         assert not out.exists()
+
+
+# ---------------------------------------------------------------------------
+# snapshot cache fallback (WP-149: resilience when the platform is unreachable)
+# ---------------------------------------------------------------------------
+
+class TestSnapshotFallback:
+    def _write_snapshot(self, tmp_path, **overrides):
+        data = {
+            "snapshot_date": date.today().isoformat(),
+            "stage_raw": 3,
+            "stage_label": "Практикующий",
+            **overrides,
+        }
+        path = tmp_path / "derived_snapshot.json"
+        path.write_text(json.dumps(data), encoding="utf-8")
+        return str(path)
+
+    def test_fresh_snapshot_used(self, tmp_path):
+        path = self._write_snapshot(tmp_path)
+        assert pe._read_snapshot_fallback(path) == (3, "Практикующий")
+
+    def test_stale_snapshot_rejected(self, tmp_path):
+        old_date = (date.today() - timedelta(days=pe._SNAPSHOT_STALE_DAYS + 1)).isoformat()
+        path = self._write_snapshot(tmp_path, snapshot_date=old_date)
+        assert pe._read_snapshot_fallback(path) == (None, None)
+
+    def test_missing_file_degrades_to_none(self, tmp_path):
+        assert pe._read_snapshot_fallback(str(tmp_path / "absent.json")) == (None, None)
+
+    def test_invalid_utf8_degrades_to_none(self, tmp_path):
+        path = tmp_path / "derived_snapshot.json"
+        path.write_bytes(b"\xff\xfe not valid utf-8")
+        assert pe._read_snapshot_fallback(str(path)) == (None, None)
+
+    def test_malformed_json_degrades_to_none(self, tmp_path):
+        path = tmp_path / "derived_snapshot.json"
+        path.write_text("not json", encoding="utf-8")
+        assert pe._read_snapshot_fallback(str(path)) == (None, None)
+
+    def test_out_of_range_stage_degrades_to_none(self, tmp_path):
+        path = self._write_snapshot(tmp_path, stage_raw=9)
+        assert pe._read_snapshot_fallback(path) == (None, None)
+
+    def test_future_dated_snapshot_degrades_to_none(self, tmp_path):
+        """Clock skew or a corrupt write could date a snapshot in the future —
+        that isn't 'fresh', it's untrustworthy, and must not be used either."""
+        future_date = (date.today() + timedelta(days=5)).isoformat()
+        path = self._write_snapshot(tmp_path, snapshot_date=future_date)
+        assert pe._read_snapshot_fallback(path) == (None, None)
+
+    def test_fetch_stage_falls_back_when_platform_path_absent(self, tmp_path):
+        """_describe_path returns False (path absent on the platform) — the live
+        branch never reaches a parse attempt; fetch_stage must still try the cache."""
+        path = self._write_snapshot(tmp_path)
+        with patch.object(pe, "_describe_path", return_value=False):
+            result = pe.fetch_stage("http://x", "tok", path)
+        assert result == (3, "Практикующий", None, "snapshot_cache")
+
+    def test_fetch_stage_prefers_live_platform_over_cache(self, tmp_path):
+        path = self._write_snapshot(tmp_path, stage_raw=1, stage_label="Случайный")
+        with patch.object(pe, "_describe_path", return_value=True), \
+             patch.object(
+                 pe, "_read_path",
+                 return_value={"stage_derived": 5, "stage_label": "Проактивный"},
+             ):
+            result = pe.fetch_stage("http://x", "tok", path)
+        assert result == (5, "Проактивный", None, "platform")
+
+    def test_fetch_stage_none_when_platform_and_cache_both_unusable(self, tmp_path):
+        with patch.object(pe, "_describe_path", return_value=False):
+            result = pe.fetch_stage("http://x", "tok", str(tmp_path / "absent.json"))
+        assert result == (None, None, None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +509,7 @@ class TestExportIntegration:
     def test_export_writes_stage_and_provenance(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
         out = tmp_path / "profile.platform.yaml"
-        with patch.object(pe, "fetch_stage", return_value=(3, "Профессионал", None)), \
+        with patch.object(pe, "fetch_stage", return_value=(3, "Профессионал", None, "platform")), \
              patch.object(pe, "fetch_rcs", return_value=None), \
              patch.object(pe, "fetch_degree", return_value=(None, None)):
             code = pe.export("http://localhost/mcp", None, str(out))
@@ -444,8 +518,24 @@ class TestExportIntegration:
         data = yaml.safe_load(out.read_text())
         assert data["rcs"]["stage_derived"] == 3
         assert data["provenance"]["stage_label"] == "Профессионал"
+        assert "stage_source" not in data["provenance"]  # live path stays unflagged
         assert data["is_derived"] is True
         assert "qualification_degree" not in data
+
+    def test_export_flags_stage_source_when_from_snapshot_cache(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
+        out = tmp_path / "profile.platform.yaml"
+        with patch.object(
+            pe, "fetch_stage", return_value=(2, "Практикующий", None, "snapshot_cache")
+        ), \
+             patch.object(pe, "fetch_rcs", return_value=None), \
+             patch.object(pe, "fetch_degree", return_value=(None, None)):
+            code = pe.export("http://localhost/mcp", None, str(out))
+        assert code == 0
+        data = yaml.safe_load(out.read_text())
+        assert data["rcs"]["stage_derived"] == 2
+        assert data["provenance"]["stage_label"] == "Практикующий"
+        assert data["provenance"]["stage_source"] == "snapshot_cache"
 
     def test_export_writes_full_bundle_when_stage_and_rcs_both_available(self, tmp_path, monkeypatch):
         """P.2(a) acceptance (MVP acceptance): 'exportable in under an
@@ -455,7 +545,7 @@ class TestExportIntegration:
         rcs-only; this is the one where all three sources return real data."""
         monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
         out = tmp_path / "profile.platform.yaml"
-        with patch.object(pe, "fetch_stage", return_value=(4, "Исследователь", None)), \
+        with patch.object(pe, "fetch_stage", return_value=(4, "Исследователь", None, "platform")), \
              patch.object(pe, "fetch_rcs", return_value={"W": 3, "M1": 2, "confidence": 0.7}), \
              patch.object(pe, "fetch_degree", return_value=("DEG.Worker", "2026-01-15")):
             code = pe.export("http://localhost/mcp", "rcs_path", str(out))
@@ -479,7 +569,7 @@ class TestExportIntegration:
         record, no confirmation date yet) — certified_at must not appear as None/empty."""
         monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
         out = tmp_path / "profile.platform.yaml"
-        with patch.object(pe, "fetch_stage", return_value=(None, None, None)), \
+        with patch.object(pe, "fetch_stage", return_value=(None, None, None, None)), \
              patch.object(pe, "fetch_rcs", return_value=None), \
              patch.object(pe, "fetch_degree", return_value=("DEG.Freshman", None)):
             code = pe.export("http://localhost/mcp", None, str(out))
@@ -491,7 +581,7 @@ class TestExportIntegration:
     def test_export_parse_failure_writes_raw(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GUIDE_KIT_PLATFORM_TOKEN", "testtoken")
         out = tmp_path / "profile.platform.yaml"
-        with patch.object(pe, "fetch_stage", return_value=(None, None, '{"stage": "bad"}')), \
+        with patch.object(pe, "fetch_stage", return_value=(None, None, '{"stage": "bad"}', None)), \
              patch.object(pe, "fetch_rcs", return_value={"W": 3}), \
              patch.object(pe, "fetch_degree", return_value=(None, None)):
             code = pe.export("http://localhost/mcp", "rcs_path", str(out))

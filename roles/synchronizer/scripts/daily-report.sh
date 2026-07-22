@@ -14,11 +14,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATE_DIR="$HOME/.local/state/exocortex"
-LOG_DIR="{{HOME_DIR}}/logs/synchronizer"
-STRATEGY_DIR="{{WORKSPACE_DIR}}/{{GOVERNANCE_REPO}}"
+LOG_DIR="$HOME/logs/synchronizer"
+# WP-273 0.29.4 R6.1 fix (issue #271): runtime-резолв вместо build-time плейсхолдеров — как в strategist.sh.
+STRATEGY_DIR="${IWE_WORKSPACE:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}"
 
 # Agent Workspace: если существует — отчёты идут туда
-AGENT_WORKSPACE="{{WORKSPACE_DIR}}/DS-agent-workspace"
+AGENT_WORKSPACE="${IWE_WORKSPACE:-$HOME/IWE}/DS-agent-workspace"
 if [ -d "$AGENT_WORKSPACE/.git" ]; then
     REPORT_DIR="$AGENT_WORKSPACE/scheduler/reports"
     ARCHIVE_DIR="$AGENT_WORKSPACE/scheduler/reports/archive"
@@ -41,7 +42,7 @@ DRY_RUN=false
 
 REPORT_FILE="$REPORT_DIR/SchedulerReport $DATE.md"
 SCHEDULER_LOG="$LOG_DIR/scheduler-$DATE.log"
-STRATEGIST_LOG="{{HOME_DIR}}/logs/strategist/$DATE.log"
+STRATEGIST_LOG="$HOME/logs/strategist/$DATE.log"
 
 mkdir -p "$ARCHIVE_DIR"
 
@@ -225,7 +226,7 @@ $warnings
 **Что делать:**
 "
         if echo "$warnings" | grep -q "push failed" 2>/dev/null; then
-            report+="- **push failed:** Mac был оффлайн. Запусти \`cd {{WORKSPACE_DIR}}/{{GOVERNANCE_REPO}} && git pull --rebase && git push\`
+            report+="- **push failed:** Mac был оффлайн. Запусти \`cd $STRATEGY_DIR && git pull --rebase && git push\`
 "
         fi
     else

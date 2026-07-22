@@ -17,8 +17,9 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG_DIR="$(cd "$SCRIPT_DIR/../../.." && pwd)/memory"
-WORKSPACE="{{WORKSPACE_DIR}}"
-LOG_DIR="{{HOME_DIR}}/logs/synchronizer"
+# WP-273 0.29.4 R6.1 fix (issue #271): runtime-резолв вместо build-time {{WORKSPACE_DIR}} — как в strategist.sh.
+WORKSPACE="${IWE_WORKSPACE:-$HOME/IWE}"
+LOG_DIR="$HOME/logs/synchronizer"
 DATE=$(date +%Y-%m-%d)
 LOG_FILE="$LOG_DIR/video-scan-$DATE.log"
 STATE_FILE="$LOG_DIR/.video-scan-last"

@@ -36,6 +36,7 @@ from horizons import (
 )
 from onboarding_ctas import render_onboarding_ctas
 from planner import plan_horizon
+from platform_knowledge import _DEFAULT_PLATFORM_URL, fetch_card_content as fetch_platform_card
 from work_section import render_work_section
 from llm_backends import GenerationContext, PromptSpec, generate as llm_generate
 
@@ -259,19 +260,38 @@ def apply_platform_overlay(profile: dict, profile_path: str) -> dict:
     return profile
 
 
-def load_card_content(element_id: str | None, cards_path: str | None) -> dict | None:
-    """Looks up a card by element_id under the local cards_path. No path/file/broken JSON → None (honestly)."""
-    if not element_id or not cards_path:
+def load_card_content(
+    element_id: str | None,
+    cards_path: str | None,
+    platform_knowledge_on: bool = False,
+    platform_url: str | None = None,
+) -> dict | None:
+    """Looks up a card by element_id under the local cards_path first (demo catalog /
+    user-supplied cards). Local miss + platform_knowledge_on → falls back to a live
+    query against the platform's public MCP layer (DP.SC.060 scenario 1) instead of
+    leaving the slot empty. No path/file/broken JSON/unreachable platform → None
+    (honestly) — the caller (generate_daily_plan) already treats a None card_content
+    as an llm-assisted gap, not a hard failure.
+    """
+    if not element_id:
         return None
-    candidate = os.path.join(cards_path, f"{element_id}.json")
-    if not os.path.isfile(candidate):
+
+    if cards_path:
+        candidate = os.path.join(cards_path, f"{element_id}.json")
+        if os.path.isfile(candidate):
+            try:
+                with open(candidate, encoding="utf-8") as fh:
+                    return json.load(fh)
+            except json.JSONDecodeError as e:
+                logger.error("malformed card content at %r: %s — treating as absent", candidate, e)
+
+    if not platform_knowledge_on:
         return None
-    try:
-        with open(candidate, encoding="utf-8") as fh:
-            return json.load(fh)
-    except json.JSONDecodeError as e:
-        logger.error("malformed card content at %r: %s — treating as absent", candidate, e)
-        return None
+
+    found = fetch_platform_card(element_id, platform_url or _DEFAULT_PLATFORM_URL)
+    if found:
+        logger.info("card content for %s fetched from platform-mcp", element_id)
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +480,13 @@ def generate_daily_plan(
     planner_result = plan_horizon(ctx, seed=seed)
 
     element_id = planner_result["plan_skeleton"]["element_id"]
-    card_content = load_card_content(element_id, config.get("cards_path"))
+    platform_knowledge_on = str(config.get("platform_knowledge", "off")).lower() == "on"
+    card_content = load_card_content(
+        element_id,
+        config.get("cards_path"),
+        platform_knowledge_on=platform_knowledge_on,
+        platform_url=config.get("platform_knowledge_url"),
+    )
     llm_input = dict(planner_result)
     if card_content:
         llm_input["card_content"] = card_content

@@ -2,7 +2,7 @@
 # Шаблон уведомлений: Экстрактор (R2)
 # Вызывается из notify.sh через source
 
-REPORTS_DIR="{{WORKSPACE_DIR}}/{{GOVERNANCE_REPO}}/inbox/extraction-reports"
+REPORTS_DIR="${IWE_WORKSPACE:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/extraction-reports"
 DATE=$(date +%Y-%m-%d)
 
 build_message() {

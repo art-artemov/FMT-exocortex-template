@@ -1,5 +1,5 @@
 ---
-valid_from: 2026-04-06
+valid_from: 2026-07-19
 originSessionId: 9a0e726a-951e-4408-9e02-94d7eeffbf74
 
 type: reference
