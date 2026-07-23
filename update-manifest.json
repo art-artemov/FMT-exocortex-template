@@ -1,5 +1,5 @@
 {
-  "version": "0.36.0",
+  "version": "0.36.1",
   "description": "Манифест платформенных файлов FMT-exocortex-template. Используется update.sh для доставки обновлений.",
   "files": [
     {
@@ -444,118 +444,13 @@
       "path": "AGENTS.md"
     },
     {
-      "path": "CHANGELOG.md"
-    },
-    {
       "path": "CLAUDE.md"
-    },
-    {
-      "path": "ONTOLOGY.md"
     },
     {
       "path": "REPO-TYPE.md"
     },
     {
-      "path": "docs/AGENT-FAULT-PROCESS.md"
-    },
-    {
-      "path": "docs/DATA-POLICY.md"
-    },
-    {
-      "path": "docs/DATA-RESIDENCY.md"
-    },
-    {
-      "path": "docs/IWE-HELP.md"
-    },
-    {
-      "path": "docs/KIMI-SETUP.md"
-    },
-    {
-      "path": "docs/LEARNING-PATH.md"
-    },
-    {
-      "path": "docs/PACK-CREATION.md"
-    },
-    {
-      "path": "docs/PLATFORM-COMPAT.md"
-    },
-    {
-      "path": "docs/PORTABILITY.md"
-    },
-    {
-      "path": "docs/QUICK-START.md"
-    },
-    {
-      "path": "docs/RELEASE-PROCESS.md"
-    },
-    {
-      "path": "docs/RESIDENCY-GATE-USAGE.md"
-    },
-    {
-      "path": "docs/SCRIPT-PROMOTION.md"
-    },
-    {
-      "path": "docs/SETUP-GUIDE.md"
-    },
-    {
-      "path": "docs/adr/ADR-001-setup-in-template.md"
-    },
-    {
-      "path": "docs/adr/ADR-002-modular-roles.md"
-    },
-    {
-      "path": "docs/adr/ADR-003-hosting-platform.md"
-    },
-    {
-      "path": "docs/agent-coordination-manifest.md"
-    },
-    {
-      "path": "docs/assets/orz-cycle.svg"
-    },
-    {
-      "path": "docs/hindsight-setup.md"
-    },
-    {
-      "path": "docs/inter-agent-handoff.md"
-    },
-    {
-      "path": "docs/migrations/strategy-v0.27.0.md"
-    },
-    {
-      "path": "docs/onboarding/architecture-layers.md"
-    },
-    {
-      "path": "docs/onboarding/iwe-layers.md"
-    },
-    {
-      "path": "docs/onboarding/onboarding-diagrams.md"
-    },
-    {
-      "path": "docs/onboarding/onboarding-guide.md"
-    },
-    {
-      "path": "docs/onboarding/onboarding-slides.md"
-    },
-    {
-      "path": "docs/onboarding/web-connect-guide.md"
-    },
-    {
-      "path": "docs/onboarding/web-onboarding.md"
-    },
-    {
-      "path": "docs/principles-vs-skills.md"
-    },
-    {
-      "path": "docs/roles-catalog.md"
-    },
-    {
-      "path": "docs/scripts-catalog.md"
-    },
-    {
-      "path": "docs/skills-catalog.md"
-    },
-    {
-      "path": "docs/use-cases/USE-CASES.md"
+      "path": "aisystant-sync-targets.yaml"
     },
     {
       "path": "exocortex/hindsight/docker-compose.yml"
@@ -1257,6 +1152,9 @@
       "path": "scripts/check-script-collisions.sh"
     },
     {
+      "path": "scripts/check-seed-drift.sh"
+    },
+    {
       "path": "scripts/check-setup-update-parity.sh"
     },
     {
@@ -1276,6 +1174,9 @@
     },
     {
       "path": "scripts/content-filter-map.txt"
+    },
+    {
+      "path": "scripts/copy-to-aisystant.py"
     },
     {
       "path": "scripts/coverage-skills.sh"
@@ -1339,6 +1240,9 @@
     },
     {
       "path": "scripts/generate-skills-catalog.sh"
+    },
+    {
+      "path": "scripts/git-dirty-guard.sh"
     },
     {
       "path": "scripts/headless-runner.sh"
@@ -1419,6 +1323,9 @@
       "path": "scripts/lesson-close.sh"
     },
     {
+      "path": "scripts/lib/common.sh"
+    },
+    {
       "path": "scripts/llm-proxy-launcher.sh"
     },
     {
@@ -1471,9 +1378,6 @@
     },
     {
       "path": "scripts/route-task.sh"
-    },
-    {
-      "path": "scripts/safe-pull.sh"
     },
     {
       "path": "scripts/script-promote.sh"
@@ -1554,24 +1458,6 @@
       "path": "sessions/00-index.md"
     },
     {
-      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/00-writer.md"
-    },
-    {
-      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/01-peer.md"
-    },
-    {
-      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/02-writer.md"
-    },
-    {
-      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/03-peer.md"
-    },
-    {
-      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/meta.yaml"
-    },
-    {
-      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/report.md"
-    },
-    {
       "path": "setup.sh"
     },
     {
@@ -1595,13 +1481,49 @@
   ],
   "excluded_paths": [
     "AGENTS-agent-blocks.md",
+    "CHANGELOG.md",
+    "ONTOLOGY.md",
+    "docs/AGENT-FAULT-PROCESS.md",
     "docs/BROWSER-CI-TEMPLATE.md",
+    "docs/DATA-POLICY.md",
+    "docs/DATA-RESIDENCY.md",
+    "docs/IWE-HELP.md",
+    "docs/KIMI-SETUP.md",
+    "docs/LEARNING-PATH.md",
+    "docs/PACK-CREATION.md",
+    "docs/PLATFORM-COMPAT.md",
+    "docs/PORTABILITY.md",
+    "docs/QUICK-START.md",
+    "docs/RELEASE-PROCESS.md",
+    "docs/RESIDENCY-GATE-USAGE.md",
+    "docs/SCRIPT-PROMOTION.md",
+    "docs/SETUP-GUIDE.md",
+    "docs/adr/ADR-001-setup-in-template.md",
+    "docs/adr/ADR-002-modular-roles.md",
+    "docs/adr/ADR-003-hosting-platform.md",
+    "docs/agent-coordination-manifest.md",
+    "docs/assets/orz-cycle.svg",
     "docs/developer/README.md",
     "docs/developer/card-template.md",
     "docs/developer/developer-guide.md",
     "docs/developer/testing-as-spec.md",
+    "docs/hindsight-setup.md",
+    "docs/inter-agent-handoff.md",
     "docs/maintaining-skills.md",
+    "docs/migrations/strategy-v0.27.0.md",
+    "docs/onboarding/architecture-layers.md",
+    "docs/onboarding/iwe-layers.md",
+    "docs/onboarding/onboarding-diagrams.md",
+    "docs/onboarding/onboarding-guide.md",
+    "docs/onboarding/onboarding-slides.md",
+    "docs/onboarding/web-connect-guide.md",
+    "docs/onboarding/web-onboarding.md",
+    "docs/principles-vs-skills.md",
     "docs/release-audit-log.md",
+    "docs/roles-catalog.md",
+    "docs/scripts-catalog.md",
+    "docs/skills-catalog.md",
+    "docs/use-cases/USE-CASES.md",
     "promotion-status.yaml",
     "scripts/agent-dashboard.py",
     "scripts/audit-ad-hoc-roles.py",
@@ -1616,6 +1538,7 @@
     "scripts/session-dispatcher-tsekh.py",
     "scripts/tests/conftest.py",
     "scripts/tests/test_agent_dashboard.py",
+    "scripts/tests/test_copy_to_aisystant.py",
     "scripts/tests/test_day_close_prepare.py",
     "scripts/tests/test_delivery_content.py",
     "scripts/tests/test_delivery_formal.py",
@@ -1625,9 +1548,19 @@
     "scripts/tests/test_translate_delta.py",
     "scripts/tests/test_translate_parse.py",
     "scripts/translate.py",
-    "scripts/verify-template-integrity.sh"
+    "scripts/verify-template-integrity.sh",
+    "sessions/2026-06/2026-06-17-01-kimi-setup/00-writer.md",
+    "sessions/2026-06/2026-06-17-01-kimi-setup/01-peer.md",
+    "sessions/2026-06/2026-06-17-01-kimi-setup/02-writer.md",
+    "sessions/2026-06/2026-06-17-01-kimi-setup/03-peer.md",
+    "sessions/2026-06/2026-06-17-01-kimi-setup/meta.yaml",
+    "sessions/2026-06/2026-06-17-01-kimi-setup/report.md"
   ],
   "deprecated_files": [
+    {
+      "path": "scripts/safe-pull.sh",
+      "reason": "zero callers (WP-5 audit), logic folded into scripts/lib/common.sh iwe_safe_pull(), removed in v0.36.2"
+    },
     {
       "path": "LEARNING-PATH.md",
       "reason": "moved to docs/LEARNING-PATH.md"
@@ -1695,6 +1628,202 @@
     {
       "path": ".claude/skills/peer-conversation/modes.md",
       "reason": "removed from platform — moved to peer-conversation skill internals"
+    },
+    {
+      "path": "CHANGELOG.md",
+      "reason": "consolidated in CLAUDE.md and memory/ files, removed by WP-401 Ф6.1 2026-07-22"
+    },
+    {
+      "path": "ONTOLOGY.md",
+      "reason": "consolidated in CLAUDE.md and memory/ files, removed by WP-401 Ф6.1 2026-07-22"
+    },
+    {
+      "path": "docs/AGENT-FAULT-PROCESS.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/DATA-POLICY.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/DATA-RESIDENCY.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/IWE-HELP.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/KIMI-SETUP.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/LEARNING-PATH.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/PACK-CREATION.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/PLATFORM-COMPAT.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/PORTABILITY.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/QUICK-START.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/RELEASE-PROCESS.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/RESIDENCY-GATE-USAGE.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/SCRIPT-PROMOTION.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/SETUP-GUIDE.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/adr/ADR-001-setup-in-template.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/adr/ADR-002-modular-roles.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/adr/ADR-003-hosting-platform.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/agent-coordination-manifest.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/assets/orz-cycle.svg",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/hindsight-setup.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/inter-agent-handoff.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/migrations/strategy-v0.27.0.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/onboarding/architecture-layers.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/onboarding/iwe-layers.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/onboarding/onboarding-diagrams.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/onboarding/onboarding-guide.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/onboarding/onboarding-slides.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/onboarding/web-connect-guide.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/onboarding/web-onboarding.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/principles-vs-skills.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/roles-catalog.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/scripts-catalog.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/skills-catalog.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "docs/use-cases/USE-CASES.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1"
+    },
+    {
+      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/00-writer.md",
+      "reason": "session transcripts archived, removed by WP-401 Ф6.1 2026-07-22"
+    },
+    {
+      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/01-peer.md",
+      "reason": "session transcripts archived, removed by WP-401 Ф6.1 2026-07-22"
+    },
+    {
+      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/02-writer.md",
+      "reason": "session transcripts archived, removed by WP-401 Ф6.1 2026-07-22"
+    },
+    {
+      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/03-peer.md",
+      "reason": "session transcripts archived, removed by WP-401 Ф6.1 2026-07-22"
+    },
+    {
+      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/meta.yaml",
+      "reason": "session transcripts archived, removed by WP-401 Ф6.1 2026-07-22"
+    },
+    {
+      "path": "sessions/2026-06/2026-06-17-01-kimi-setup/report.md",
+      "reason": "session transcripts archived, removed by WP-401 Ф6.1 2026-07-22"
+    },
+    {
+      "path": "docs/BROWSER-CI-TEMPLATE.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1 2026-07-23"
+    },
+    {
+      "path": "docs/maintaining-skills.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1 2026-07-23"
+    },
+    {
+      "path": "docs/release-audit-log.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1 2026-07-23"
+    },
+    {
+      "path": "docs/developer/README.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1 2026-07-23"
+    },
+    {
+      "path": "docs/developer/card-template.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1 2026-07-23"
+    },
+    {
+      "path": "docs/developer/developer-guide.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1 2026-07-23"
+    },
+    {
+      "path": "docs/developer/testing-as-spec.md",
+      "reason": "documentation pipeline deprecated, consolidated in memory/, removed by WP-401 Ф6.1 2026-07-23"
     }
   ]
 }

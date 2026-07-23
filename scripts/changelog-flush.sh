@@ -10,7 +10,7 @@
 
 set -uo pipefail
 
-FMT_DIR="${IWE_TEMPLATE:-${IWE_WORKSPACE:-$HOME/IWE}/FMT-exocortex-template}"
+FMT_DIR="${IWE_TEMPLATE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 CHANGELOG="$FMT_DIR/CHANGELOG.md"
 dry_run=false
 version=""

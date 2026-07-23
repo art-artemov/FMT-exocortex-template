@@ -26,6 +26,8 @@
 
 set -uo pipefail
 
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
 START_TS=$(date +%s)
 HUMAN_MODE=false
 [ "${1:-}" = "--human" ] && HUMAN_MODE=true
@@ -50,8 +52,10 @@ scheduler_pulse() {
       echo "stale:$(( age_hours / 24 ))d"
     fi
   else
-    # Fallback: проверить launchctl
-    if launchctl list 2>/dev/null | grep -qE "iwe\.scheduler|iwe\.feedback-watchdog"; then
+    # Fallback: launchd (macOS) / systemd --user (Linux) via iwe_scheduler_active
+    # (lib/common.sh) — WP-5 Ubuntu-audit факт #4: the bare launchctl call always
+    # read "missing" on Linux.
+    if iwe_scheduler_active; then
       echo "registered-no-pulse"
     else
       echo "missing"
@@ -95,7 +99,7 @@ if [ "$HUMAN_MODE" = "true" ]; then
   case "$SCHED" in
     ok)               sched_emoji="🟢"; sched_desc="scheduler-pulse свежий (<26h)" ;;
     registered-no-pulse) sched_emoji="🟡"; sched_desc="scheduler зарегистрирован, но нет локального pulse-файла" ;;
-    missing)          sched_emoji="🔴"; sched_desc="Mode A: scheduler не зарегистрирован в launchctl" ;;
+    missing)          sched_emoji="🔴"; sched_desc="Mode A: scheduler не зарегистрирован (launchd/systemd)" ;;
     stale:*)          sched_emoji="🟡"; sched_desc="scheduler-pulse устарел ($SCHED)" ;;
     *)                sched_emoji="❓"; sched_desc="unknown: $SCHED" ;;
   esac

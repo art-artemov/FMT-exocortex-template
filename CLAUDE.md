@@ -1,6 +1,6 @@
 # Инструкции для всех репозиториев
 
-> Kimi → `AGENTS.md`, Hermes → Aisystant MCP `get_instructions`; доставка ядра в шаблон — `template-sync.sh` (защищённый конвейер, `--dry-run`/`--check`). Slim-ядро: триггеры + правила hot; детали → `memory/`, `.claude/rules-lazy/`, `.claude/skills/`.
+> Kimi → `AGENTS.md`, Hermes → Aisystant MCP `get_instructions`; доставка ядра из авторского IWE в этот шаблон — внутренний авторский конвейер (не входит в шаблон, недоступен пользователю). Slim-ядро: триггеры + правила hot; детали → `memory/`, `.claude/rules-lazy/`, `.claude/skills/`.
 
 ## 1. Архитектура репозиториев
 
@@ -14,21 +14,21 @@
 ## 2. ОРЗ-фрактал (Открытие → Работа → Закрытие)
 
 > Пропуск Открытия = незапланированная работа. Пропуск Закрытия = незафиксированный результат.
-> **Сессия:** `protocol-open.md § Сессия` → `protocol-work.md` → `/run-protocol close` · **День:** `/day-open` («открывай») → `/run-protocol day-close` · **Неделя:** `/run-protocol week-close` · **Месяц:** `/month-close` (первый Пн, до Strategy Session).
+> **Сессия:** `memory/protocol-open.md § Сессия` → `memory/protocol-work.md` → `/run-protocol close` · **День:** `/day-open` («открывай») → `/run-protocol day-close` · **Неделя:** `/run-protocol week-close` · **Месяц:** `/month-close` (первый Пн, до Strategy Session).
 
 ### Блокирующие правила
 
-> **SoT (WP-272 Ф1):** `PACK-agent-rules/rules/AR.NNN.md` (реестр `.claude/rules-registry.yaml`); полные тексты выжимки → `.claude/rules-lazy/blocking-rules-full.md`. **Приоритет = нумерация:** структурное (1-5) перевешивает поведенческое (6-10).
+> **SoT (WP-272 Ф1):** `PACK-agent-rules/rules/AR.NNN.md` (реестр `.claude/rules-registry.yaml`) — авторский источник, не шипится в шаблон (генератор `.claude/scripts/generate-rules-registry.py` требует `PACK-agent-rules`, которого у пользователя нет). На пользовательской установке — шипящаяся выжимка тех же 10 правил → `.claude/rules-lazy/blocking-rules-full.md`. **Приоритет = нумерация:** структурное (1-5) перевешивает поведенческое (6-10).
 
 1. **WP Gate:** ЛЮБОЕ задание → `memory/protocol-open.md` ДО начала работы. Новый РП → Ритуал согласования → явное «да»/«делаем»/«открывай»; без этого не регистрировать.
 2. **Push:** «заливай»/«запуши»/«закрывай» → commit + push без вопросов, ДО отчёта Закрытия. Любой Close: `git status --short` по всем репо → незафиксированное commit + push ДО следующего шага.
 3. **Close:** Триггер Закрытия → протокол Закрытия → выполнить.
-4. **Pull-on-Touch:** `git pull --rebase` при первом обращении к репо за сессию (все `{{WORKSPACE_DIR}}/*`). Dirty → stash; конфликт → `memory/reference/agent-core.md`.
+4. **Pull-on-Touch:** `git pull --rebase` при первом обращении к репо за сессию (все `/Users/artem/IWE/*`). Dirty → stash; конфликт → `memory/reference/agent-core.md`.
 5. **Чеклист-верификация:** Quick/Day Close — sub-agent Haiku R23 сверяет с чеклистом. Исключения: ≤15 мин или без изменений файлов.
 6. **Hooks/Scripts Bypass Gate (S-33):** без явного разрешения не менять `.claude/hooks|scripts/`, `.iwe-runtime/`, `FMT-exocortex-template/`, не обходить хуки; блок хука → bug-файл + пилоту + ждать. → `.claude/rules-lazy/hooks-bypass-gate.md`.
-7. **Автономность:** не спрашивать подтверждения — выполни → отчитайся. Исключения: необратимо-разрушительное; WP Gate Ритуал; choice-question. → `memory/feedback_behaviour.md` П.1.
+7. **Автономность:** не спрашивать подтверждения — выполни → отчитайся. Исключения: необратимо-разрушительное; WP Gate Ритуал; choice-question. Полный текст → `.claude/rules-lazy/blocking-rules-full.md` п.7.
 8. **Напоминания (S-44):** «напомни через X» → `send_telegram_message(schedule_at)` + ScheduleWakeup резерв; резерв сработал → сначала Telegram, потом чат.
-9. **Финиш > отлог (S-46):** доп. задача → дефолт «делаю сейчас»; «сейчас или потом?» = анти-паттерн. Исключения и приоритет WP Gate → `memory/feedback_finish_now_no_defer.md`.
+9. **Финиш > отлог (S-46):** доп. задача → дефолт «делаю сейчас»; «сейчас или потом?» = анти-паттерн. Исключения и приоритет WP Gate → `.claude/rules-lazy/blocking-rules-full.md` п.9.
 
 ### Протокол Работы (полный → `memory/protocol-work.md`)
 
@@ -48,7 +48,7 @@
 - РП затрагивает PII → **Security Gate (B7.3):** §Б чеклист ArchGate ДО реализации; логирование PII = блокер.
 - РП ≥3h → **Priority Gate:** к какому R{N} ведёт?
 - Новый инструмент/агент/система → **IntegrationGate (БЛОКИРУЮЩЕЕ):** только (1) обещание → (2) сценарии → (3) роль → (4) реализация → `.claude/rules-lazy/integration-gate.md`.
-- Замена legacy-компонента → **LegacyPortGate (БЛОКИРУЮЩЕЕ):** сначала 15-мин субагент «как это работает сейчас?» → `memory/feedback_behaviour.md` П.10.
+- Замена legacy-компонента → **LegacyPortGate (БЛОКИРУЮЩЕЕ):** сначала 15-мин субагент «как это работает сейчас?» → `.claude/rules-lazy/blocking-rules-full.md`.
 
 ## 3. Описания методов (PROCESSES.md)
 
@@ -58,18 +58,18 @@
 
 Файлы/репо → `memory/navigation.md` · Pack-репо → `memory/repo-type-rules.md` · терминология → `memory/hard-distinctions.md` · FPF/SOTA/Роли → `memory/fpf-reference.md`, `memory/sota-reference.md`, `memory/roles.md` · документ/чеклист → `memory/checklists.md`.
 
-Политика: ≤11 файлов; построчно проверяется только distinctions.md (≤150), остальное — суммарным M1/M2-бюджетом (WP-7 NR1.2); lazy-reference без лимита. Горизонты/frontmatter → `memory/memory-lifecycle-spec.md`; temporal metadata → `protocol-work.md §2`.
-Рабочая директория: `{{HOME_DIR}}/IWE/`; `memory/` = симлинк на auto-memory.
+Политика: ≤11 файлов; построчно проверяется только distinctions.md (≤150), остальное — суммарным M1/M2-бюджетом (WP-7 NR1.2); lazy-reference без лимита. Горизонты/frontmatter → `memory/memory-lifecycle-spec.md`; temporal metadata → `memory/protocol-work.md §2`.
+Рабочая директория: `/Users/artem/IWE/`; `memory/` = симлинк на auto-memory.
 
 ## 5. АрхГейт — ОБЯЗАТЕЛЬНАЯ оценка
 
-> **БЛОКИРУЮЩЕЕ.** Архитектурное решение → `/archgate`: принципы DP.ARCH.001 §7 → профиль ЭМОГССБ (✅/⚠️/❌) → conjunctive screening; чеклист современности (SOTA.002/001/011 + CGUS/PUA) — внутри `.claude/skills/archgate/SKILL.md`. Без агрегатного балла — `feedback_decision_gates.md`.
+> **БЛОКИРУЮЩЕЕ.** Архитектурное решение → `/archgate`: принципы DP.ARCH.001 §7 → профиль ЭМОГССБ (✅/⚠️/❌) → conjunctive screening; чеклист современности (SOTA.002/001/011 + CGUS/PUA) — внутри `.claude/skills/archgate/SKILL.md`. Профиль без агрегатного балла — так и есть, это осознанный выбор (conjunctive screening, не средневзвешенное).
 
 ## 6. Форматирование → `.claude/rules/formatting.md` · Различения → `.claude/rules/distinctions.md`
 
 ## Контекстный бюджет IWE (WP-445)
 
-Hot-каркас ≤20K токенов (M1), строгая цель ≤12K (M2). Изменил файл из `hot-files.list` (оба CLAUDE.md, rules/*.md) → перед коммитом `DS-strategy/scripts/verify-context-budget.sh`.
+Hot-каркас ≤20K токенов (M1), строгая цель ≤12K (M2). Изменил файл из `hot-files.list` (оба CLAUDE.md, rules/*.md) → перед коммитом `/Users/artem/IWE/FMT-exocortex-template/scripts/verify-context-budget.sh`.
 
 ## 7. Обновление этого файла
 
@@ -89,7 +89,7 @@ Hot-каркас ≤20K токенов (M1), строгая цель ≤12K (M2)
 
 ## State-Transition Gate — CRITICAL
 
-**Перед любым нетривиальным действием или РП назвать целевой переход состояния пользователя** `{тип состояния, из→в}` (WP-457). Типы — только `DS-strategy/docs/state-axes-registry.yaml`, допустимы только `gate_ready: true`; ссылка на declared FSM-owner обязательна, свободный текст не принимается. Нет ссылки или тип не `gate_ready` → действие = inventory → СТОП/отложить. Модель осей → `archive/wp-contexts/WP-457/CONCEPT-user-states.md §5`; cross-axis → `agent-core.md`.
+**Перед любым нетривиальным действием или РП назвать целевой переход состояния пользователя** `{тип состояния, из→в}` (WP-457) — **применимо, если в `DS-strategy/docs/state-axes-registry.yaml` описаны оси состояний** (авторский артефакт, не шипится в шаблон по умолчанию). Если файл есть — типы только из него, допустимы только `gate_ready: true`; ссылка на declared FSM-owner обязательна, свободный текст не принимается; нет ссылки или тип не `gate_ready` → действие = inventory → СТОП/отложить. **Файла нет (типовая установка)** → гейт неактивен, действовать по остальным Pre-action Gates без остановки. Модель осей (авторский пример) → `archive/wp-contexts/WP-457/CONCEPT-user-states.md §5`; cross-axis → `memory/reference/agent-core.md`.
 
 ## Git Staging — CRITICAL
 
@@ -105,7 +105,7 @@ Discrepancy found (file ≠ plan, stale content): **report to pilot, do not sile
 
 ## Working Directory
 
-`{{WORKSPACE_DIR}}/`
+`/Users/artem/IWE/`
 
 ## Status Reporting — Agent Status Registry (РП-395)
 
@@ -165,9 +165,9 @@ Respond in Russian unless the user writes in English.
 > Элаборации всех пунктов → `memory/reference/agent-core.md`.
 
 - **Без Obsidian (DS-strategy):** просмотр через VS Code.
-- **Комментарии кода — только EN (решение Андрея, 14.06.2026):** весь `{{WORKSPACE_DIR}}/**`; исключение — user-facing строки по языку интерфейса.
+- **Комментарии кода — только EN (решение Андрея, 14.06.2026):** весь `/Users/artem/IWE/**`; исключение — user-facing строки по языку интерфейса.
 - **Различения (авторские):** `.claude/rules/distinctions.md` (секция «Авторские») + `memory/distinctions-warm.md` (в т.ч. «Бот = интерфейс, не место агентов»).
-- **Именование:** governance-репо называется `DS-strategy` по умолчанию; рабочая директория `{{HOME_DIR}}/IWE/`.
+- **Именование:** governance-репо называется `DS-strategy` по умолчанию; рабочая директория `/Users/artem/IWE/`.
 - **Extensions Gate (БЛОКИРУЮЩЕЕ):** пользователи кастомизируют ТОЛЬКО `extensions/*.md` + `params.yaml` (правка `.claude/skills/` или `memory/protocol-*.md` = ошибка); автор (`author_mode: true`) редактирует L1 напрямую — авторский IWE = SoT, доставка в FMT через `template-sync.sh`.
 - **README.md (FMT-exocortex-template):** изменение структуры — по согласованию с владельцем.
 - **WP Entry Filter (S-47, БЛОКИРУЮЩЕЕ):** новый РП — только при явной связи с R1-R6 месяца или внешнем заказчике; иначе → `inbox/backlog-with-triggers.md`. Исключения: spin-off закрытого РП; прямое поручение пилота.

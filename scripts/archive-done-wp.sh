@@ -40,16 +40,30 @@ fi
 # Убрать префикс WP- если передали
 WP_NUM="${WP_NUM#WP-}"
 
-WP_DIR="$INBOX/WP-${WP_NUM}"
-WP_FILE_FOLDER="$WP_DIR/WP-${WP_NUM}.md"
-WP_FILE_FLAT=$(find "$INBOX" -maxdepth 1 -name "WP-${WP_NUM}-*.md" 2>/dev/null | head -1)
+# issue #298: wp-list.py — единая точка, где закодирована двуформатная раскладка
+# (папочная WP-434 + устаревшая плоская) — этот скрипт раньше отдельно реализовывал
+# тот же поиск (WP_FILE_FOLDER/WP_FILE_FLAT). Fallback на старую glob-логику, если
+# wp-list.py ещё не доставлен на этой установке (переходный период).
+WP_LIST_SCRIPT="$SCRIPT_DIR/wp-list.py"
+WP_FILE_FOLDER="$INBOX/WP-${WP_NUM}/WP-${WP_NUM}.md"
+WP_CARD=""
+if [[ -f "$WP_LIST_SCRIPT" ]]; then
+  WP_CARD=$(python3 "$WP_LIST_SCRIPT" --list-cards --source inbox --fields wp,card --format tsv \
+    --governance-repo "$GOV_REPO" --iwe-root "$IWE" 2>/dev/null \
+    | awk -F'\t' -v n="$WP_NUM" '$1==n {print $2; exit}')
+fi
+if [[ -z "$WP_CARD" ]] && [[ ! -f "$WP_LIST_SCRIPT" ]]; then
+  # Fallback: старая прямая glob-логика (wp-list.py отсутствует на этой установке).
+  WP_CARD="$WP_FILE_FOLDER"
+  [[ -f "$WP_CARD" ]] || WP_CARD=$(find "$INBOX" -maxdepth 1 -name "WP-${WP_NUM}-*.md" 2>/dev/null | head -1)
+fi
 
-if [[ -f "$WP_FILE_FOLDER" ]]; then
+if [[ "$WP_CARD" == "$WP_FILE_FOLDER" ]] && [[ -f "$WP_CARD" ]]; then
   MODE="folder"
-  WP_FILE="$WP_FILE_FOLDER"
-elif [[ -n "$WP_FILE_FLAT" ]]; then
+  WP_FILE="$WP_CARD"
+elif [[ -n "$WP_CARD" ]]; then
   MODE="flat"
-  WP_FILE="$WP_FILE_FLAT"
+  WP_FILE="$WP_CARD"
   echo "⚠️  WP-${WP_NUM}: найден только устаревший плоский файл (не папочная конвенция WP-434)" >&2
 else
   echo "❌ WP-${WP_NUM}: не найден ни $WP_FILE_FOLDER, ни плоский inbox/WP-${WP_NUM}-*.md" >&2

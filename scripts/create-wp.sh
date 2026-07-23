@@ -228,7 +228,23 @@ if insert_at is None:
 # проверяем наличие 6 канонических имён, не их порядок/количество.
 header_cols = [c.strip() for c in header_line.strip().strip("|").split("|")]
 CANONICAL_NAMES = ["#", "P", "Название", "Ст", "Репо", "Бюджет"]
-col_index = {name: i for i, name in enumerate(header_cols)}
+# issue #297: вендорский skeleton (templates/strategy-skeleton/docs/WP-REGISTRY.md)
+# пишет полные русские имена («Приоритет», «Статус», «Репозитории»), а не короткие
+# канонические («P», «Ст», «Репо») — та же семантика, другое написание. Раньше
+# сверка требовала буквального совпадения и падала даже на только что созданном
+# из вендорского skeleton реестре. Синонимы резолвятся к канонической колонке до
+# проверки — те же строки find_column_indices() в check-wp-format.py уже читают
+# оба варианта позиционным fallback'ом, здесь та же терпимость явным списком.
+COLUMN_SYNONYMS = {
+    "Приоритет": "P",
+    "Статус": "Ст",
+    "Репозитории": "Репо",
+    "Репозиторий": "Репо",
+}
+col_index = {}
+for i, name in enumerate(header_cols):
+    canonical = COLUMN_SYNONYMS.get(name, name)
+    col_index.setdefault(canonical, i)
 missing_names = [name for name in CANONICAL_NAMES if name not in col_index]
 if missing_names:
     print(

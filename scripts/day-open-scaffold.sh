@@ -29,6 +29,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # iwe-env-bootstrap.sh sets its own top-level SCRIPT_DIR when sourced below, clobbering
 # ours — save this script's own directory under a distinct name first (issue #262).
 TEMPLATE_SCRIPTS_DIR="$SCRIPT_DIR"
+source "$TEMPLATE_SCRIPTS_DIR/lib/common.sh"
 # Bootstrap sets IWE_ROOT/WORKSPACE_DIR/etc. It may be ABSENT on some hosts — tsekh-1's
 # extension sync does not copy .claude/lib/ — so source it only if present and never let
 # its absence abort the scaffold (the old `|| exit 1` killed every run on tsekh-1, which
@@ -613,8 +614,11 @@ render_iwe_status() {
   last_feedback_triage_log=$(ls -t "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/logs/feedback-triage"*.log 2>/dev/null | head -1 || echo "")
   # issue #261: старая маска ловила только legacy-метки (iwe.scheduler и т.п.), под которые
   # не попадают ни current per-role юниты, ни даже шаблонный com.exocortex.scheduler.plist.
+  # WP-5 Ubuntu-audit факт #4: launchctl unconditionally also meant Linux always saw this
+  # as false (launchctl doesn't exist there) — iwe_scheduler_active() (lib/common.sh)
+  # branches launchd/systemd by what's actually on PATH.
   local has_launchd_unit=false
-  if launchctl list 2>/dev/null | grep -qE "com\.(exocortex\.scheduler|strategist\.morning|strategist\.weekreview|extractor\.inbox-check)"; then
+  if iwe_scheduler_active; then
     has_launchd_unit=true
   fi
 
@@ -649,6 +653,14 @@ render_iwe_status() {
     else
       echo "| Scheduler/триаж | 🟡 | Mode B: feedback-triage зарегистрирован, но лог не обновлялся ${last_log_age_days}д — возможно cron skipped |"
     fi
+  elif [ "$has_launchd_unit" = "true" ] && [ -z "$last_watchdog_log" ] && [ -z "$last_feedback_triage_log" ]; then
+    # issue #292 follow-up to #261: юнит(ы) планировщика зарегистрированы (кто-то
+    # разворачивал роли на этой машине), но НИ ОДНОГО лога feedback-triage не было
+    # НИКОГДА (не только сегодня/недавно — ls -t по всей истории пуст). Это не
+    # «cron не отработал» (Mode A), это «роль feedback-triage не развёрнута на
+    # этой инсталляции» — отсутствие роли не авария, ⚪. Настоящий Mode A (cron
+    # infra целиком отсутствует) остаётся ниже, под has_launchd_unit=false.
+    echo "| Scheduler/триаж | ⚪ | роль feedback-triage не развёрнута на этой машине (юнит планировщика есть, логов триажа не было никогда) |"
   else
     # Mode A: cron не запущен (нет юнита в launchctl) + нет свежих логов
     local last_log_age_days="∞"
@@ -659,9 +671,15 @@ render_iwe_status() {
     fi
     echo "| Scheduler/триаж | 🔴 | **Mode A** (cron не отработал): юнит feedback-triage не зарегистрирован в launchctl, последний лог ${last_log_age_days}д назад |"
 
-    # Auto-create incident-файл если ещё нет за сегодня
+    # Auto-create incident-файл если ещё нет за сегодня И не подавлен явно (issue
+    # #292: имя файла содержит дату — [ ! -f incident_file ] никогда не срабатывало
+    # на «сегодня другая дата» повторно, `status: deferred` в файле вчерашней даты
+    # не переживал смену даты. Отдельный маркер без даты — переживает.
+    local incident_suppress="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/.incident-suppress-scheduler-cron-not-fired"
     local incident_file="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/INCIDENT-scheduler-cron-not-fired-$DATE.md"
-    if [ ! -f "$incident_file" ]; then
+    if [ -f "$incident_suppress" ]; then
+      echo "  (инцидент подавлен: $incident_suppress — удалите файл, чтобы возобновить авто-создание)"
+    elif [ ! -f "$incident_file" ]; then
       mkdir -p "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox"
       cat > "$incident_file" <<INCEOF
 ---
@@ -693,8 +711,13 @@ auto_generated: true
 
 ## Auto-generation note
 
-Этот файл создан автоматически day-open-scaffold.sh при каждом обнаружении Mode A.
-Если решено отложить fix — поставить \`status: deferred\` и убрать \`auto_generated\` поле, чтобы скаффолд не перезаписывал контекст.
+Этот файл создан автоматически day-open-scaffold.sh при каждом обнаружении Mode A — имя файла содержит дату, поэтому завтрашний Mode A создаст НОВЫЙ файл с новой датой независимо от того, что вы сделаете с этим (правка frontmatter внутри датированного файла не переживает смену даты — issue #292).
+
+Если решено отложить fix и не получать новый инцидент-файл каждый день — создайте маркер:
+\`\`\`bash
+touch "\${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/.incident-suppress-scheduler-cron-not-fired"
+\`\`\`
+Удалите маркер, чтобы возобновить авто-создание.
 INCEOF
     fi
   fi
@@ -1019,7 +1042,10 @@ render_compact_dashboard() {
 
   # Светофор — критические позиции
   echo "**IWE за ночь:**"
-  echo "  Scheduler: $(launchctl list 2>/dev/null | grep -qE 'iwe\.(scheduler|feedback)' && echo '🟢' || echo '🔴 не запущен')"
+  # WP-5 Ubuntu-audit факт #4: this used the same pre-#261 legacy label regex as
+  # the OTHER launchctl check in this file (fixed above) — AND was unconditional
+  # launchctl, so Linux always read 🔴 regardless of the actual systemd timers.
+  echo "  Scheduler: $(iwe_scheduler_active && echo '🟢' || echo '🔴 не запущен')"
   local fpf_status fpf_fetch_ok
   # issue #241 (остаточная дыра): та же незащищённая git fetch, тот же класс зависания.
   # run_bounded не пробрасывает exit-код — результат передаём через маркер в stdout.
