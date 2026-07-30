@@ -94,6 +94,12 @@ Whitelist read-only helpers (issue #264) — разрешены под dry-run, 
 ```
 .claude/scripts/load-extensions.sh                    # относительный, от workspace-root
 $HOME/IWE/.claude/scripts/load-extensions.sh          # абсолютный, захардкожен
+scripts/day-close-prepare.sh                          # относительный (issue #315) — рабочий,
+                                                        # только если CWD внутри FMT-exocortex-template
+${IWE_SCRIPTS:-$HOME/IWE/scripts}/day-close-prepare.sh # абсолютный (нестатический — реальный вложенный
+                                                        # путь резолвится через $IWE_SCRIPTS, issue #315)
+"$IWE_SCRIPTS/day-close-prepare.sh"                    # реальная документированная форма (день. вызов
+                                                        # из day-close/SKILL.md) — маркер __WL_DAY_CLOSE_PREPARE__
 ```
 
 Абсолютный паттерн захардкожен в `$HOME/IWE`, не glob `*/.claude/...` и не
@@ -101,6 +107,30 @@ $HOME/IWE/.claude/scripts/load-extensions.sh          # абсолютный, з
 env-инъекция `IWE_ROOT=/tmp/evil` прошли бы gate (review-01 High, review-02 H1).
 Пользователи с нестандартным расположением workspace вызывают helper
 относительным путём из корня workspace.
+
+Реальный (и единственный документированный) вызов `day-close-prepare.sh` —
+`bash "$IWE_SCRIPTS/day-close-prepare.sh"` (day-close/SKILL.md, day-close-details.md).
+`$IWE_SCRIPTS` по умолчанию = `$WORKSPACE_DIR/FMT-exocortex-template/scripts`
+(`scripts/` не копируется в workspace-root, в отличие от `.claude/` — см.
+`.claude/lib/iwe-env-bootstrap.sh:86`), поэтому ни один из двух путей выше сам
+по себе не совпадает с реальным вызовом: переменная в кавычках `"$IWE_SCRIPTS/..."`
+попадает под общее схлопывание кавычек (шаг 1 Bash matchers) раньше, чем до неё
+доходит whitelist-case, и превращается в неотличимый токен `QSTR`. Точечная
+sed-подмена литерального (нераскрытого на момент PreToolUse) паттерна
+`"$IWE_SCRIPTS/day-close-prepare.sh"` → маркер `__WL_DAY_CLOSE_PREPARE__`
+идёт ДО общего схлопывания кавычек и восстанавливает совпадение именно для
+этого прошитого вызова, не открывая обход кавычек ни для чего другого
+(независимая проверка — review нашёл и это, и неверный абсолютный путь выше
+в первой версии фикса; исправлено во второй итерации, живое воспроизведение
+точной документированной команды подтвердило allow).
+
+`day-close-prepare.sh` (issue #315) — read-only дайджест-оркестратор шага 0б
+Day Close (см. код: только `git log`/`grep`/`ls`/`wc`/`python3 <script>`/
+`wakatime-cli --today`, ни одного write-пути — redirect в файл, `tee`, `sed -i`,
+`git add|commit|push`, `rm`/`mv` в коде отсутствуют). До фикса узкий whitelist
+(только `load-extensions.sh`) блокировал его как «indirect execution», хотя
+сам гейт срабатывает по факту записи — smoke-тест ритуала терял точность,
+падая на безобидном чтении раньше первого реального write.
 
 Правило whitelist: добавление только через (1) строку здесь + (2) ветку в case
 `bash|sh|zsh` в dry-run-gate.sh + (3) code review на отсутствие write-путей

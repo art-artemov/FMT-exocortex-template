@@ -41,9 +41,10 @@ jobs:
     name: Backup memory → exocortex
     runs-on: ubuntu-latest
     if: >-
+      github.repository == 'TserenTserenov/FMT-exocortex-template' && (
       github.event_name == 'schedule' ||
       github.event.inputs.task == 'all' ||
-      github.event.inputs.task == 'backup'
+      github.event.inputs.task == 'backup' )
     steps:
       - name: Checkout strategy repo
         if: env.STRATEGY_REPO != ''
@@ -59,6 +60,18 @@ jobs:
         run: |
           DATE=$(date +%Y-%m-%d)
           BACKUP_DIR="exocortex"
+
+          # WP-7 Ф-Backup-Resilience-Audit (27.07): если exocortex/ в .gitignore этого
+          # репозитория (пилот мог осознанно вынести память из git — личные данные,
+          # см. WP-500 Ф3), git add ниже молча ничего не сделает и джоба каждую ночь
+          # будет писать "No changes to backup", не объясняя причину. Явный skip вместо
+          # тихого no-op — офсайт-защита памяти в этом случае идёт другим каналом
+          # (например restic на собственном сервере), не этим GitHub Actions job.
+          if git check-ignore -q "$BACKUP_DIR" 2>/dev/null; then
+            echo "⚠️  $BACKUP_DIR/ в .gitignore этого репозитория — облачный бэкап памяти пропущен."
+            echo "    Офсайт-защита memory/ обеспечивается другим каналом (см. свою backup-policy)."
+            exit 0
+          fi
 
           mkdir -p "$BACKUP_DIR"
 
@@ -100,9 +113,10 @@ jobs:
     name: Health check (ночная автоматика)
     runs-on: ubuntu-latest
     if: >-
+      github.repository == 'TserenTserenov/FMT-exocortex-template' && (
       github.event_name == 'schedule' ||
       github.event.inputs.task == 'all' ||
-      github.event.inputs.task == 'health-check'
+      github.event.inputs.task == 'health-check' )
     steps:
       - name: Checkout strategy repo
         if: env.STRATEGY_REPO != ''

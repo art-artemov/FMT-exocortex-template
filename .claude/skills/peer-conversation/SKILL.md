@@ -1,6 +1,6 @@
 ---
 name: peer-conversation
-description: Многотуровый диалог писателя (Claude) с напарником (Kimi) по задаче пилота (DP.SC.154). Ведёт turn-loop, обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool.
+description: Многотуровый диалог писателя (Claude) с напарником (Kimi по умолчанию, Codex — второй вендор) по задаче пилота (DP.SC.154). Ведёт turn-loop, обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool.
 argument-hint: "<описание задачи> | --list | --interrupt <session_id> | --finalize <session_id>"
 version: 1.3.0
 layer: L1
@@ -22,16 +22,16 @@ gates_rationale: "операционный скилл; WP Gate применим 
 
 Задача: $ARGUMENTS
 
-> **Архитектура:** я (Claude) = писатель, Kimi = напарник.
-> Kimi вызывается через `kimi-peer-adapter.sh` напрямую — Bash tool, stdin pipe.
-> `list_peer_statuses` (Local Gateway) — координация файлов, **не** проверка доступности Kimi CLI.
-> Gateway offline ≠ Kimi недоступен.
+> **Архитектура:** я (Claude) = писатель, напарник = `<PEER_VENDOR>` (kimi по умолчанию | codex — issue #296, выбор на Шаге 0а).
+> Напарник вызывается через `<PEER_ADAPTER>` напрямую — Bash tool, stdin pipe (`kimi-peer-adapter.sh` | `codex-peer-adapter.sh`, один и тот же turn-loop ниже, меняется только адаптер).
+> `list_peer_statuses` (Local Gateway) — координация файлов, **не** проверка доступности CLI напарника.
+> Gateway offline ≠ напарник недоступен.
 
 ---
 
 ## When to use
 
-Многотуровый диалог писателя (Claude) с напарником (Kimi) по задаче пилота (DP.SC.154). Ведёт turn-loop, обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool.
+Многотуровый диалог писателя (Claude) с напарником (Kimi по умолчанию, Codex — второй вендор, Шаг 0а) по задаче пилота (DP.SC.154). Ведёт turn-loop, обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool.
 
 ## Scope boundary — не подменяет решения, зарезервированные за пилотом (найдено 2026-07-07)
 
@@ -51,6 +51,21 @@ gates_rationale: "операционный скилл; WP Gate применим 
 
 ---
 
+## Шаг 0а. Выбор вендора напарника (issue #296)
+
+Определить три переменные, используемые везде ниже по turn-loop (сам turn-loop одинаков для любого вендора — меняется только то, каким адаптером вызывается напарник):
+
+| `<PEER_VENDOR>` | `<PEER_AGENT_ID>` | `<PEER_ADAPTER>` |
+|---|---|---|
+| `kimi` (по умолчанию) | `kimi-headless` | `${IWE_TEMPLATE:-$HOME/IWE/FMT-exocortex-template}/scripts/kimi-peer-adapter.sh` |
+| `codex` | `codex-headless` | `${IWE_TEMPLATE:-$HOME/IWE/FMT-exocortex-template}/scripts/codex-peer-adapter.sh` |
+
+**Выбор:** `--peer kimi|codex` в `$ARGUMENTS`, иначе явная фраза пилота («с Codex», «через ChatGPT») в задаче, иначе **kimi** (сохраняет прежнее поведение по умолчанию — существующие сессии не меняются). Таблица маршрутизации ниже (routing-design-v1.md, в Шаге 0б) описывает профиль **kimi по умолчанию** (дёшево/быстро для триажа) — для codex профиль не установлен, при явном выборе codex не полагаться на эту таблицу для решений «что ему поручить».
+
+Codex-адаптер не портирует часть опциональных фич kimi-адаптера (IWE_PEER_DIFF, IWE_PEER_INLINE — см. заголовок `codex-peer-adapter.sh`); если сессия их использует — статefulness через git-diff может не сработать для codex-напарника, автопередача останется kimi-only до портирования.
+
+---
+
 ## Шаг 0б. Открытие (WP Gate — только для новой сессии)
 
 Найти WP по задаче: прочитать `${IWE_GOVERNANCE_REPO:-DS-strategy}/WP-REGISTRY.md` (grep по ключевым словам) и `${IWE_GOVERNANCE_REPO:-DS-strategy}/current/WeekPlan W{N}.md`.
@@ -58,10 +73,10 @@ gates_rationale: "операционный скилл; WP Gate применим 
 Анонс пилоту:
 ```
 Открываю peer-сессию (DP.SC.154)
-Роль: Писатель (Claude) | Напарник: Kimi
+Роль: Писатель (Claude) | Напарник: <PEER_VENDOR>
 Задача: <задача>
 РП: WP-NNN «<название>» | или: не найден в плане
-Метод: turn-loop ≤10 ходов | Модель напарника: kimi-headless
+Метод: turn-loop ≤10 ходов | Модель напарника: <PEER_AGENT_ID>
 ```
 
 Если РП **не найден** в плане недели → полный WP Gate Ритуал (`memory/protocol-open.md §Сессия`):
@@ -139,8 +154,8 @@ session_id: "<SESSION_ID>"
 start_time: "<ISO-8601 UTC>"
 end_time: ""
 writer_agent: "claude-code"
-peer_agent: "kimi-headless"
-peer_cmd: "kimi-peer-adapter"
+peer_agent: "<PEER_AGENT_ID>"  # kimi-headless | codex-headless (Шаг 0а)
+peer_cmd: "<PEER_VENDOR>-peer-adapter"
 peer_model: ""
 status: "started"
 turns_count: 0
@@ -182,7 +197,7 @@ swap_history: []     # [{turn, from, to, reason}] — журнал SWAP_WRITER �
 
 **1.3 Добавить строку в `sessions/00-index.md`** сверху таблицы (первая строка таблицы после `|---|`):
 ```
-| <TODAY> | <SESSION_ID> | <задача ≤50 симв> | claude-code / kimi | 0 | 0 | started | — |
+| <TODAY> | <SESSION_ID> | <задача ≤50 симв> | claude-code / <PEER_VENDOR> | 0 | 0 | started | — |
 ```
 
 ---
@@ -212,12 +227,30 @@ consensus: none
 
 Переменные: `TURN=1`, `ESCALATIONS=0`, `DONE=false`.
 
-### 3.1 Вызов Кими
+### 3.1 Вызов напарника
 
 Прочитать все предыдущие реплики из `SESSION_DIR` в порядке нумерации.
-Составить промпт:
 
-```
+Промпт передаётся **файлом**, не inline. Зачем (bug-2026-06-30-peer-adapter-b77c-block):
+inline-паттерн `echo "<промпт>" | bash adapter.sh` помещает весь текст промпта внутрь
+bash-команды, а хук B7.7c (`secret-leak-block.sh`) сканирует всю строку — случайные
+слова из списка read-инструментов (`cut`, `tr`, `fmt`...) + упоминание `.env`/`.secrets`
+в тексте промпта давали ложный deny на повторных ходах. Файловый вызов оставляет в
+командной строке только пути — хук не срабатывает.
+
+**3.1.а Записать промпт в `${SESSION_DIR}/peer-prompt.md`** (Write).
+Файл обязан содержать блок «Открытие (WP Gate)» — это контракт адаптера
+(pre-flight, exit 6 для сессий после 2026-06-09). Шаблон:
+
+```markdown
+## Открытие (WP Gate)
+
+- Задача: <задача>
+- РП: WP-NNN «<название>» (или: не найден в плане недели)
+- Дата: <TODAY>
+
+---
+
 Ты — напарник (peer agent) в диалоговой сессии (DP.SC.154).
 Сессия: <SESSION_ID>
 Ход: <TURN> из 10
@@ -229,7 +262,7 @@ consensus: none
 ---
 turn: <TURN>
 role: peer
-agent_id: kimi-headless
+agent_id: <PEER_AGENT_ID>
 timestamp: <ISO-8601 UTC>
 consensus: none | proposed | reached | escalate
 ---
@@ -243,15 +276,16 @@ CONSENSUS: <резюме> — если считаешь что договори�
 ESCALATE_TO_USER: <причина> — если писатель игнорирует существенное возражение
 ```
 
-Вызов Кими через Bash:
+**3.1.б Вызов напарника через Bash** (`<PEER_ADAPTER>` — Шаг 0а; stdin-редирект из файла):
 ```bash
 PEER_FILE="${SESSION_DIR}/$(printf '%02d' $TURN)-peer.md"
-echo "<промпт>" | bash "${IWE_TEMPLATE:-$HOME/IWE/FMT-exocortex-template}/scripts/kimi-peer-adapter.sh" \
+bash "<PEER_ADAPTER>" \
   --add-dir "$SESSION_DIR" \
-  2>/dev/null > "$PEER_FILE"
+  < "${SESSION_DIR}/peer-prompt.md" \
+  > "$PEER_FILE" 2>/dev/null
 ```
 
-Если файл пустой или exit ≠ 0 → сообщить пилоту: «Kimi не ответил. Повторить или прервать?»
+Если файл пустой или exit ≠ 0 → сообщить пилоту: «Напарник (<PEER_VENDOR>) не ответил. Повторить или прервать?»
 
 ### 3.2 Показать пилоту
 
@@ -673,7 +707,7 @@ Omit если `implementation_pipeline: false` в meta.yaml.
 
 Найти строку с `<SESSION_ID>` и заменить целиком:
 ```
-| <TODAY> | <SESSION_ID> | <задача ≤50> | claude-code / kimi | <TURNS> | <ESCALATIONS> | completed | [report.md](<MONTH>/<SESSION_ID>/report.md) |
+| <TODAY> | <SESSION_ID> | <задача ≤50> | claude-code / <PEER_VENDOR> | <TURNS> | <ESCALATIONS> | completed | [report.md](<MONTH>/<SESSION_ID>/report.md) |
 ```
 (Bash awk — безопасен для строк с `|`.)
 
@@ -687,7 +721,7 @@ Slug-часть (без даты и номера): `SESSION_SLUG=$(echo "$SESSIO
 date: <TODAY>
 type: peer-session
 writer: claude-code
-peer: kimi-headless
+peer: <PEER_AGENT_ID>
 duration_h: <(end_time - start_time) в часах, 1 знак>
 artifacts: sessions/<MONTH>/<SESSION_ID>/report.md
 session_id: <SESSION_ID>

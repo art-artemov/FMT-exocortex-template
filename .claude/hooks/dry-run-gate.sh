@@ -145,7 +145,18 @@ if [ "$TOOL_NAME" = "Bash" ]; then
     [ -z "$CMD" ] && exit 0
 
     # Шаг 1: убрать кавычные спаны и безвредные redirect-в-null.
+    # issue #315-fix2: единственная реальная (документированная в day-close/SKILL.md,
+    # day-close-details.md) форма вызова day-close-prepare.sh — quoted var-expansion
+    # bash "$IWE_SCRIPTS/day-close-prepare.sh". Это ЛИТЕРАЛЬНАЯ строка (переменная
+    # ещё не раскрыта на момент PreToolUse — раскрытие делает bash при реальном
+    # исполнении, уже после гейта), но она попадает под общий s/"[^"]*"/ QSTR /g
+    # ниже и превращается в неотличимый от любой другой строки токен QSTR —
+    # whitelist-case ниже никогда не совпадает с этой формой (проверено живым
+    # воспроизведением команды из day-close-details.md:32). Точечная замена
+    # ДО общего схлопывания кавычек сохраняет опознаваемость именно этого
+    # прошитого паттерна, не открывая общий обход кавычек для прочего.
     NORM=$(printf '%s' "$CMD" | sed -E \
+        -e 's@"\$IWE_SCRIPTS/day-close-prepare\.sh"@ __WL_DAY_CLOSE_PREPARE__ @g' \
         -e "s/'[^']*'/ QSTR /g" \
         -e 's/"[^"]*"/ QSTR /g' \
         -e 's@[0-9]?>[[:space:]]*/dev/null@ @g' \
@@ -236,8 +247,13 @@ if [ "$TOOL_NAME" = "Bash" ]; then
                 # ${IWE_ROOT:-...} открывал тот же обход через env-инъекцию.
                 shift
                 WL_ABS="$HOME/IWE/.claude/scripts/load-extensions.sh"
+                # Реальный deployed путь — вложенный клон, не workspace-root
+                # (scripts/ не копируется в $WORKSPACE_DIR, в отличие от .claude/;
+                # см. IWE_SCRIPTS default в .claude/lib/iwe-env-bootstrap.sh:86).
+                WL_ABS2="$HOME/IWE/FMT-exocortex-template/scripts/day-close-prepare.sh"
                 case "${1:-}" in
                     .claude/scripts/load-extensions.sh|"$WL_ABS") ;;
+                    scripts/day-close-prepare.sh|"$WL_ABS2"|__WL_DAY_CLOSE_PREPARE__) ;;
                     *) block "$CMD (indirect execution under dry-run)" ;;
                 esac
                 ;;
