@@ -29,17 +29,22 @@ routing:
 
 ## Algorithm
 
-Передать косяк в `iwe_checklist_memory.py record` с указанием severity и описания:
+Передать косяк в `iwe_checklist_memory.py record` с указанием severity и описания. Скрипт
+живёт в governance-репо (не в `$IWE_SCRIPTS`/шаблоне — согласуется с `script_path` в
+frontmatter этого файла), и на части установок его ещё нет (issue #409) — деградировать
+без блокировки:
 
 ```bash
-python3 "${IWE_SCRIPTS:-$HOME/IWE/scripts}/iwe_checklist_memory.py" \
-  record --severity major --fault "агент пропустил чеклист"
+AGENT_FAULT_SCRIPT="$HOME/IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/iwe_checklist_memory.py"
+if [ -f "$AGENT_FAULT_SCRIPT" ]; then
+  python3 "$AGENT_FAULT_SCRIPT" \
+    record --severity major --fault "агент пропустил чеклист"
+else
+  echo "iwe_checklist_memory.py недоступен на этой установке — косяк не записан в WP-316 L1"
+fi
 ```
 
 Допустимые значения `--severity`: `critical` | `major` | `minor`.
-
-При отсутствии `$IWE_SCRIPTS` использовать явный путь:
-`$HOME/IWE/scripts/iwe_checklist_memory.py`
 
 <!-- USER-SPACE -->
 <!-- /USER-SPACE -->

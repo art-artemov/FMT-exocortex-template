@@ -1,8 +1,15 @@
 ---
-type: review-questionnaire
+name: r-questionnaire
+description: "Вопросы пересмотра для недельного и месячного закрытия"
+type: protocol
+horizon: warm
+domains: [reference, review]
+status: active
 wp: 217
 promoted: 2026-04-25
 valid_from: 2026-04-12
+owner: platform
+schema_version: 1
 ---
 # R-вопросник
 

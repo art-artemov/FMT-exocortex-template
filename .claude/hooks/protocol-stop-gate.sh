@@ -12,12 +12,6 @@
 set -uo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
-# --- WP-265 Ф5.2 (v2: WP-7/BUGTRIAGE2, issue #237): cleanup dry-run sentinel on session end.
-# Sentinel — единый файл (не session-bound, см. dry-run-gate.sh) — раньше cleanup целился
-# в session-id-путь, который субагент (пустой/другой CLAUDE_SESSION_ID) никогда не создавал,
-# и реальный sentinel залипал на весь TTL для всех агентов сессии.
-rm -f /tmp/iwe-dry-run.flag 2>/dev/null || true
-
 # --- Infinite loop guard ---
 if [ "${STOP_HOOK_ACTIVE:-}" = "1" ]; then
   echo '{}'
@@ -31,8 +25,42 @@ if [ -z "$INPUT" ]; then
   exit 0
 fi
 
-TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
+
+# #369: a shared sentinel may only be removed by the session that created it.
+# The random capability is kept in a mode-600 owner file; compare-and-delete is
+# serialized by mkdir, which is atomic on both macOS and Linux. A Stop from a
+# subagent or neighbouring session therefore cannot switch off somebody else's
+# rehearsal. Explicit cleanup and the 10-minute TTL remain fallbacks.
+cleanup_owned_dry_run_sentinel() {
+  local sid="$1" safe_sid owner_file expected actual sentinel_sid lock
+  [ -n "$sid" ] || return 0
+  safe_sid=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9._-')
+  [ -n "$safe_sid" ] || return 0
+  owner_file="/tmp/iwe-dry-run-owner-${safe_sid}.token"
+  [ -f "$owner_file" ] || return 0
+
+  # Explicit cleanup may already have removed the sentinel. The matching owner
+  # file is then only residue from this session and can be removed safely.
+  if [ ! -f /tmp/iwe-dry-run.flag ]; then
+    rm -f "$owner_file" 2>/dev/null || true
+    return 0
+  fi
+  command -v jq >/dev/null 2>&1 || return 0
+  lock=/tmp/iwe-dry-run.flag.lock
+  mkdir "$lock" 2>/dev/null || return 0
+  expected=$(jq -r '.owner_token // empty' /tmp/iwe-dry-run.flag 2>/dev/null || true)
+  sentinel_sid=$(jq -r '.session_id // empty' /tmp/iwe-dry-run.flag 2>/dev/null || true)
+  actual=$(cat "$owner_file" 2>/dev/null || true)
+  if [ -n "$expected" ] && [ "$sid" = "$sentinel_sid" ] && [ "$actual" = "$expected" ]; then
+    rm -f /tmp/iwe-dry-run.flag "$owner_file" 2>/dev/null || true
+  fi
+  rmdir "$lock" 2>/dev/null || true
+}
+
+cleanup_owned_dry_run_sentinel "$SESSION_ID"
+
+TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty')
 
 # Нет транскрипта — пропустить
 if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then

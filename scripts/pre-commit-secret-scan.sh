@@ -57,7 +57,7 @@ if [ -n "$violations" ]; then
     echo "🚫 Pre-commit BLOCKED: возможный секрет в staged изменениях."
     echo "$violations"
     echo "Если это плейсхолдер/тест — отрегулируй паттерн в .githooks/pre-commit"
-    echo "Канонический шаблон: ~/IWE/scripts/pre-commit-secret-scan.sh"
+    echo "Канонический шаблон: {{WORKSPACE_DIR}}/scripts/pre-commit-secret-scan.sh"
     echo "Bypass (осознанно): git commit --no-verify"
     echo ""
     exit 1

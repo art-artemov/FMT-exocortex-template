@@ -5,7 +5,7 @@ type: protocol
 horizon: warm
 domains: [protocol]
 status: active
-owner: user
+owner: platform
 schema_version: 1
 name: "Протокол: open"
 description: "Протокол ОРЗ — пошаговые инструкции для ритуала"
@@ -31,8 +31,10 @@ description: "Протокол ОРЗ — пошаговые инструкци�
 > **Пропустить (перейти к WP Gate):** свободный текст без явного тега — сначала нужно определить РП.
 
 ```bash
-IWE_EXECUTOR_CATALOG={{WORKSPACE_DIR}}/DS-strategy/scripts/executor-catalog.yaml \
-bash {{WORKSPACE_DIR}}/scripts/route-task.sh --skill <skill-name>
+: "${IWE_WORKSPACE:?source .iwe-paths before protocol-open}"
+: "${IWE_SCRIPTS:?source .iwe-paths before protocol-open}"
+IWE_EXECUTOR_CATALOG="$IWE_WORKSPACE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/executor-catalog.yaml" \
+bash "$IWE_SCRIPTS/route-task.sh" --skill <skill-name>
 ```
 **Если тег задан** → Маршрутизатор находит `executor` в executor-catalog.yaml → запускает нужный путь:
 - `executor: script` → прямой вызов script_path (без LLM); `haiku|sonnet|opus` → передать задание нужной модели через SKILL.md; `mcp-direct` → вызов MCP-инструмента напрямую
@@ -64,7 +66,7 @@ python3 "${IWE_SCRIPTS:-$HOME/IWE/scripts}/artifactor.py" "$REQUEST"
 
    **Шаг 3a — Bundle.** Запустить детерминированный сборщик контекста:
    ```bash
-   bash .claude/scripts/wp-sync-bundle.sh WP-N > /tmp/wp-sync-bundle-$$.md
+   bash "${IWE_WORKSPACE:-$HOME/IWE}/.claude/scripts/wp-sync-bundle.sh" WP-N > /tmp/wp-sync-bundle-$$.md
    ```
    Exit 0 → читать вывод. Exit 1 → РП не найден → перейти к Ритуалу с пометкой «контекст не найден». Exit 2 → ошибка парсинга → перейти к Ритуалу, поднять stderr в «Требует внимания».
 
@@ -85,7 +87,8 @@ python3 "${IWE_SCRIPTS:-$HOME/IWE/scripts}/artifactor.py" "$REQUEST"
 2. Вывести таблицу РП; спросить: артефакт, формулировка, репо, бюджет
 3.5. **Предложить связки с активными РП.** Прочитать WeekPlan W{N}.md → grep на тематические пересечения. Таблица: РП / сила (🔴 сильная / 🟡 средняя / 🟢 слабая) / тип (handoff, dependency, продукт-следствие, валидационный случай). Если ни одной связи >🟢 — отметить «РП изолирован» (сигнал: ревизировать формулировку).
 4. Предложить перестановку если бюджет ограничен
-5. Записать **в 5 мест** (атомарно): MEMORY.md, WP-REGISTRY.md, WeekPlan, WP-context file (`verification_class: trivial|closed-loop|open-loop|problem-framing`), Linear (`mcp__linear__create_issue`)
+5. Записать **в 4 места** (атомарно): MEMORY.md, WP-REGISTRY.md, WeekPlan, WP-context file (`verification_class: trivial|closed-loop|open-loop|problem-framing`)
+5a. **Пост-шаг (условный): внешний трекер.** Если MCP внешнего трекера подключён (например Linear → `mcp__linear__create_issue`) — создать issue ПОСЛЕ локальной записи. Отсутствие/недоступность MCP — штатное состояние, не ошибка: локальную запись не откатывать, в отчёте шага отметить «внешний трекер: не подключён» (issue #321)
 5b. **Мостик Ритуал → файлы (WP-505):** объявленные в Ритуале «Целевой переход состояния» и «Гипотеза» обязаны попасть в frontmatter карточки (`state_transition:`, `hypothesis:`) и колонку «Ставка» реестра (если она есть). Создание — только `create-wp.sh --state "…" --hypothesis H-NNN`; при наличии `docs/state-axes-registry.yaml` скрипт блокирует создание без `--state`.
 6. Нумерация: только последовательные целые (74, 75…). Буквенные суффиксы запрещены
 

@@ -47,10 +47,16 @@ if [ -n "${CLAUDE_CLI_PATH:-}" ]; then
     CLAUDE_PATH="$CLAUDE_CLI_PATH"
 elif command -v claude &>/dev/null; then
     CLAUDE_PATH="$(command -v claude)"
+elif [ -x "$HOME/.local/bin/claude" ]; then
+    CLAUDE_PATH="$HOME/.local/bin/claude"
 elif [ -x "$HOME/.npm-global/bin/claude" ]; then
     CLAUDE_PATH="$HOME/.npm-global/bin/claude"
 else
     CLAUDE_PATH="{{CLAUDE_PATH}}"  # fallback: build-runtime должен был подставить
+fi
+if [ ! -x "$CLAUDE_PATH" ]; then
+    echo "[$(date '+%H:%M:%S')] ERROR: claude CLI не найден (CLAUDE_CLI_PATH/PATH/~/.local/bin/~/.npm-global/fallback='$CLAUDE_PATH')." >&2
+    exit 127
 fi
 ENV_FILE="$HOME/.config/aist/env"
 
@@ -124,7 +130,8 @@ load_env() {
 
 run_claude() {
     local command_file="$1"
-    local extra_args="$2"
+    local extra_args="${2:-}"
+    local commit_mode="${3:-main}"
     local command_path="$PROMPTS_DIR/$command_file.md"
 
     if [ ! -f "$command_path" ]; then
@@ -161,16 +168,19 @@ $extra_args"
     cd "$WORKSPACE"
 
     # Запуск AI CLI с промптом
-    "$AI_CLI" $AI_CLI_EXTRA_FLAGS \
+    if ! "$AI_CLI" $AI_CLI_EXTRA_FLAGS \
         $AI_CLI_PROMPT_FLAG "$prompt" \
-        >> "$LOG_FILE" 2>&1
+        >> "$LOG_FILE" 2>&1; then
+        log "ERROR: AI CLI failed for $command_file"
+        return 1
+    fi
 
     log "Completed process: $command_file"
 
     # Commit + push changes (отчёты, помеченные captures)
     local strategy_dir="$WORKSPACE/${IWE_GOVERNANCE_REPO:-DS-strategy}"
 
-    if [ -d "$strategy_dir/.git" ]; then
+    if git -C "$strategy_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         # WP-429 Ф6.5: пре-фильтры на новых extraction-reports ДО commit — advisory,
         # не блокирует (WP-429 паттерн: детектор предлагает, не правит; решение по
         # находке — R15 на /apply-captures). Только реально новые (untracked) отчёты
@@ -185,26 +195,300 @@ $extra_args"
             done
         fi
 
-        # Очистить staging area
-        git -C "$strategy_dir" reset --quiet 2>/dev/null || true
-
-        # Стейджим ТОЛЬКО наши файлы
-        git -C "$strategy_dir" add inbox/captures.md inbox/extraction-reports/ >> "$LOG_FILE" 2>&1 || true
-        if ! git -C "$strategy_dir" diff --cached --quiet 2>/dev/null; then
-            git -C "$strategy_dir" commit -m "inbox-check: extraction report $DATE" >> "$LOG_FILE" 2>&1 \
-                && log "Committed $_gov_repo" \
-                || log "WARN: git commit failed"
-        else
-            log "No new changes to commit in $_gov_repo"
-        fi
-
-        if ! git -C "$strategy_dir" diff --quiet origin/main..HEAD 2>/dev/null; then
-            git -C "$strategy_dir" push >> "$LOG_FILE" 2>&1 && log "Pushed $_gov_repo" || log "WARN: git push failed"
+        if ! commit_extractor_changes "$strategy_dir" "$_gov_repo" "$commit_mode"; then
+            return 1
         fi
     fi
 
     # macOS notification
     notify "KE: $command_file" "Процесс завершён"
+}
+
+commit_extractor_changes() {
+    local strategy_dir="$1"
+    local repo_name="$2"
+    local commit_mode="${3:-main}"
+    local branch head_before origin_before head_after origin_after target_changes
+
+    EXTRACTOR_COMMIT_RESULT=""
+    EXTRACTOR_PUBLISHED_SHA=""
+
+    if ! branch=$(git -C "$strategy_dir" branch --show-current 2>/dev/null); then
+        log "WARN: cannot determine branch for $repo_name; skipping commit"
+        EXTRACTOR_COMMIT_RESULT="blocked"
+        return 0
+    fi
+    if [ "$branch" != "main" ] && \
+       { [ "$commit_mode" != "isolated-inbox" ] || [[ "$branch" != extractor/inbox-check-* ]]; }; then
+        log "SKIP: $repo_name is on branch '$branch', expected 'main'"
+        EXTRACTOR_COMMIT_RESULT="blocked"
+        return 0
+    fi
+
+    if ! head_before=$(git -C "$strategy_dir" rev-parse HEAD 2>/dev/null) || \
+       ! origin_before=$(git -C "$strategy_dir" rev-parse origin/main 2>/dev/null); then
+        log "WARN: cannot resolve HEAD or origin/main for $repo_name; skipping commit"
+        EXTRACTOR_COMMIT_RESULT="blocked"
+        return 0
+    fi
+    if [ "$head_before" != "$origin_before" ]; then
+        log "SKIP: $repo_name is not aligned with origin/main; skipping commit"
+        EXTRACTOR_COMMIT_RESULT="blocked"
+        return 0
+    fi
+
+    # Не трогаем файлы экстрактора, если их уже подготовил другой процесс.
+    # `commit --only` сохраняет staging всех остальных путей без ручного reset.
+    if ! git -C "$strategy_dir" diff --cached --quiet -- \
+        inbox/captures.md inbox/extraction-reports/; then
+        log "SKIP: extractor paths are already staged; skipping commit"
+        EXTRACTOR_COMMIT_RESULT="blocked"
+        return 0
+    fi
+
+    target_changes=$(git -C "$strategy_dir" status --porcelain --untracked-files=all -- \
+        inbox/captures.md inbox/extraction-reports/)
+    if [ -z "$target_changes" ]; then
+        log "No new changes to commit in $repo_name"
+        EXTRACTOR_COMMIT_RESULT="no_changes"
+        return 0
+    fi
+
+    if ! head_after=$(git -C "$strategy_dir" rev-parse HEAD 2>/dev/null) || \
+       ! origin_after=$(git -C "$strategy_dir" rev-parse origin/main 2>/dev/null) || \
+       [ "$head_after" != "$head_before" ] || [ "$origin_after" != "$origin_before" ]; then
+        log "SKIP: $repo_name changed before extractor commit"
+        EXTRACTOR_COMMIT_RESULT="blocked"
+        return 0
+    fi
+
+    # `git commit --only` does not discover a brand-new report directory. Stage only
+    # extractor-owned paths; `--only` below still leaves every foreign staged path intact.
+    if ! git -C "$strategy_dir" add -- inbox/captures.md inbox/extraction-reports/ >> "$LOG_FILE" 2>&1; then
+        log "WARN: cannot stage extractor changes for $repo_name"
+        EXTRACTOR_COMMIT_RESULT="failed"
+        return 1
+    fi
+
+    if ! git -C "$strategy_dir" commit --only \
+        -m "inbox-check: extraction report $DATE" -- \
+        inbox/captures.md inbox/extraction-reports/ >> "$LOG_FILE" 2>&1; then
+        log "WARN: git commit failed for $repo_name"
+        EXTRACTOR_COMMIT_RESULT="failed"
+        return 1
+    fi
+
+    if ! head_after=$(git -C "$strategy_dir" rev-parse HEAD 2>/dev/null) || \
+       [ "$head_after" = "$head_before" ]; then
+        log "WARN: commit did not advance HEAD for $repo_name"
+        EXTRACTOR_COMMIT_RESULT="failed"
+        return 1
+    fi
+    log "Committed $repo_name"
+
+    if git -C "$strategy_dir" push origin "$head_after:refs/heads/main" >> "$LOG_FILE" 2>&1; then
+        log "Pushed $repo_name"
+        EXTRACTOR_COMMIT_RESULT="published"
+        EXTRACTOR_PUBLISHED_SHA="$head_after"
+    else
+        log "WARN: git push failed; only the extractor commit was offered"
+        EXTRACTOR_COMMIT_RESULT="failed"
+        return 1
+    fi
+}
+
+release_inbox_lock() {
+    local lock_dir="$1"
+    rm -f "$lock_dir/pid"
+    rmdir "$lock_dir" 2>/dev/null || log "WARN: cannot release inbox-check lock: $lock_dir"
+}
+
+acquire_inbox_lock() {
+    local lock_dir="$1"
+    local owner_pid=""
+
+    if mkdir "$lock_dir" 2>/dev/null; then
+        printf '%s\n' "$$" > "$lock_dir/pid"
+        return 0
+    fi
+
+    if [ -f "$lock_dir/pid" ]; then
+        owner_pid=$(tr -d '[:space:]' < "$lock_dir/pid")
+    fi
+    if [[ "$owner_pid" =~ ^[0-9]+$ ]] && kill -0 "$owner_pid" 2>/dev/null; then
+        log "SKIP: inbox-check is already running (pid $owner_pid)"
+        return 1
+    fi
+
+    # Only reclaim a lock whose recorded process has ended. A non-empty or malformed
+    # directory stays blocked instead of risking deletion of another active run.
+    if [ -n "$owner_pid" ]; then
+        rm -f "$lock_dir/pid"
+        if ! rmdir "$lock_dir" 2>/dev/null; then
+            log "SKIP: stale inbox-check lock needs manual review: $lock_dir"
+            return 1
+        fi
+        if mkdir "$lock_dir" 2>/dev/null; then
+            printf '%s\n' "$$" > "$lock_dir/pid"
+            log "WARN: reclaimed stale inbox-check lock from pid $owner_pid"
+            return 0
+        fi
+    fi
+
+    log "SKIP: inbox-check lock is unavailable: $lock_dir"
+    return 1
+}
+
+cleanup_isolated_inbox_worktree() {
+    local canonical_repo="$1"
+    local worktree="$2"
+    local branch_name="$3"
+    local isolated_workspace="$4"
+    local repo_name="$5"
+    local run_root="$6"
+
+    if ! git -C "$canonical_repo" worktree remove "$worktree" >> "$LOG_FILE" 2>&1; then
+        log "WARN: published inbox-check worktree was preserved after cleanup failure: $worktree"
+        return 1
+    fi
+
+    if ! git -C "$canonical_repo" branch -d "$branch_name" >> "$LOG_FILE" 2>&1; then
+        log "WARN: published inbox-check branch was preserved for review: $branch_name"
+    fi
+
+    rm -f "$isolated_workspace/$repo_name" \
+        "$isolated_workspace/FMT-exocortex-template/roles/extractor/config/routing.md" \
+        "$isolated_workspace/FMT-exocortex-template/roles/extractor/prompts/session-close.md"
+    rmdir "$isolated_workspace/FMT-exocortex-template/roles/extractor/config" 2>/dev/null || true
+    rmdir "$isolated_workspace/FMT-exocortex-template/roles/extractor/prompts" 2>/dev/null || true
+    rmdir "$isolated_workspace/FMT-exocortex-template/roles/extractor" 2>/dev/null || true
+    rmdir "$isolated_workspace/FMT-exocortex-template/roles" 2>/dev/null || true
+    rmdir "$isolated_workspace/FMT-exocortex-template" 2>/dev/null || true
+    rmdir "$isolated_workspace" 2>/dev/null || log "WARN: cannot remove isolated workspace shell: $isolated_workspace"
+    rmdir "$run_root" 2>/dev/null || log "WARN: cannot remove isolated run directory: $run_root"
+}
+
+pending_capture_count() {
+    local captures_file="$1"
+
+    awk '
+      /^### / && !/\[(analyzed|processed|duplicate|defer)/ {
+        found = 0
+        for (i = 1; i <= 8; i++) {
+          if ((getline line) > 0) {
+            if (line ~ /^\*\*(Источник|Type|Тип|Source|Маркер|Trigger)/) { found = 1; break }
+            if (line ~ /^### |^## /) break
+          }
+        }
+        if (found) pending++
+      }
+      END { print pending+0 }
+    ' "$captures_file" 2>/dev/null
+}
+
+run_inbox_check_isolated() {
+    local canonical_workspace="$WORKSPACE"
+    local repo_name="${IWE_GOVERNANCE_REPO:-DS-strategy}"
+    local canonical_repo="$canonical_workspace/$repo_name"
+    local lock_dir="${IWE_EXTRACTOR_INBOX_LOCK_DIR:-${TMPDIR:-/tmp}/iwe-extractor-inbox-check.lock}"
+    local run_root worktree isolated_workspace branch_name run_id isolated_template remote_sha actual_pending
+
+    case "$repo_name" in
+        ""|.*|*/*)
+            log "ERROR: unsafe governance repository name for isolated inbox-check: '$repo_name'"
+            return 1
+            ;;
+    esac
+    if ! git -C "$canonical_repo" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        log "ERROR: governance repository is unavailable for isolated inbox-check: $canonical_repo"
+        return 1
+    fi
+    if ! acquire_inbox_lock "$lock_dir"; then
+        return 0
+    fi
+
+    if ! git -C "$canonical_repo" fetch origin main >> "$LOG_FILE" 2>&1; then
+        log "WARN: cannot refresh origin/main; isolated inbox-check was not started"
+        release_inbox_lock "$lock_dir"
+        return 1
+    fi
+
+    run_root=$(mktemp -d "${TMPDIR:-/tmp}/iwe-extractor-inbox-check.XXXXXX") || {
+        log "ERROR: cannot create isolated inbox-check directory"
+        release_inbox_lock "$lock_dir"
+        return 1
+    }
+    run_id="$(date +%Y%m%d%H%M%S)-$$"
+    worktree="$run_root/$repo_name"
+    isolated_workspace="$run_root/workspace"
+    branch_name="extractor/inbox-check-$run_id"
+    isolated_template="${IWE_TEMPLATE:-$canonical_workspace/FMT-exocortex-template}"
+
+    if ! git -C "$canonical_repo" worktree add -b "$branch_name" "$worktree" origin/main >> "$LOG_FILE" 2>&1; then
+        log "WARN: cannot create isolated inbox-check worktree; run directory preserved: $run_root"
+        release_inbox_lock "$lock_dir"
+        return 1
+    fi
+    git -C "$worktree" branch --set-upstream-to=origin/main "$branch_name" >> "$LOG_FILE" 2>&1 || true
+
+    if ! mkdir "$isolated_workspace" || \
+       ! ln -s "$worktree" "$isolated_workspace/$repo_name" || \
+       ! [ -d "$isolated_template" ] || \
+       ! mkdir -p "$isolated_workspace/FMT-exocortex-template/roles/extractor/config" \
+           "$isolated_workspace/FMT-exocortex-template/roles/extractor/prompts" || \
+       ! cp "$isolated_template/roles/extractor/config/routing.md" \
+           "$isolated_workspace/FMT-exocortex-template/roles/extractor/config/routing.md" || \
+       ! cp "$isolated_template/roles/extractor/prompts/session-close.md" \
+           "$isolated_workspace/FMT-exocortex-template/roles/extractor/prompts/session-close.md"; then
+        log "WARN: cannot prepare isolated inbox-check workspace; worktree preserved: $worktree"
+        release_inbox_lock "$lock_dir"
+        return 1
+    fi
+
+    actual_pending=$(pending_capture_count "$worktree/inbox/captures.md")
+    actual_pending=${actual_pending:-0}
+    if [ "$actual_pending" -le 0 ]; then
+        log "SKIP: No pending captures in refreshed inbox"
+        cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
+            "$isolated_workspace" "$repo_name" "$run_root" || true
+        release_inbox_lock "$lock_dir"
+        return 0
+    fi
+    log "Found $actual_pending pending captures in refreshed inbox"
+
+    local WORKSPACE="$isolated_workspace"
+    local IWE_WORKSPACE="$isolated_workspace"
+    local AI_CLI_EXTRA_FLAGS="${IWE_EXTRACTOR_INBOX_AI_FLAGS:---dangerously-skip-permissions --allowedTools Read,Write,Edit,Glob,Grep}"
+    export IWE_WORKSPACE
+    if ! run_claude "inbox-check" "" "isolated-inbox"; then
+        log "WARN: isolated inbox-check failed; worktree preserved for review: $worktree"
+        release_inbox_lock "$lock_dir"
+        return 1
+    fi
+
+    case "${EXTRACTOR_COMMIT_RESULT:-}" in
+        published)
+            remote_sha=$(git -C "$canonical_repo" ls-remote origin refs/heads/main 2>/dev/null | awk 'NR == 1 { print $1 }')
+            if [ "$remote_sha" != "$EXTRACTOR_PUBLISHED_SHA" ]; then
+                log "WARN: remote main did not confirm extractor commit; worktree preserved: $worktree"
+                release_inbox_lock "$lock_dir"
+                return 1
+            fi
+            cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
+                "$isolated_workspace" "$repo_name" "$run_root" || true
+            ;;
+        no_changes)
+            cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
+                "$isolated_workspace" "$repo_name" "$run_root" || true
+            ;;
+        *)
+            log "WARN: isolated inbox-check did not reach a safe publication state; worktree preserved: $worktree"
+            release_inbox_lock "$lock_dir"
+            return 1
+            ;;
+    esac
+
+    release_inbox_lock "$lock_dir"
 }
 
 # Проверка рабочих часов
@@ -217,6 +501,13 @@ is_work_hours() {
 # Загружаем env
 load_env
 
+# launchd загружает минимальное окружение. Совместимость сохранена для старого
+# GOVERNANCE_REPO, но все последующие пути используют единое имя репозитория.
+if [ -z "${IWE_GOVERNANCE_REPO:-}" ]; then
+    IWE_GOVERNANCE_REPO="${GOVERNANCE_REPO:-DS-strategy}"
+    export IWE_GOVERNANCE_REPO
+fi
+
 # Определяем процесс
 case "$1" in
     "inbox-check")
@@ -225,56 +516,19 @@ case "$1" in
             exit 0
         fi
 
-        # Быстрая проверка: есть ли captures в inbox
-        CAPTURES_FILE="$WORKSPACE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/captures.md"
-        if [ -f "$CAPTURES_FILE" ]; then
-            # WP-7 Ф-EXTRACTOR-FP fix (2026-05-08): grep '^### ' ловил все subheading'и,
-            # включая subsections (### Суть / ### Релевантность) внутри analyzed-capture'ов.
-            # На captures.md = 60 false-positive → R2 запускался впустую, отчёт не создавался.
-            # Корень: regex не учитывал что parent-capture имеет meta-секцию (**Источник/**Тип),
-            # а subsections — нет. Также \b не поддерживается в awk (grep-only feature).
-            #
-            # Fix: parent-capture определяется по наличию **Источник/**Тип в первых 8 строках.
-            # Smoke-test 8 мая: 60 false-positive → 1 true-positive.
-            ACTUAL_PENDING=$(awk '
-              /^### / && !/\[(analyzed|processed|duplicate|defer)/ {
-                found = 0
-                for (i = 1; i <= 8; i++) {
-                  if ((getline line) > 0) {
-                    if (line ~ /^\*\*(Источник|Type|Тип|Source|Маркер|Trigger)/) { found = 1; break }
-                    if (line ~ /^### |^## /) break
-                  }
-                }
-                if (found) pending++
-              }
-              END { print pending+0 }
-            ' "$CAPTURES_FILE" 2>/dev/null)
-            ACTUAL_PENDING=${ACTUAL_PENDING:-0}
-
-            if [ "$ACTUAL_PENDING" -le 0 ]; then
-                log "SKIP: No pending captures in inbox"
-                exit 0
-            fi
-
-            log "Found $ACTUAL_PENDING pending captures in inbox"
-        else
-            log "SKIP: captures.md not found"
-            exit 0
-        fi
-
-        run_claude "inbox-check"
+        run_inbox_check_isolated
         notify_telegram "inbox-check"
         ;;
 
     "audit")
         log "Running knowledge audit"
-        run_claude "knowledge-audit"
+        run_claude "knowledge-audit" ""
         notify_telegram "audit"
         ;;
 
     "session-close")
         log "Running session-close extraction"
-        run_claude "session-close"
+        run_claude "session-close" ""
         ;;
 
     "session-close-feed")
@@ -283,7 +537,7 @@ case "$1" in
         # пишет ###-блоки в captures.md с маркером [feed:session-close YYYY-MM-DD].
         # Не создаёт extraction-report — это работа inbox-check потом.
         log "Running session-close FEED (non-interactive, writes to captures.md)"
-        run_claude "session-close-feed" "$2"
+        run_claude "session-close-feed" "${2:-}"
         notify_telegram "session-close-feed"
         ;;
 
@@ -299,7 +553,7 @@ case "$1" in
 
     "on-demand")
         log "Running on-demand extraction"
-        run_claude "on-demand"
+        run_claude "on-demand" ""
         ;;
 
     *)

@@ -33,9 +33,22 @@ if [ -n "$RENAMED_RELEASE_FILES" ]; then
     exit 1
 fi
 
+# A fork with a conventional `upstream` remote never receives CHANGELOG.md
+# locally (WP-401 Ф6.1 — /iwe-update reads it by raw URL instead), so its
+# copy is frozen at whatever version it had when that delivery stopped while
+# update.sh keeps bumping update-manifest.json on every install. The version
+# match this guardrail checks becomes permanently unsatisfiable there,
+# blocking every post-update commit (issues #449, #451) — the check still
+# does its job in canon, where CHANGELOG.md is edited by hand for every
+# release and the drift it was built to catch remains real.
+IS_UPSTREAM_MIRROR=false
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git remote get-url upstream >/dev/null 2>&1; then
+    IS_UPSTREAM_MIRROR=true
+fi
+
 STAGED_RELEASE_FILES=$(git diff --cached --name-only 2>/dev/null \
     | grep -E '^(CHANGELOG\.md|update-manifest\.json)$' || true)
-if [ -n "$STAGED_RELEASE_FILES" ]; then
+if [ -n "$STAGED_RELEASE_FILES" ] && [ "$IS_UPSTREAM_MIRROR" = false ]; then
     if [ -f "CHANGELOG.md" ] && [ -f "update-manifest.json" ]; then
         CHANGELOG_VERSION=$(grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' CHANGELOG.md \
             | sed 's/^## \[//;s/\]$//' || true)

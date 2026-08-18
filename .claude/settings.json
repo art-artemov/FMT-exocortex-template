@@ -1,6 +1,6 @@
 {
   "permissions": {
-    "defaultMode": "acceptEdits",
+    "defaultMode": "default",
     "allow": [
       "Edit(/.claude/skills/**)",
       "mcp__google-drive__search_files",
@@ -12,7 +12,22 @@
       "mcp__railway__list-projects",
       "mcp__railway__list-services",
       "mcp__railway__list-variables",
-      "mcp__ext-linear__search_issues"
+      "mcp__ext-linear__search_issues",
+      "Bash(ls:*)",
+      "Bash(cat:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(rg:*)",
+      "Bash(find:*)",
+      "Bash(diff:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git remote:*)"
     ],
     "additionalDirectories": []
   },
@@ -49,6 +64,22 @@
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/lazy-context-loader.sh"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/inject-communication-style.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/inject-fault-profile.sh"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -67,6 +98,15 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/extensions-gate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/inject-code-style.sh"
           }
         ]
       },
@@ -100,6 +140,15 @@
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/dry-run-gate.sh"
           }
         ]
+      },
+      {
+        "matcher": "Skill",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/residency-gate-skill-adapter.sh"
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -113,7 +162,7 @@
         ]
       },
       {
-        "matcher": "Write|Edit|MultiEdit",
+        "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
           {
             "type": "command",
@@ -136,6 +185,14 @@
           {
             "type": "command",
             "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/capture-bus.sh"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/response-clarity-hook.sh"
           }
         ]
       }

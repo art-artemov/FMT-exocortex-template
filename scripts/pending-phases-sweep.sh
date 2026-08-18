@@ -4,7 +4,7 @@
 # pending-phases-sweep.sh — обходит активные WP-context файлы и выводит pending фазы
 #
 # Использование:
-#   bash pending-phases-sweep.sh                  # обход активных РП в ${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/
+#   bash pending-phases-sweep.sh                  # обход активных РП в DS-strategy/inbox/
 #   bash pending-phases-sweep.sh --all            # включить файлы без status
 #   bash pending-phases-sweep.sh --repo <path>    # указать другой governance-репо
 #
@@ -15,7 +15,7 @@
 set -uo pipefail
 
 IWE="${IWE_WORKSPACE:-$HOME/IWE}"
-GOV_REPO="${IWE_GOVERNANCE_REPO:-${IWE_GOVERNANCE_REPO:-DS-strategy}}"
+GOV_REPO="${IWE_GOVERNANCE_REPO:-DS-strategy}"
 INBOX_DIR="$IWE/$GOV_REPO/inbox"
 
 include_all=false

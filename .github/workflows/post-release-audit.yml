@@ -5,16 +5,22 @@ name: Post-Release Adversarial Audit
 #
 # Триггеры:
 #   1. Manual: workflow_dispatch — автор запускает после релиза.
-#   2. Auto-trigger DISABLED 2026-06-01 (peer-session triage):
-#      Раньше создавал новый issue на каждый push update-manifest.json,
-#      но это создаёт inflated backlog (22 audit issues накопилось).
-#      Теперь audit status трекается в docs/release-audit-log.md (single source).
-#      Для запуска вручную — Actions tab → Run workflow.
+#   2. Auto: push update-manifest.json, НО только когда patch=0 (x.y.0 —
+#      minor/major). Re-enabled 2026-08-10 (WP-7 Ф62) после того, как безусловный
+#      триггер на КАЖДЫЙ push (включая еженедельный авто-бамп patch-версии)
+#      вырубили 2026-06-01: 22 issue накопились нечитанными, потому что частота
+#      сама по себе (1-7 дней) не оставляла шанса разобрать. weekly-release.yml
+#      бампает только patch — этот фильтр не даёт рутинным patch-релизам создавать
+#      issue, но ловит любой minor/major bump (они всегда осознанные, не авто-cron).
 #
 # Цель: создать reminder с adversarial-промптом → автор прогоняет в Claude session
 # → находит классы регрессий, которые detectors не ловят.
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - update-manifest.json
   workflow_dispatch:
     inputs:
       version:
@@ -29,6 +35,7 @@ permissions:
 jobs:
   create-audit-issue:
     runs-on: ubuntu-latest
+    if: github.repository == 'TserenTserenov/FMT-exocortex-template'
     steps:
       - uses: actions/checkout@v6
       - name: Determine version
@@ -41,7 +48,20 @@ jobs:
               | sed 's/.*"version"[[:space:]]*:[[:space:]]*"//;s/".*//')
             echo "version=$VER" >> $GITHUB_OUTPUT
           fi
+      - name: Skip routine patch bumps on auto-trigger (patch != 0)
+        id: gate
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          if [ "$PATCH" != "0" ]; then
+            echo "SKIP: $VERSION — patch-релиз (weekly auto-bump), не minor/major. Явный запуск доступен вручную."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Create or update audit reminder issue
+        if: github.event_name == 'workflow_dispatch' || steps.gate.outputs.skip != 'true'
         uses: actions/github-script@v8
         with:
           script: |

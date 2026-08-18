@@ -7,7 +7,7 @@
 #                         (/Users/ подставлен, /opt/homebrew в CLAUDE_PATH, MEMORY заполняется работой).
 #                         Используется setup.sh --validate как делегат структурных чеков.
 #
-# 7 проверок:
+# 8 проверок:
 # 1. Нет автор-специфичного контента                              [pristine + installed]
 # 2. Нет захардкоженных путей /Users/                             [pristine only]
 # 3. Нет захардкоженных путей /opt/homebrew                       [pristine only]
@@ -15,6 +15,7 @@
 # 5. Обязательные файлы существуют                                [pristine + installed]
 # 6. Нет хардкод-путей к FMT/scripts|roles в протоколах (WP-219)  [pristine + installed]
 # 7. settings.json hooks ↔ .claude/hooks/ cross-ref (issue #13)   [pristine + installed]
+# 8. Нет устаревших семантических ссылок FPF                     [pristine + staged]
 
 set -euo pipefail
 
@@ -415,6 +416,11 @@ else
     for hook in "$HOOKS_DIR"/*.sh; do
         [ -f "$hook" ] || continue
         name=$(basename "$hook")
+        # Каталог исторически содержит не только Claude hooks. Не угадываем по
+        # имени: самостоятельный сервис/CLI/библиотека обязан явно объявить
+        # контракт в собственной шапке. Новый неклассифицированный файл всё
+        # равно даст warning и потребует решения владельца.
+        grep -q '^# claude-hook: false — ' "$hook" && continue
         # Skip known user-deployed hooks (see .claude/skills/setup-wakatime/SKILL.md)
         skip=0
         for ud in "${USER_DEPLOYED_HOOKS[@]}"; do [ "$name" = "$ud" ] && skip=1 && break; done
@@ -428,6 +434,44 @@ else
         fi
     done
     [ "$CHECK7_FAIL" -eq 0 ] && [ "$ORPHAN_WARN" -eq 0 ] && echo "PASS"
+fi
+
+# 8. Устаревшие семантические ссылки FPF (issue #390 follow-up).
+# A.2 и A.2.1 сами по себе действительны для ролей и назначений. Запрещены только
+# две доказанно ложные привязки: удалённая A.6.8 и трактовка слова mastery/
+# «мастерство» как сущности A.2. В installed-режиме пользовательская память может
+# содержать исторические цитаты, поэтому проверка относится только к поставляемому
+# pristine/staged шаблону.
+echo -n "[8/8] Obsolete FPF semantic references... "
+if [ "$MODE" = "installed" ]; then
+    echo "SKIP (installed mode — пользовательская память может содержать исторические цитаты)"
+else
+    FPF_STALE_PATTERN='A\.6\.8|(mastery|мастерство).*A\.2([^0-9.]|$)'
+    FPF_STALE_HITS=""
+    if [ "$MODE" = "staged" ]; then
+        while IFS= read -r f; do
+            case "$f" in
+                memory/*.md|.claude/*.md|.claude/*/*.md|.claude/*/*/*.md|docs/*.md)
+                    hits=$(git -C "$TEMPLATE_DIR" show ":$f" 2>/dev/null \
+                        | grep -niE "$FPF_STALE_PATTERN" \
+                        | sed "s#^#$f:#" || true)
+                    [ -n "$hits" ] && FPF_STALE_HITS="${FPF_STALE_HITS}${FPF_STALE_HITS:+$'\n'}$hits"
+                    ;;
+            esac
+        done <<<"$STAGED_FILES"
+    else
+        FPF_STALE_HITS=$(grep -rniE "$FPF_STALE_PATTERN" \
+            "$TEMPLATE_DIR/memory" "$TEMPLATE_DIR/.claude" "$TEMPLATE_DIR/docs" \
+            --include='*.md' 2>/dev/null || true)
+    fi
+
+    if [ -n "$FPF_STALE_HITS" ]; then
+        echo "FAIL"
+        echo "$FPF_STALE_HITS" | sed 's/^/  /'
+        FAIL=1
+    else
+        echo "PASS"
+    fi
 fi
 
 echo ""

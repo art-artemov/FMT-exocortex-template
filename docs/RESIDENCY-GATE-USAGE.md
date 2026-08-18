@@ -42,7 +42,9 @@ data_needs:
 
 ## Шаг 2. Интегрировать Point A в startup
 
-Если функция способна работать **автономно** (без пилота в цикле), используйте activation-time проверку:
+**Скилл, вызываемый через Claude Code (Skill tool) — ничего интегрировать не нужно.** С 09.08.2026 хук `residency-gate-skill-adapter.sh` (PreToolUse, matcher `Skill`) проверяет `data_needs` из `SKILL.md` автоматически, до того как код скилла запустится — достаточно объявить блок в Шаге 1. Раньше эта проверка была когнитивной (автор мог забыть вставить `source`), теперь она механическая: тест чистой установки — `scripts/tests/test_residency_gate_skill_adapter.py`.
+
+Если функция работает **вне Claude Code** (day-open pipeline на launchd, bot handler, любой процесс, который Claude Code не запускает) — Claude Code не видит её старт, автоматической проверки нет, интегрируйте вручную:
 
 ```bash
 #!/bin/bash

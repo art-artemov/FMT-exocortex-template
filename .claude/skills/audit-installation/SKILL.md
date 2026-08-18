@@ -103,9 +103,18 @@ Coverage: N/4
 
 ### Алгоритм
 
-1. **Создать sentinel** (единое имя, не session-bound — v2, WP-7/BUGTRIAGE2, issue #237):
+1. **Создать sentinel** (единое имя для gate + capability владельца, issue #369):
    ```bash
-   echo "{\"created_at\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\"session_id\":\"${CLAUDE_SESSION_ID:-noid}\",\"initiator\":\"audit-installation\"}" > /tmp/iwe-dry-run.flag
+   DRY_SID="${CLAUDE_SESSION_ID:-noid}"
+   DRY_SAFE_SID=$(printf '%s' "$DRY_SID" | tr -cd 'A-Za-z0-9._-')
+   DRY_TOKEN=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+   DRY_OWNER="/tmp/iwe-dry-run-owner-${DRY_SAFE_SID:-noid}.token"
+   umask 077
+   printf '%s' "$DRY_TOKEN" > "$DRY_OWNER"
+   jq -nc --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sid "$DRY_SID" \
+     --arg token "$DRY_TOKEN" --arg owner "$DRY_OWNER" \
+     '{created_at:$created,session_id:$sid,initiator:"audit-installation",owner_token:$token,owner_file:$owner}' \
+     > /tmp/iwe-dry-run.flag
    ```
 2. **Запустить subagent** через Agent tool (subagent_type=general-purpose, модель Sonnet) с промптом:
 
@@ -144,7 +153,7 @@ Coverage: N/4
 
 ### Защита от sticky-sentinel
 
-Если subagent упал/завис → попытаться удалить sentinel явно (всегда). TTL 10 мин в самом хуке защищает от случаев, когда даже это не отработало (kill -9, краш CLI).
+Если subagent упал/завис → попытаться удалить sentinel явно (всегда). Stop владельца удалит capability-файл; чужой Stop не затронет защиту. TTL 10 мин в самом хуке защищает от случаев, когда даже это не отработало (kill -9, краш CLI).
 
 ## Шаг 3. Сборка единого отчёта
 

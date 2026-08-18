@@ -78,12 +78,24 @@ normalize_wp_num() {
   echo "${arg#WP-}" | tr -d ' '
 }
 
+wp_path_label() {
+  local filepath="$1"
+  case "$filepath" in
+    "$STRATEGY_DIR"/*) echo "${filepath#"$STRATEGY_DIR"/}" ;;
+    *) echo "$filepath" ;;
+  esac
+}
+
 find_wp_file() {
   local num="$1"
   local found=""
 
   if [[ -d "$INBOX_DIR" ]]; then
-    found=$(grep -rl "^wp: ${num}$" "$INBOX_DIR" 2>/dev/null | head -1 || true)
+    # WP-434: a canonical folder card wins over stale flat duplicates.
+    found=$(find "$INBOX_DIR" -maxdepth 2 -path "*/WP-${num}/WP-${num}.md" 2>/dev/null | head -1 || true)
+    if [[ -z "$found" ]]; then
+      found=$(grep -rl "^wp: ${num}$" "$INBOX_DIR" 2>/dev/null | head -1 || true)
+    fi
     if [[ -z "$found" ]]; then
       found=$(find "$INBOX_DIR" -maxdepth 1 -name "WP-${num}.md" 2>/dev/null | head -1 || true)
     fi
@@ -106,22 +118,19 @@ find_wp_file() {
   fi
 
   if [[ -z "$found" && -d "$ARCHIVE_DIR" ]]; then
-    found=$(grep -rl "^wp: ${num}$" "$ARCHIVE_DIR" 2>/dev/null | head -1 || true)
+    found=$(find "$ARCHIVE_DIR" -maxdepth 2 -path "*/WP-${num}/WP-${num}.md" 2>/dev/null | head -1 || true)
     if [[ -z "$found" ]]; then
-      found=$(find "$ARCHIVE_DIR" -maxdepth 1 -name "WP-${num}*.md" 2>/dev/null | head -1 || true)
+      found=$(grep -rl "^wp: ${num}$" "$ARCHIVE_DIR" 2>/dev/null | head -1 || true)
+    fi
+    if [[ -z "$found" ]]; then
+      # A numeric prefix is not an ID boundary: `WP-46*.md` also matches
+      # `WP-469-*.md`.  Only the exact flat filename or a hyphenated slug is
+      # a valid legacy archive candidate for this WP.
+      found=$(find "$ARCHIVE_DIR" -maxdepth 1 \( -name "WP-${num}.md" -o -name "WP-${num}-*.md" \) 2>/dev/null | sort | head -1 || true)
     fi
   fi
 
   echo "$found"
-}
-
-file_location_label() {
-  local filepath="$1"
-  case "$filepath" in
-    "$INBOX_DIR"*) echo "inbox" ;;
-    "$ARCHIVE_DIR"*) echo "archive/wp-contexts" ;;
-    *) echo "unknown" ;;
-  esac
 }
 
 extract_fm_field() {
@@ -226,18 +235,71 @@ git_log_for_file() {
 
 extract_open_phases() {
   local file="$1"
-  awk '/^---$/{fm++; next} fm<2{next} {print}' "$file" 2>/dev/null \
-    | grep -E '^\s*- \[ \]' \
-    | sed 's/^\s*- \[ \] //' \
-    | head -20 \
-    || true
+  if has_structured_phases "$file"; then
+    extract_structured_open_phases "$file" | head -20
+  else
+    awk '/^---$/{fm++; next} fm<2{next} {print}' "$file" 2>/dev/null \
+      | grep -E '^\s*- \[ \]' \
+      | sed 's/^\s*- \[ \] //' \
+      | head -20 \
+      || true
+  fi
 }
 
 count_open_phases() {
   local file="$1"
   local cnt
-  cnt=$(awk '/^---$/{fm++; next} fm<2{next} /- \[ \]/{count++} END{print count+0}' "$file" 2>/dev/null || echo "0")
+  if has_structured_phases "$file"; then
+    cnt=$(extract_structured_open_phases "$file" | wc -l | tr -d ' ')
+  else
+    cnt=$(awk '/^---$/{fm++; next} fm<2{next} /- \[ \]/{count++} END{print count+0}' "$file" 2>/dev/null || echo "0")
+  fi
   echo "$cnt"
+}
+
+has_structured_phases() {
+  local file="$1"
+  awk '
+    /^---$/ { fm++; if (fm == 2) exit; next }
+    fm != 1 { next }
+    /^phases:[[:space:]]*$/ { in_phases=1; next }
+    in_phases && /^- id:[[:space:]]*/ { found=1; exit }
+    END { exit(found ? 0 : 1) }
+  ' "$file" 2>/dev/null
+}
+
+extract_structured_open_phases() {
+  local file="$1"
+  awk '
+    function emit() {
+      if (id != "" && (status == "pending" || status == "in_progress" || status == "blocked")) {
+        print id " (" status ")"
+      }
+    }
+    /^---$/ { fm++; if (fm == 2) exit; next }
+    fm != 1 { next }
+    /^phases:[[:space:]]*$/ { in_phases=1; next }
+    in_phases && /^[A-Za-z_][A-Za-z0-9_-]*:/ {
+      emit(); in_phases=0; id=""; status=""; next
+    }
+    !in_phases { next }
+    /^- id:[[:space:]]*/ {
+      emit()
+      id=$0
+      sub(/^- id:[[:space:]]*/, "", id)
+      status=""
+      next
+    }
+    /^  status:[[:space:]]*/ {
+      status=$0
+      sub(/^  status:[[:space:]]*/, "", status)
+      sub(/[[:space:]]+#.*/, "", status)
+      sub(/^[[:space:]]+/, "", status)
+      sub(/[[:space:]]+$/, "", status)
+      next
+    }
+    END { emit() }
+  ' "$file" 2>/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -315,10 +377,8 @@ main() {
     exit 2
   fi
 
-  local location
-  location=$(file_location_label "$wp_file")
-  local basename_file
-  basename_file=$(basename "$wp_file")
+  local wp_path
+  wp_path=$(wp_path_label "$wp_file")
 
   local status name spawned updated
   status=$(extract_fm_field "$wp_file" "status")
@@ -365,7 +425,7 @@ main() {
   echo "# WP Sync Bundle для WP-${wp_num}"
   echo ""
   echo "## Текущий РП"
-  echo "- Файл: \`${location}/${basename_file}\`"
+  echo "- Файл: \`${wp_path}\`"
   echo "- Название: ${name}"
   echo "- Status: ${status}"
   echo "- Spawned: ${spawned}"
@@ -374,7 +434,7 @@ main() {
   echo ""
 
   if [[ "$open_phases_count" -gt 0 ]]; then
-    echo "## Открытые фазы (незакрытые чекбоксы)"
+    echo "## Открытые фазы"
     local phases_list
     phases_list=$(extract_open_phases "$wp_file")
     if [[ -n "$phases_list" ]]; then
@@ -416,15 +476,14 @@ main() {
         echo "- Status (REGISTRY): ${reg_status}"
         echo "- Recent commits (${GIT_LOG_DAYS}д): _файл не найден, skip_"
       else
-        local rloc rbasename rstatus rname
-        rloc=$(file_location_label "$rfile")
-        rbasename=$(basename "$rfile")
+        local rpath rstatus rname
+        rpath=$(wp_path_label "$rfile")
         rstatus=$(extract_fm_field "$rfile" "status")
         rname=$(extract_fm_field "$rfile" "name")
         [[ -z "$rstatus" ]] && rstatus="_не указан_"
         [[ -z "$rname" ]] && rname="_не указано_"
 
-        echo "- Файл: \`${rloc}/${rbasename}\`"
+        echo "- Файл: \`${rpath}\`"
         echo "- Название: ${rname}"
         echo "- Status (frontmatter): ${rstatus}"
         echo "- Status (REGISTRY): ${reg_status}"

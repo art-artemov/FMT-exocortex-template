@@ -21,8 +21,18 @@
 set -uo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
+# jq is required for both input parsing and JSON output — without it the hook
+# cannot honor the UserPromptSubmit protocol, so degrade to a silent no-op.
+if ! command -v jq >/dev/null 2>&1; then
+  echo '{}'
+  exit 0
+fi
+
 INPUT=$(cat 2>/dev/null || echo '{}')
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null)
+# session_id lands in a filesystem path below — strip everything outside
+# [A-Za-z0-9_-] so a hostile/matformed value cannot traverse directories.
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"' 2>/dev/null | tr -cd 'A-Za-z0-9_-' | cut -c1-64)
+[ -z "$SESSION_ID" ] && SESSION_ID="unknown"
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$HOME/IWE}"
 STATE_DIR="$PROJECT_DIR/.claude/state"

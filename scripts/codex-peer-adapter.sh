@@ -47,16 +47,42 @@ if [ -z "$CODEX_BIN" ] || [ ! -x "$CODEX_BIN" ]; then
   exit 1
 fi
 
+# Auto-source OpenRouter key (hosts without a ChatGPT login route codex
+# through OpenRouter, see reference_codex_peer_openrouter_linux.md).
+CODEX_USES_OPENROUTER=false
+grep -q '^env_key = "OPENROUTER_API_KEY"' "$HOME/.codex/config.toml" 2>/dev/null && CODEX_USES_OPENROUTER=true
+
+if [ -z "${OPENROUTER_API_KEY:-}" ] && [ "$CODEX_USES_OPENROUTER" = true ]; then
+  OPENROUTER_KEY_FILE="$HOME/.secrets/openrouter_key.env"
+  if [ -f "$OPENROUTER_KEY_FILE" ]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$OPENROUTER_KEY_FILE"
+    set +a
+  fi
+fi
+
 ADD_DIRS=()
 MODEL_ARG=()
 
+# WP-516 Ф5: межвендорский whitelist (§0в.1) = {-p, --model, --add-dir}.
+# Неизвестный флаг — явная ошибка, не молчаливый игнор: иначе запрошенный
+# режим (напр. безопасности) может не примениться незаметно для вызывающего.
+# --permission-mode исключён из whitelist: способен ослабить read-only
+# гарантию sandbox; claude-адаптер отклоняет его всегда (exit 64).
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p)                shift ;;
-    --model)           MODEL_ARG=("--model" "$2"); shift 2 ;;
-    --add-dir)         ADD_DIRS+=("$2"); shift 2 ;;
-    --permission-mode) shift 2 ;;
-    *)                 shift ;;
+    --model)
+      [ $# -ge 2 ] || { echo "ERROR: --model requires a value" >&2; exit 1; }
+      MODEL_ARG=("--model" "$2"); shift 2 ;;
+    --add-dir)
+      [ $# -ge 2 ] || { echo "ERROR: --add-dir requires a value" >&2; exit 1; }
+      ADD_DIRS+=("$2"); shift 2 ;;
+    *)
+      echo "ERROR: unknown flag '$1'. Known: -p, --model, --add-dir" >&2
+      exit 1
+      ;;
   esac
 done
 
@@ -189,9 +215,23 @@ OUT_FILE="$TMP_ROOT/codex-output.txt"
 # above: FILTERED_DIRS holds the scrubbed copies in $TMP_ROOT, but the sandbox
 # root itself was still the unfiltered source. Must be the FILTERED copy of the
 # first --add-dir (FILTERED_DIRS[1] — [0] is the literal "--add-dir" token).
-PRIMARY_DIR="${FILTERED_DIRS[1]:-$PWD}"
+#
+# WP-516 Ф5 (peer-session 2026-08-11-22-wp516-f5-contract-adapter): без
+# --add-dir корнем sandbox был $PWD писателя, причём в режиме workspace-write —
+# неявный write-доступ к рабочему дереву писателя. Теперь: без --add-dir
+# корень = пустой временный каталог; режим ВСЕГДА read-only (контракт §0в.1:
+# peer не пишет файлы; --add-dir даёт чтение контекста, не согласие на запись).
+if [ ${#FILTERED_DIRS[@]} -ge 2 ]; then
+  PRIMARY_DIR="${FILTERED_DIRS[1]}"
+else
+  PRIMARY_DIR="$TMP_ROOT/empty-root"
+  mkdir -p "$PRIMARY_DIR"
+fi
 
-CODEX_EXEC_ARGS=(exec -s workspace-write -C "$PRIMARY_DIR" -o "$OUT_FILE")
+# --skip-git-repo-check: PRIMARY_DIR is the PII-filtered temp copy (mktemp -d
+# above), never a git worktree — codex exec otherwise refuses with
+# "Not inside a trusted directory" and the adapter reports it as empty output.
+CODEX_EXEC_ARGS=(exec -s read-only -C "$PRIMARY_DIR" --skip-git-repo-check -o "$OUT_FILE")
 # Start at 3, not 1: FILTERED_DIRS[0..1] is the pair already consumed as
 # PRIMARY_DIR above — re-adding it as --add-dir would just be a harmless-but-
 # redundant duplicate, skip it.
@@ -212,8 +252,27 @@ if [ "$PERL_EXIT" -eq 142 ]; then
   exit 1
 fi
 
+# WP-516 Ф5 (§0в.1, находка Codex 12.08): non-timeout ненулевой exit CLI
+# обязан нормализоваться в 1 — иначе упавший CLI с непустым output-файлом
+# мог вернуть успешный 0 адаптера.
+if [ "$PERL_EXIT" -ne 0 ]; then
+  echo "ERROR: Codex peer call failed with exit code $PERL_EXIT (cli_exit=$PERL_EXIT)" >&2
+  exit 1
+fi
+
 if [ ! -s "$OUT_FILE" ]; then
-  echo "ERROR: codex returned empty output (network/auth/quota?)" >&2
+  # WP-524 Ф1 (12.08): reproduced live — provider is OpenRouter on hosts without
+  # a ChatGPT login (see reference_codex_peer_openrouter_linux.md), and a missing
+  # OPENROUTER_API_KEY in the caller's shell produces this exact symptom with no
+  # other signal. Distinguishing it here turns a silent bootstrap failure into an
+  # actionable message instead of leaving the caller to guess network/auth/quota.
+  if [ -z "${OPENROUTER_API_KEY:-}" ] && [ "$CODEX_USES_OPENROUTER" = true ]; then
+    echo "ERROR: codex returned empty output — OPENROUTER_API_KEY is not set." >&2
+    echo "HINT: this adapter already tried auto-sourcing ~/.secrets/openrouter_key.env and it didn't take." >&2
+    echo "  Check the file exists and is readable: ls -la ~/.secrets/openrouter_key.env" >&2
+  else
+    echo "ERROR: codex returned empty output (network/auth/quota?)" >&2
+  fi
   exit 1
 fi
 
@@ -226,6 +285,33 @@ if [ "${IWE_HINDSIGHT_RETAIN:-}" = "1" ] && [ -n "$CODEX_OUTPUT" ] && [ -f "$HIN
     echo "{\"action\":\"retain\",\"source\":\"codex-peer\",\"text\":$(echo "$CODEX_OUTPUT" | head -c 4000 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')}" \
     | python3 "$HINDSIGHT_SCRIPT" 2>/dev/null || true
   } &
+fi
+
+# WP-516 Ф5 (§0в.1): stdout обязан начинаться с frontmatter; ответ без
+# frontmatter = нарушение формата → exit 1 с диагностикой.
+# Проверка — для peer-реплик turn-loop. Служебные вызовы писателя
+# (review/verify/synth), чей вывод — НЕ peer-реплика, отключают её
+# через IWE_PEER_PLAIN=1 (слой IWE-интеграции, §0в.1).
+if [ "${IWE_PEER_PLAIN:-0}" != "1" ]; then
+  # awk одним процессом: 'sed | head' под pipefail ловит SIGPIPE на длинной
+  # валидной реплике и роняет адаптер без диагностики (review-02, WP-516 Ф5).
+  _FIRST_LINE=$(printf '%s\n' "$CODEX_OUTPUT" | awk 'length { print; exit }')
+  _FM_FENCES=$(printf '%s\n' "$CODEX_OUTPUT" | grep -c '^---$' || true)
+  if [ "$_FIRST_LINE" != "---" ] || [ "${_FM_FENCES:-0}" -lt 2 ]; then
+    echo "ERROR: peer response missing frontmatter (first non-empty line must be '---' with a closing '---')." >&2
+    exit 1
+  fi
+
+  # WP-484 Ф89: alert-only self-check — доля кириллицы в ответе после
+  # вычитания кода/путей/A2-глосс. Никогда не блокирует вывод, только
+  # предупреждает в stderr — не peer-реплика (IWE_PEER_PLAIN=1) её не видит.
+  _LANG_CHECK="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/language-check.py"
+  if [ -f "$_LANG_CHECK" ]; then
+    _LANG_RESULT=$(printf '%s' "$CODEX_OUTPUT" | python3 "$_LANG_CHECK" 2>/dev/null || true)
+    if printf '%s' "$_LANG_RESULT" | grep -q '"alert": true'; then
+      echo "WARNING: peer response may not be in Russian (language-check alert) — $_LANG_RESULT" >&2
+    fi
+  fi
 fi
 
 # cleanup_peer() через trap удалит lock и temp

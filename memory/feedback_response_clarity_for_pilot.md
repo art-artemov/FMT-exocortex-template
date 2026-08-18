@@ -1,18 +1,14 @@
 ---
 name: feedback_response_clarity_for_pilot
 description: 12 паттернов засорения ответов агентов + 11 правил A1-A11 «писать в режиме читателя» + детектор канала; источник — peer-сессия 2026-06-01-27
-metadata: 
-  node_type: memory
-  type: feedback
-  horizon: warm
-  domains: 
-    - communication
-    - agent-behaviour
-    - pilot-ux
-  status: active
-  valid_from: 2026-06-01
-  owner: user
-  schema_version: 1
+node_type: memory
+type: feedback
+horizon: warm
+domains: [communication, agent-behaviour, pilot-ux]
+status: active
+valid_from: 2026-06-01
+owner: platform
+schema_version: 1
 ---
 
 # Правила «писать для пилота, не для CI-инспектора»

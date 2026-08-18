@@ -21,6 +21,9 @@ set -uo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-}"
 
 SENTINEL=/tmp/iwe-dry-run.flag
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IWE_ROOT_GUESS="$(cd "$HOOK_DIR/../.." 2>/dev/null && pwd -P)"
+GATE_LOG="$IWE_ROOT_GUESS/.claude/logs/gate_log.jsonl"
 
 # jq нужен для разбора payload. Если его нет, не брикуем все write-tools:
 # setup/requirements должны установить jq, а gate явно сообщает, что проверка пропущена.
@@ -29,8 +32,18 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 0
 fi
 
-# Sentinel отсутствует — dry-run неактивен, allow всё
-[ -f "$SENTINEL" ] || exit 0
+# Sentinel отсутствует — dry-run неактивен. Если capability-файл владельца
+# остался, защита исчезла неожиданно или была снята явно до Stop: оставляем
+# наблюдаемый след вместо прежнего бесшумного allow (#369).
+if [ ! -f "$SENTINEL" ]; then
+    OWNER_FILE=$(find /tmp -maxdepth 1 -name 'iwe-dry-run-owner-*.token' -type f -print -quit 2>/dev/null || true)
+    if [ -n "$OWNER_FILE" ]; then
+        mkdir -p "$(dirname "$GATE_LOG")" 2>/dev/null || true
+        printf '{"ts":"%s","gate":"dry-run-gate","event":"sentinel_missing","owner_file":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(basename "$OWNER_FILE")" >> "$GATE_LOG" 2>/dev/null || true
+    fi
+    exit 0
+fi
 
 case "$(uname)" in
     Darwin) MTIME=$(stat -f %m "$SENTINEL" 2>/dev/null) ;;

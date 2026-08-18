@@ -2,7 +2,7 @@
 # see DP.SC.153
 # НЕ редактировать вручную — перегенерировать через generate-skills-catalog.sh
 #
-generated: 2026-07-19T06:33:31Z
+generated: 2026-08-04T13:06:21Z
 skills_dir: .claude/skills
 
 skills:
@@ -21,7 +21,7 @@ skills:
   - id: apply-captures
     name: "apply-captures"
     description: "Разбор extraction-reports со status pending-review — решение R15 (accept/reject/defer) ЖИВЫМ ПИЛОТОМ, запись в Pack, обновление статуса, коммит. Вызывать при Close при наличии N>0 pending-review отчётов."
-    version: 1.1.0
+    version: 1.3.0
     layer: L1
     status: active
     triggers:
@@ -309,7 +309,7 @@ skills:
   - id: kimi-peer-writer
     name: "kimi-peer-writer"
     description: "Peer-сессия DP.SC.154 где Kimi = писатель, Claude = напарник. Запускается простой фразой. Включает ОРЗ Opening и Closing, turn-loop, эскалации, Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), отложенную финализацию и верификацию."
-    version: 1.2.0
+    version: 1.3.0
     layer: L1
     status: active
     triggers:
@@ -395,8 +395,8 @@ skills:
     - pack-creator
   - id: peer-conversation
     name: "peer-conversation"
-    description: "Многотуровый диалог писателя (Claude) с напарником (Kimi) по задаче пилота (DP.SC.154). Ведёт turn-loop, обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool."
-    version: 1.3.0
+    description: "Многотуровый диалог писателя (Claude) с одним или несколькими напарниками (любой набор из kimi/codex/hermes/claude-headless) по задаче пилота (DP.SC.154). Ведёт turn-loop (2 участника) или round-loop (3+, WP-509), обнаруживает CONSENSUS/ESCALATE, после консенсуса — Decision Gate (зафиксировать vs реализовать → ревью → проверить → задеплоить), синтезирует report.md через Agent tool."
+    version: 1.5.5
     layer: L1
     status: active
     triggers:
@@ -408,10 +408,10 @@ skills:
     - kimi-peer-writer
   - id: personal-guide-render
     name: "personal-guide-render"
-    description: "Тонкий клиент — собирает персональное руководство пилота через локальный шлюз (mcp__iwe-local-gateway__render_personal_guide). Используй когда пилот просит «пересобери руководство», «обнови мой план», «собери руководство на сегодня»."
-    version: 2.0.0
+    description: "Персональное руководство пилота собирается автоматически на сервере платформы по расписанию. Используй когда пилот просит «пересобери руководство», «обнови мой план», «собери руководство на сегодня» — скилл объясняет текущее состояние и проверяет, что руководство доехало."
+    version: 2.1.0
     layer: L1
-    status: active
+    status: awaiting-server-tool
     triggers:
       slash:
         - /personal-guide-render
@@ -545,6 +545,18 @@ skills:
     invoked_by:
     - vdv
     - skill-creator
+  - id: verify-hypotheses
+    name: "verify-hypotheses"
+    description: "Сверка журнала гипотез (hypotheses-log.md) по запросу вне ритма week-close. Фильтрует записи со статусом «на сверке» и наступившей датой, сверяет критерий фальсификации с доступной фактурой, предлагает вердикт, пилот подтверждает, вердикт пишется новой записью. Вызывать на явную фразу пилота, не автоматически."
+    version: 0.1.0
+    layer: L1
+    status: experimental
+    triggers:
+      slash:
+        - /verify-hypotheses
+    depends_on: []
+    invoked_by:
+    - verify-hypotheses
   - id: verify
     name: "verify"
     description: "Верификация артефакта по эталону из Pack. Загружает роль VR.R.001 (Верификатор) с context isolation — проверяет результат, а не процесс создания."
@@ -558,6 +570,7 @@ skills:
     invoked_by:
     - CLAUDE.md
     - run-protocol
+    - verify-hypotheses
     - peer-conversation
     - day-close
     - verify
@@ -602,6 +615,7 @@ skills:
     depends_on: []
     invoked_by:
     - run-protocol
+    - verify-hypotheses
     - extend
     - week-close-pilot
     - month-close
@@ -609,7 +623,7 @@ skills:
     - week-close
   - id: wp-new
     name: "wp-new"
-    description: "Создание нового рабочего продукта (РП) с записью в 5 мест атомарно. Используй когда появляется новая задача, которой нет в плане недели."
+    description: "Создание нового рабочего продукта (РП) с атомарной записью в 4 локальных места (+ условный пост-шаг во внешний трекер, если подключён). Используй когда появляется новая задача, которой нет в плане недели."
     version: 1.0.0
     layer: L1
     status: active

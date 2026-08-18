@@ -1,4 +1,5 @@
 #!/bin/bash
+# claude-hook: false — библиотека-диспетчер для event-specific wrappers и тестов
 # rule-engine.sh — единый диспатчер правил агента (WP-272 Ф1)
 #
 # Входы (env vars):

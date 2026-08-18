@@ -77,6 +77,7 @@ def check_file(path: Path) -> dict:
         "done_no_strike": [],  # list of (lineno, wp_number) — ✅ без зачёркивания
         "skip": False,
         "skip_cells": False,
+        "size_skip": False,
     }
     try:
         text = path.read_text(encoding="utf-8")
@@ -88,6 +89,7 @@ def check_file(path: Path) -> dict:
     # index-health: skip отключает проверки РАЗДУТИЯ (размер/длина/ячейки),
     # но НЕ семантику done-форматирования — она дешёвая и не зависит от размера.
     size_skip = "<!-- index-health: skip -->" in head
+    out["size_skip"] = size_skip
     if "<!-- index-health: skip-cells -->" in head:
         out["skip_cells"] = True
 
@@ -120,7 +122,7 @@ def check_file(path: Path) -> dict:
 
 
 def classify(findings: dict) -> str:
-    size = findings["size"]
+    size = 0 if findings["size_skip"] else findings["size"]
     max_line = max((n for _, n in findings["long_lines"]), default=0)
     max_cell = max((n for _, _, n in findings["long_cells"]), default=0)
     if size > SIZE_FAIL or max_line > LINE_FAIL or max_cell > CELL_FAIL:

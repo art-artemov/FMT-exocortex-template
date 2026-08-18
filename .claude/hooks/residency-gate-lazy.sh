@@ -1,4 +1,5 @@
 #!/bin/bash
+# claude-hook: false — consent CLI с четырьмя аргументами, не событие Claude
 # ResidencyGate Point B: Lazy consent check at data access time
 # Runs when a function tries to access specific data
 # Usage: residency-gate-lazy.sh <function_id> <data_type> <flow_direction> <need_name>
@@ -14,7 +15,10 @@ FUNCTION_ID="$1"
 DATA_TYPE="$2"
 FLOW_DIRECTION="$3"
 NEED_NAME="$4"
-RESIDENCY_GATE_PY="${CLAUDE_ROOT:-.claude}/.claude/skills/residency-gate/residency-gate.py"
+# CLAUDE_ROOT = project root that CONTAINS .claude/ (default: cwd). The old
+# default ".claude" produced ".claude/.claude/skills/..." — a path that never
+# exists (issue #323).
+RESIDENCY_GATE_PY="${CLAUDE_ROOT:-.}/.claude/skills/residency-gate/residency-gate.py"
 
 # Check lazy consent
 RESULT=$(python3 "$RESIDENCY_GATE_PY" check-lazy "$FUNCTION_ID" "$DATA_TYPE" "$FLOW_DIRECTION" "$NEED_NAME" 2>/dev/null)

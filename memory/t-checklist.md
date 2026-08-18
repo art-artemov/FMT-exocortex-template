@@ -1,8 +1,15 @@
 ---
-type: operational-checklist
+name: t-checklist
+description: "Операционный чеклист обслуживания для закрывающих протоколов"
+type: protocol
+horizon: warm
+domains: [reference, maintenance]
+status: active
 wp: 217
 promoted: 2026-04-25
 valid_from: 2026-04-10
+owner: platform
+schema_version: 1
 ---
 # T-чеклист (single source для skill /close)
 
