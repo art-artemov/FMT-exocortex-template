@@ -36,11 +36,27 @@ readonly RC_REINDEX_PARTIAL=3
 SELECTIVE_REINDEX="${IWE_SELECTIVE_REINDEX:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/selective-reindex.sh}"
 SOURCES_JSON="${IWE_SOURCES_JSON:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/sources.json}"
 SOURCES_PERSONAL_JSON="${IWE_SOURCES_PERSONAL_JSON:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/sources-personal.json}"
+# issue #463: linear_sync_path и слияние day-rhythm-config.yaml ниже читаются через
+# python3+yaml с fallback на пустую строку — без pyyaml это не падает, а тихо
+# возвращает пустую строку, неотличимую от «поля нет в конфиге». Один явный
+# warning здесь вместо голого ModuleNotFoundError на каждом отдельном вызове.
+#
+# Evgenii Red Team review 2026-08-19 (defect #5 class): resolve python3+PyYAML
+# ONCE via the F6 shared resolver (scripts/lib/find-python3.sh, #453/#463),
+# reuse RESOLVED_PYTHON3 for every python3 call in this file below — a bare
+# `python3 -c "import yaml"` probe only sees PATH's own python3, which can
+# lack PyYAML on the same Apple Silicon machine where the resolver's own
+# Homebrew-path candidate (see find-python3.sh) does have it.
+RESOLVER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh"
+RESOLVED_PYTHON3=""
+if ! RESOLVED_PYTHON3=$("$RESOLVER" 2>/dev/null); then
+  echo "⚠ pyyaml не найден — linear sync и merge day-rhythm-config.yaml тихо пропустятся. Установите: pip3 install --user pyyaml" >&2
+fi
 # Linear sync: путь читается из params.yaml (ключ linear_sync_path)
 PARAMS_YAML="$WORKSPACE_DIR/params.yaml"
 LINEAR_SYNC=""
-if [ -f "$PARAMS_YAML" ]; then
-  _raw=$(python3 -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])); print(d.get('linear_sync_path',''))" "$PARAMS_YAML" 2>/dev/null || echo "")
+if [ -n "$RESOLVED_PYTHON3" ] && [ -f "$PARAMS_YAML" ]; then
+  _raw=$("$RESOLVED_PYTHON3" -c "import yaml,sys; d=yaml.safe_load(open(sys.argv[1])); print(d.get('linear_sync_path',''))" "$PARAMS_YAML" 2>/dev/null || echo "")
   if [ -n "$_raw" ]; then
     LINEAR_SYNC="${_raw/#\~/$HOME}"
   fi
@@ -118,8 +134,10 @@ do_backup() {
   if [ -f "$rhythm_src" ]; then
     if [ ! -f "$rhythm_dst" ]; then
       cp "$rhythm_src" "$rhythm_dst"
+    elif [ -z "$RESOLVED_PYTHON3" ]; then
+      warn "  day-rhythm-config.yaml: пропущено слияние — pyyaml не найден (см. предупреждение выше)"
     else
-      python3 - "$rhythm_src" "$rhythm_dst" << 'PYEOF'
+      "$RESOLVED_PYTHON3" - "$rhythm_src" "$rhythm_dst" << 'PYEOF'
 import sys, yaml
 
 src_path, dst_path = sys.argv[1], sys.argv[2]
@@ -183,10 +201,15 @@ do_reindex() {
     return 0
   fi
 
+  if [ -z "$RESOLVED_PYTHON3" ]; then
+    warn "  reindex: пропущено — pyyaml не найден (см. предупреждение выше)"
+    return 0
+  fi
+
   # Маппинг dir→source+config из L2 (sources.json) и L4 (sources-personal.json)
   # Python резолвит path→git-root, чтобы связать dirname репо с source-именем.
   local dir_map
-  dir_map=$(python3 - "$SOURCES_JSON" "$SOURCES_PERSONAL_JSON" << 'PYEOF'
+  dir_map=$("$RESOLVED_PYTHON3" - "$SOURCES_JSON" "$SOURCES_PERSONAL_JSON" << 'PYEOF'
 import sys, json, os
 for config_path in sys.argv[1:]:
     if not os.path.exists(config_path):
@@ -287,6 +310,11 @@ do_linear() {
 do_session_consolidation() {
   log "Шаг 4/4: Консолидация сессий дня"
 
+  if [ -z "$RESOLVED_PYTHON3" ]; then
+    warn "  Консолидация сессий: пропущено — pyyaml не найден (см. предупреждение выше)"
+    return 0
+  fi
+
   local today
   today=$(date +%Y-%m-%d)
   local month_dir
@@ -309,20 +337,20 @@ do_session_consolidation() {
 
     # Читаем task_id и task_description из meta.yaml (python для YAML)
     local task_id task_desc start_time
-    task_id=$(python3 -c "
+    task_id=$("$RESOLVED_PYTHON3" -c "
 import sys, yaml
 with open('$meta') as f:
     d = yaml.safe_load(f)
 print(d.get('task_id', '') or '')
 " 2>/dev/null || echo "")
-    task_desc=$(python3 -c "
+    task_desc=$("$RESOLVED_PYTHON3" -c "
 import sys, yaml
 with open('$meta') as f:
     d = yaml.safe_load(f)
 desc = d.get('task_description', '') or ''
 print(desc[:80] + ('...' if len(desc) > 80 else ''))
 " 2>/dev/null || echo "")
-    start_time=$(python3 -c "
+    start_time=$("$RESOLVED_PYTHON3" -c "
 import sys, yaml
 with open('$meta') as f:
     d = yaml.safe_load(f)
@@ -337,7 +365,7 @@ print(t[11:16] if len(t) >= 16 else '')
   done < <(find "$sessions_root" -maxdepth 2 -name "meta.yaml" 2>/dev/null \
     | while IFS= read -r f; do
         # Проверяем дату в meta.yaml
-        date_val=$(python3 -c "
+        date_val=$("$RESOLVED_PYTHON3" -c "
 import yaml
 with open('$f') as fh:
     d = yaml.safe_load(fh)

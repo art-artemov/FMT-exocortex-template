@@ -71,7 +71,15 @@ load_rules_for_event() {
         echo "[]"
         return
     fi
-    _LRE_EVENT="$event" _LRE_REG="$REGISTRY" python3 - << 'PYEOF' 2>/dev/null || echo "[]"
+    # WP-529 (continuation, 19.08): resolved here, inside the existing REGISTRY
+    # existence check — same lazy-placement rationale as the other sites in
+    # this migration (peer-session 2026-08-19-29, codex turn 1). No
+    # bare-python3 fallback: the resolver's own first candidate is already
+    # bare `python3` from PATH.
+    local _resolved_python3
+    _resolved_python3=$("$HOME/IWE/scripts/lib/find-python3.sh" 2>/dev/null) || _resolved_python3=""
+    [ -n "$_resolved_python3" ] || { echo "[]"; return; }
+    _LRE_EVENT="$event" _LRE_REG="$REGISTRY" "$_resolved_python3" - << 'PYEOF' 2>/dev/null || echo "[]"
 import yaml, json, os
 with open(os.environ['_LRE_REG']) as f:
     reg = yaml.safe_load(f)
@@ -737,7 +745,13 @@ check_schema_registration_gate() {
     # is_in_scope: тот же конфиг, что читает обёртка-хук (single-source membership)
     local cfg="${SCHEMA_TRIGGERS_CONFIG:-$HOME/IWE/.claude/hooks/schema-triggers.yaml}"
     local in_scope
-    in_scope=$(_STG_CFG="$cfg" _STG_PATH="$target_path" python3 - <<'PYEOF' 2>/dev/null || echo "error"
+    # WP-529 (continuation, 19.08, cold review — missed in the initial `import
+    # yaml` survey, found by a second full-file grep after codex's turn-1
+    # completeness concern): same lazy-placement + no-fallback rationale as
+    # the other sites in this migration.
+    local _stg_resolved_python3
+    _stg_resolved_python3=$("$HOME/IWE/scripts/lib/find-python3.sh" 2>/dev/null) || _stg_resolved_python3=""
+    in_scope=$([ -n "$_stg_resolved_python3" ] && _STG_CFG="$cfg" _STG_PATH="$target_path" "$_stg_resolved_python3" - <<'PYEOF' 2>/dev/null || echo "error"
 import os, fnmatch
 cfg = os.environ["_STG_CFG"]
 base = os.path.basename(os.environ["_STG_PATH"])
@@ -1221,7 +1235,16 @@ PYEOF
         [ -f "$WARN_LOG" ] && rm -f "$WARN_LOG" && echo "cleared: $WARN_LOG" || echo "nothing to clear"
         ;;
     list-rules)
-        python3 -c "
+        # WP-529 (continuation, 19.08, cold review — same second-pass grep as
+        # is_in_scope above): explicit CLI subcommand, invoked by a human —
+        # fails loudly rather than degrading silently, matching require_python()
+        # in route-task.sh (same resolver contract).
+        _lr_resolved_python3=$("$HOME/IWE/scripts/lib/find-python3.sh" 2>/dev/null) || _lr_resolved_python3=""
+        if [ -z "$_lr_resolved_python3" ]; then
+            echo "ERROR: python3 с библиотекой PyYAML не найден (pip install pyyaml)" >&2
+            exit 1
+        fi
+        "$_lr_resolved_python3" -c "
 import yaml
 with open('$REGISTRY') as f:
     reg = yaml.safe_load(f)
@@ -1414,7 +1437,19 @@ for r in reg.get('rules', []):
 
         # AR.234 dogfood: живость membership-конфига (ADR-IWE-020 §5 — анти-молчаливая-смерть).
         # Проверяет: (1) schema-triggers.yaml читается; (2) fired_event совпадает с triggers AR.234 в реестре.
-        DOGFOOD=$(_REG="$REGISTRY" _CFG="${SCHEMA_TRIGGERS_CONFIG:-$HOME/IWE/.claude/hooks/schema-triggers.yaml}" python3 - <<'PYEOF' 2>/dev/null || echo "FAIL config unreadable"
+        # Cold review 2026-08-19 (Codex, High): this PyYAML consumer was missed
+        # by the initial two-pass `import yaml` grep — a self-test that fails
+        # closed ("FAIL config unreadable") on a yaml-less bare python3 would
+        # falsely report the dogfood check itself as broken, on a machine
+        # where the shared resolver would have found a working interpreter.
+        # No bare-python3 fallback — same rationale as the other sites in
+        # this migration: an unresolved interpreter fails the dogfood check
+        # explicitly, it does not fall through to a bare-python3 retry.
+        DOGFOOD_RESOLVED_PYTHON3=$("$HOME/IWE/scripts/lib/find-python3.sh" 2>/dev/null) || DOGFOOD_RESOLVED_PYTHON3=""
+        if [ -z "$DOGFOOD_RESOLVED_PYTHON3" ]; then
+            DOGFOOD="FAIL no python3 with PyYAML found"
+        else
+            DOGFOOD=$(_REG="$REGISTRY" _CFG="${SCHEMA_TRIGGERS_CONFIG:-$HOME/IWE/.claude/hooks/schema-triggers.yaml}" "$DOGFOOD_RESOLVED_PYTHON3" - <<'PYEOF' 2>/dev/null || echo "FAIL config unreadable"
 import os, yaml
 with open(os.environ["_CFG"]) as f:
     cfg = yaml.safe_load(f) or {}
@@ -1431,6 +1466,7 @@ if fired not in ar234.get("triggers", []):
 print("PASS")
 PYEOF
 )
+        fi
         if [ "$DOGFOOD" = "PASS" ]; then
             echo "PASS Test 40: dogfood — schema-triggers.yaml жив, fired_event совпадает с AR.234.triggers"
             PASS=$((PASS+1))

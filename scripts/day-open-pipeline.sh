@@ -48,6 +48,7 @@ echo "  snapshot refresh pid=$SNAPSHOT_PID (background, non-blocking)"
 # --- CLI args ---
 FORCE=false
 PROBE=false
+SCAFFOLD_ONLY=false
 DATE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -56,6 +57,12 @@ while [[ $# -gt 0 ]]; do
     # writes to a "(probe)" suffixed file (never the real DayPlan), skips commit/push/
     # archive-move/TG. Implies --force (guards are about real-file state, irrelevant here).
     --probe)         PROBE=true; FORCE=true; shift ;;
+    # --scaffold-only (issue #434): the deterministic skeleton (step 3) needs
+    # no LLM Proxy at all — only step 4 (LLM Fill) does. Before this flag,
+    # an unreachable/unprovisioned proxy made step 2's healthcheck abort the
+    # whole run, so an install without a proxy could never get even the
+    # skeleton. Skips steps 2 and 4; still runs 1, 3, 4.2-4.6, 5, 6.
+    --scaffold-only) SCAFFOLD_ONLY=true; shift ;;
     --date|-d)       DATE="$2"; shift 2 ;;
     *)               DATE="$1"; shift ;;
   esac
@@ -107,11 +114,19 @@ ledger_ref_has_digest_for_date() {
   local target="$2"
   local allow_legacy="$3"
   local ref content
+  # WP-529 (continuation, 19.08): resolved once per function call, not at
+  # script top-level — this function only runs on the checks-runner path, and
+  # a script-wide resolve would run PyYAML detection even for invocations
+  # that never reach it. No bare-python3 fallback: the resolver's own first
+  # candidate is already bare `python3` from PATH.
+  local _resolved_python3
+  _resolved_python3=$("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh" 2>/dev/null) || _resolved_python3=""
+  [ -n "$_resolved_python3" ] || return 1
 
   for ref in HEAD origin/main; do
     content=$(cd "$DS_STRATEGY" && git show "$ref:$ledger_rel" 2>/dev/null) || content=""
     [ -n "$content" ] || continue
-    if printf '%s' "$content" | python3 -c '
+    if printf '%s' "$content" | "$_resolved_python3" -c '
 import sys
 
 import yaml
@@ -565,6 +580,9 @@ done
 # ============================================
 # 2. Ensure LLM Proxy available
 # ============================================
+# issue #434: skipped entirely under --scaffold-only — only step 4 (LLM Fill)
+# below actually needs the proxy; the deterministic scaffold (step 3) does not.
+if [ "$SCAFFOLD_ONLY" != "true" ]; then
 echo "=== 2. LLM Proxy healthcheck ==="
 PROXY_HEALTH=$(curl -s "${LLM_PROXY_URL}/v1/health" 2>/dev/null | grep -q "ok" && echo "ok" || echo "fail")
 if [ "$PROXY_HEALTH" != "ok" ]; then
@@ -660,6 +678,9 @@ if [ "$AUTH_CODE" != "200" ]; then
 else
   echo "  Proxy authorized probe OK"
 fi
+else
+  echo "=== 2. LLM Proxy healthcheck — SKIPPED (--scaffold-only) ==="
+fi
 
 # ============================================
 # 3. Scaffold
@@ -725,6 +746,7 @@ echo "  Scaffold OK: $DAYPLAN_PATH"
 # ============================================
 # 4. LLM Fill (per-section)
 # ============================================
+if [ "$SCAFFOLD_ONLY" != "true" ]; then
 echo "=== 4. LLM Fill ==="
 # Fill stderr is duplicated into a per-day file next to the night-cycle logs: on
 # the morning path (scheduler → strategist → this script) the per-chunk failure
@@ -737,18 +759,32 @@ fi
 mkdir -p "$(dirname "$DAY_OPEN_LOG")"
 FILL_ERR_TMP=$(mktemp)
 FILL_EXIT=0
-python3 "$DS_STRATEGY/scripts/day-open-llm-fill.py" \
-  --scaffold "$DAYPLAN_PATH" \
-  --weekplan "$WEEKPLAN_PATH" \
-  --wp-registry "$WP_REGISTRY" \
-  --wp-dir "$DS_STRATEGY/inbox" \
-  --cp-profile "$CP_PROFILE" \
-  --calendar "$CALENDAR_OUT" \
-  --fleeting-notes "$DS_STRATEGY/inbox/fleeting-notes.md" \
-  --priorities "$DS_STRATEGY/current/priorities.yaml" \
-  --out "$DAYPLAN_PATH" \
-  --proxy-url "$LLM_PROXY_URL" \
-  --proxy-secret "$LLM_PROXY_SECRET" 2> "$FILL_ERR_TMP" || FILL_EXIT=$?
+# WP-529 (continuation, 19.08): day-open-llm-fill.py imports yaml — resolved
+# here via the F6 shared resolver instead of bare `python3`, same class of
+# defect as route-task.sh (Evgenii's finding #5): bare python3 can be a
+# different, yaml-less interpreter than the resolver would find. Unlike the
+# earlier best-effort skip sites in this migration, this call IS the pipeline
+# stage's core work — a missing interpreter has to surface through the
+# existing FILL_EXIT!=0 error path below (Telegram + log diagnostics), not a
+# silent skip.
+_RESOLVED_PYTHON3=$("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh" 2>/dev/null) || _RESOLVED_PYTHON3=""
+if [ -z "$_RESOLVED_PYTHON3" ]; then
+  echo "[ERROR] no python3 with PyYAML found (checked PATH and the resolver's standard candidate list, see scripts/lib/find-python3.sh)" > "$FILL_ERR_TMP"
+  FILL_EXIT=1
+else
+  "$_RESOLVED_PYTHON3" "$DS_STRATEGY/scripts/day-open-llm-fill.py" \
+    --scaffold "$DAYPLAN_PATH" \
+    --weekplan "$WEEKPLAN_PATH" \
+    --wp-registry "$WP_REGISTRY" \
+    --wp-dir "$DS_STRATEGY/inbox" \
+    --cp-profile "$CP_PROFILE" \
+    --calendar "$CALENDAR_OUT" \
+    --fleeting-notes "$DS_STRATEGY/inbox/fleeting-notes.md" \
+    --priorities "$DS_STRATEGY/current/priorities.yaml" \
+    --out "$DAYPLAN_PATH" \
+    --proxy-url "$LLM_PROXY_URL" \
+    --proxy-secret "$LLM_PROXY_SECRET" 2> "$FILL_ERR_TMP" || FILL_EXIT=$?
+fi
 cat "$FILL_ERR_TMP" >&2
 { echo "=== LLM Fill $(date '+%H:%M:%S') exit=$FILL_EXIT ==="; cat "$FILL_ERR_TMP"; } >> "$DAY_OPEN_LOG"
 if [ "$FILL_EXIT" -eq 2 ]; then
@@ -767,6 +803,9 @@ $FILL_ERRS"
 fi
 rm -f "$FILL_ERR_TMP"
 echo "  LLM Fill OK"
+else
+  echo "=== 4. LLM Fill — SKIPPED (--scaffold-only) ==="
+fi
 
 # ============================================
 # 4.2. Bottleneck patch (deterministic, AFTER LLM Fill — WP-484, moved 2026-07-14)

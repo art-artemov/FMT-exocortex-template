@@ -38,7 +38,10 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
+try:
+    import yaml
+except ImportError:
+    sys.exit("pyyaml не найден. Установите: pip3 install --user pyyaml")
 
 # Строка таблицы РП: `| 1 | Название | Бюджет | Статус | ... |` — берём
 # первую числовую ячейку (номер РП) и ячейку под заголовком «Статус».
@@ -106,8 +109,16 @@ def normalize_status(raw: str) -> str:
     # plan while explicitly saying "заблокирован" to match `status: blocked`.
     # Treating the marker as authoritative would invent a drift where the
     # sources agree. A bare ⏸ remains the distinct `paused` state below.
+    #
+    # issue #471: "text wins" must not reach into the free-form explanation
+    # after the leading marker — a status word appearing there describes a
+    # sub-event ("...инстанс W33 закрыт 11.08"), not the card's own state.
+    # Only the declaring part of the cell, before the first explanation
+    # separator, is searched; the emoji fallback below still covers the
+    # explanation itself if nothing declarative comes before it.
+    lead_segment = re.split(r"[.,:—-]", cleaned, maxsplit=1)[0]
     for status, pattern in _TEXT_STATUS_PATTERNS:
-        if pattern.search(cleaned):
+        if pattern.search(lead_segment):
             return status
     for emoji, status in _EMOJI_TO_STATUS.items():
         if emoji in cleaned:

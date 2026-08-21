@@ -26,6 +26,7 @@ input, nothing written.
 
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -42,6 +43,92 @@ def union_list(user_items, template_items):
     return user_items + added, len(added), deduped
 
 
+# issue #469: the template moved hook commands from a relative path
+# (".claude/hooks/X.sh") to "$CLAUDE_PROJECT_DIR/.claude/hooks/X.sh" so they
+# resolve correctly from subagents/worktrees/MCP contexts. A plain canonical()
+# comparison treats the old and new form of the same hook as two different
+# entries, so every hook installed before that switch got duplicated on merge.
+_PROJECT_DIR_PREFIX = re.compile(r"^\$\{?CLAUDE_PROJECT_DIR\}?/")
+# A matcher is only compared as a set of OR'd alternatives when it is a flat
+# list of simple tokens — no groups/anchors/escapes, where splitting on "|"
+# could silently change meaning (e.g. "(foo|bar)-baz", "foo\|bar" as a literal
+# pipe). Any matcher outside this shape is left alone: kept as a duplicate
+# entry with an explicit conflict instead of a guessed merge.
+_SIMPLE_OR_MATCHER = re.compile(r"^[A-Za-z0-9_.*]+(\|[A-Za-z0-9_.*]+)*$")
+
+
+def _normalize_command(command):
+    return _PROJECT_DIR_PREFIX.sub("", command.strip()) if isinstance(command, str) else command
+
+
+def _hook_commands_key(entry):
+    """Identity for dedup: the entry's own commands, path-prefix normalized."""
+    inner = entry.get("hooks") if isinstance(entry, dict) else None
+    if not isinstance(inner, list):
+        return canonical(entry)
+    commands = []
+    for hook in inner:
+        if isinstance(hook, dict) and hook.get("type") == "command" and isinstance(hook.get("command"), str):
+            commands.append(_normalize_command(hook["command"]))
+        else:
+            commands.append(canonical(hook))
+    return tuple(sorted(commands))
+
+
+def _matcher_tokens(matcher):
+    if not isinstance(matcher, str) or not _SIMPLE_OR_MATCHER.match(matcher):
+        return None
+    return set(matcher.split("|"))
+
+
+def _reconcile_matcher(merged, idx, template_entry, event, report):
+    """Same command(s) already present under `merged[idx]` — decide whether
+    the template's entry is a true duplicate, a wider matcher to adopt, or
+    a genuine conflict that must keep both entries."""
+    user_entry = merged[idx]
+    user_matcher = user_entry.get("matcher") if isinstance(user_entry, dict) else None
+    template_matcher = template_entry.get("matcher") if isinstance(template_entry, dict) else None
+    if canonical(user_matcher) == canonical(template_matcher):
+        return "deduped"
+    user_tokens = _matcher_tokens(user_matcher)
+    template_tokens = _matcher_tokens(template_matcher)
+    if user_tokens is not None and template_tokens is not None:
+        if template_tokens <= user_tokens:
+            return "deduped"
+        if user_tokens <= template_tokens:
+            merged[idx] = template_entry  # adopt the wider matcher
+            return "deduped"
+    report["conflicts"].append(
+        f"hooks.{event} (same script, different matcher: {user_matcher!r} vs {template_matcher!r})"
+    )
+    return "conflict"
+
+
+def merge_hook_entries(user_entries, template_entries, report, event):
+    merged = list(user_entries)
+    by_key = {}
+    for idx, entry in enumerate(merged):
+        by_key.setdefault(_hook_commands_key(entry), []).append(idx)
+
+    added = deduped = 0
+    for template_entry in template_entries:
+        key = _hook_commands_key(template_entry)
+        existing = by_key.get(key)
+        if not existing:
+            by_key.setdefault(key, []).append(len(merged))
+            merged.append(template_entry)
+            added += 1
+            continue
+        outcome = _reconcile_matcher(merged, existing[0], template_entry, event, report)
+        if outcome == "deduped":
+            deduped += 1
+        else:
+            by_key[key].append(len(merged))
+            merged.append(template_entry)
+            added += 1
+    return merged, added, deduped
+
+
 def merge_hooks(user_hooks, template_hooks, report):
     merged = dict(user_hooks)
     for event, template_entries in template_hooks.items():
@@ -52,7 +139,7 @@ def merge_hooks(user_hooks, template_hooks, report):
         if not isinstance(user_entries, list):
             report["conflicts"].append(f"hooks.{event}")
             continue
-        merged[event], added, deduped = union_list(user_entries, template_entries)
+        merged[event], added, deduped = merge_hook_entries(user_entries, template_entries, report, event)
         report["hooks_added_from_template"] += added
         report["hooks_deduped"] += deduped
     return merged

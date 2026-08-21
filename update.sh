@@ -16,6 +16,7 @@ set -e
 EXIT_OK=0
 EXIT_USAGE=1
 EXIT_NETWORK=2
+EXIT_RUNTIME=3   # build-runtime.sh failed — transaction left open (WP-529 F6)
 EXIT_CONFLICT=49
 EXIT_GENERAL=1
 
@@ -231,7 +232,7 @@ is_migrated_platform_memory_path() {
         memory/protocol-open.md|memory/protocol-work.md|memory/protocol-close.md|memory/protocol-month-close.md|\
         memory/agent-architecture-framework.md|memory/agent-vendor-connect-pattern.md|memory/checklists.md|\
         memory/dry-run-contract.md|memory/feedback_response_clarity_for_pilot.md|memory/hooks-design.md|\
-        memory/navigation.md|memory/reference/agent-core.md|memory/repo-type-rules.md|memory/roles.md|\
+        memory/navigation.md|memory/reference/agent-core.md|memory/repo-type-rules.md|\
         memory/r-questionnaire.md|memory/t-checklist.md|memory/templates-dayplan.md) return 0 ;;
         *) return 1 ;;
     esac
@@ -524,6 +525,41 @@ RULES_BACKUP_RUN=""
 RULES_SAFE_TO_UPDATE="|"
 UPDATE_INCOMPLETE_MARKER="$SCRIPT_DIR/.update-incomplete"
 UPDATE_TRANSACTION_STARTED=false
+
+# WP-529 F6 (peer-session 2026-08-19-01, Evgenii post-update defect #5):
+# build-runtime is part of the update transaction. Its failure used to be
+# fully swallowed — the status flowed through `| sed`, so even the old warning
+# branch checked sed's exit code, not build-runtime's — and the TOTAL_CHANGES=0
+# recovery branch never invoked it at all. Contract now: failure keeps
+# .update-incomplete, prints remediation and exits EXIT_RUNTIME; rerunning
+# update.sh after fixing the cause converges (same contract as issue #459).
+run_build_runtime_or_die() {
+    [ -f "$SCRIPT_DIR/setup/build-runtime.sh" ] || return 0
+    echo ""
+    echo "Generated runtime (.iwe-runtime/)..."
+    local brt_out brt_status
+    if brt_out=$(bash "$SCRIPT_DIR/setup/build-runtime.sh" \
+        --workspace "$WORKSPACE_DIR" \
+        --env-file "${WORKSPACE_DIR}/.exocortex.env" \
+        --quiet 2>&1); then
+        brt_status=0
+    else
+        brt_status=$?
+    fi
+    [ -n "$brt_out" ] && printf '%s\n' "$brt_out" | sed 's/^/  /'
+    if [ "$brt_status" -ne 0 ]; then
+        # Cold review 2026-08-19 (High): the marker line must not lie — on a
+        # no-op run no transaction was opened and there is no marker to keep.
+        if [ -f "$UPDATE_INCOMPLETE_MARKER" ]; then
+            echo "✗ build-runtime.sh завершился с ошибкой (код $brt_status). Обновление НЕ завершено: маркер .update-incomplete сохранён." >&2
+        else
+            echo "✗ build-runtime.sh завершился с ошибкой (код $brt_status)." >&2
+        fi
+        echo "  Проверьте .exocortex.env (значения placeholders) и повторите: bash $SCRIPT_DIR/update.sh." >&2
+        echo "  Если .exocortex.env ещё не создавался — сначала: bash $SCRIPT_DIR/setup.sh" >&2
+        exit "$EXIT_RUNTIME"
+    fi
+}
 
 begin_update_transaction() {
     if [ ! -f "$UPDATE_INCOMPLETE_MARKER" ]; then
@@ -978,19 +1014,26 @@ CLAUDE_CONFLICT_FILES=()
 # doesn't tell the pilot to look for markers that were never written.
 CLAUDE_BASE_MISSING_FILES=()
 
-# Count total files for progress display
-TOTAL_FILES="?"
-if py_available; then
-    TOTAL_FILES=$($PY_BIN -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-print(len(data.get('files', [])))
-" "$MANIFEST" 2>/dev/null || echo "?")
-fi
-DOWNLOAD_IDX=0
+# WP-546 (peer-session 2026-08-20-11, WP-546 Ф2 consensus with Codex): the
+# manifest loop used to run one `curl` per file, sequentially — 632 files at
+# ~0.65s/file (measured) means ~7min on an ordinary network, and users on
+# slower/higher-latency connections reported 40+ minutes. Split into two
+# phases: (1) a network-free pass builds a download worklist (three parallel
+# indexed arrays, not `declare -A` — that needs bash 4.0+, but this script's
+# #!/bin/bash shebang resolves to the system bash on macOS, which is 3.2;
+# same reasoning as download_batch's positional-args choice below), skipping
+# protected files and files whose local sha256 already matches the manifest
+# (no network call for either); (2) a single `curl --parallel` call downloads
+# the worklist, followed by one retry pass (network failures AND integrity
+# failures — GitHub's raw CDN edges can briefly disagree after a fresh push,
+# so a retry can succeed where the first attempt didn't). Per-file
+# classification (NEW/UPDATED/UNCHANGED, the issue #254 merge-base detector)
+# runs unchanged after download, just reading from $TMPDIR_UPDATE/files/
+# instead of a variable populated file-by-file.
+DOWNLOAD_QUEUE=()
+DOWNLOAD_DESCS=()
+DOWNLOAD_HASHES=()
 
-# Parse manifest: extract path and desc for each file entry
 while IFS='|' read -r fpath fdesc expected_hash; do
     [ -z "$fpath" ] && continue
     # issue #402 (defect 3): native Windows Python prints \r\n even inside a
@@ -1006,30 +1049,144 @@ while IFS='|' read -r fpath fdesc expected_hash; do
         UNCHANGED=$((UNCHANGED + 1))
         continue
     fi
-    DOWNLOAD_IDX=$((DOWNLOAD_IDX + 1))
-    printf "  (%s/%s) %s\r" "$DOWNLOAD_IDX" "$TOTAL_FILES" "$fpath"
+    # skip-if-hash-matches (WP-546 Ф2): a manifest sha256 that already matches
+    # the local file needs no network round-trip at all — this is the other
+    # half of the speedup alongside parallel download, since a typical update
+    # leaves most files unchanged.
+    if [ -n "$expected_hash" ] && [ -f "$SCRIPT_DIR/$fpath" ] && [ "$(hash_file "$SCRIPT_DIR/$fpath")" = "$expected_hash" ]; then
+        UNCHANGED=$((UNCHANGED + 1))
+        continue
+    fi
+    DOWNLOAD_QUEUE+=("$fpath")
+    DOWNLOAD_DESCS+=("$fdesc")
+    DOWNLOAD_HASHES+=("$expected_hash")
+done < <(
+    # Parse JSON: extract path|desc|sha256 lines. Path via argv (issue #402,
+    # defect 2), not interpolated into the -c string — see FILES_MATCH above.
+    if py_available; then
+        $PY_BIN -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+for entry in data.get('files', []):
+    print(entry['path'] + '|' + entry.get('desc', '') + '|' + entry.get('sha256', ''))
+" "$MANIFEST" 2>/dev/null
+    else
+        # Fallback: basic grep parsing if no working python interpreter.
+        # No sha256 in this path — integrity check below is skipped (already
+        # documented via SKIPPED_DOWNLOAD, not silently trusted).
+        grep '"path"' "$MANIFEST" | while read -r line; do
+            fpath=$(echo "$line" | sed 's/.*"path"[[:space:]]*:[[:space:]]*"//;s/".*//')
+            echo "$fpath|"
+        done
+    fi
+)
 
-    # Download remote file
+# download_batch FPATH... — one curl --parallel call for the given fpaths
+# (positional args, not a nameref: `local -n` needs bash 4.3+, but this
+# script's #!/bin/bash shebang resolves to the system bash on macOS, which is
+# 3.2 — a nameref there fails "local: -n: invalid option" and silently no-ops
+# the whole download instead of erroring, since `local`'s exit status doesn't
+# trip `set -e`. Found live testing this exact function). Writes each file to
+# $TMPDIR_UPDATE/files/$fpath. -f makes curl treat an HTTP error page (404)
+# as a failure instead of writing it to disk as if it were the real file —
+# without it a missing manifest entry silently "downloads" successfully.
+# --remove-on-error then deletes that failed transfer's partial/error output
+# so a plain `[ -s ... ]` elsewhere is a reliable "did this file actually
+# arrive" check. `|| true`: a batch failing outright (e.g. every URL in it
+# unreachable) must not trip `set -e` and abort the whole update — the
+# per-file presence check right after this call is what actually decides
+# success per file, same as the old code's per-file `if curl ...` (Ф2
+# peer-session review; all found live testing this exact function).
+download_batch() {
+    [ $# -eq 0 ] && return 0
+    local cfg p dst
+    cfg=$(mktemp)
+    for p in "$@"; do
+        dst="$TMPDIR_UPDATE/files/$p"
+        mkdir -p "$(dirname "$dst")"
+        printf 'url = "%s/%s"\noutput = "%s"\n' "$RAW_BASE" "$p" "$dst" >> "$cfg"
+    done
+    # shellcheck disable=SC2086  # CURL_BASE_OPTS/_CURL_SSL_OPT intentionally unquoted (multi-token flags)
+    curl $CURL_BASE_OPTS $_CURL_SSL_OPT -f --remove-on-error --parallel --parallel-max 8 -K "$cfg" 2>/dev/null || true
+    rm -f "$cfg"
+}
+
+# verify_batch_integrity — removes any downloaded file whose sha256 doesn't
+# match its manifest hash, so it reads as "missing" to whatever retry logic
+# runs next. Index-based (not a linear scan for each fpath against
+# DOWNLOAD_QUEUE — that's O(n²) over a 600+ file manifest and was called
+# twice): DOWNLOAD_QUEUE/DOWNLOAD_DESCS/DOWNLOAD_HASHES are parallel arrays,
+# so the caller's index into DOWNLOAD_QUEUE is also the index into
+# DOWNLOAD_HASHES, no lookup needed.
+verify_batch_integrity() {
+    local i fpath expected_hash remote_file
+    for i in "${!DOWNLOAD_QUEUE[@]}"; do
+        fpath="${DOWNLOAD_QUEUE[$i]}"
+        expected_hash="${DOWNLOAD_HASHES[$i]}"
+        [ -n "$expected_hash" ] || continue
+        remote_file="$TMPDIR_UPDATE/files/$fpath"
+        [ -s "$remote_file" ] || continue
+        if [ "$(hash_file "$remote_file")" != "$expected_hash" ]; then
+            # A retry can still recover this file from a different CDN edge
+            # (see the retry-pass comment below), so this isn't necessarily
+            # its final fate — but the specific reason (integrity, not a
+            # network failure) matters for diagnosis and was silently lost
+            # when this check moved out of the old per-file loop, which did
+            # print it (setup/test-update-issue-226.sh Scenario C caught the
+            # regression).
+            echo "  ⚠ $fpath: sha256 не совпадает с манифестом" >&2
+            rm -f "$remote_file"
+        fi
+    done
+}
+
+if [ ${#DOWNLOAD_QUEUE[@]} -gt 0 ]; then
+    printf "  Скачиваю %s файлов (до 8 параллельно)...\n" "${#DOWNLOAD_QUEUE[@]}"
+    download_batch "${DOWNLOAD_QUEUE[@]}"
+
+    # Integrity check BEFORE building the retry queue (Ф2 peer-session
+    # review: the original version checked integrity only in the final loop,
+    # after retry — so a hash mismatch could never actually get retried
+    # despite the comment below promising it).
+    verify_batch_integrity
+
+    # Retry pass: anything not present now — network failure on the first
+    # attempt, or an integrity mismatch just removed above — gets one more
+    # attempt. Integrity failures are retried too (not just network
+    # failures): a stale CDN edge can disagree with the manifest briefly
+    # after a fresh push, and a second attempt can land on a different edge
+    # that already has the current content.
+    RETRY_QUEUE=()
+    for fpath in "${DOWNLOAD_QUEUE[@]}"; do
+        [ -s "$TMPDIR_UPDATE/files/$fpath" ] || RETRY_QUEUE+=("$fpath")
+    done
+    if [ ${#RETRY_QUEUE[@]} -gt 0 ]; then
+        download_batch "${RETRY_QUEUE[@]}"
+        verify_batch_integrity
+    fi
+fi
+
+DOWNLOAD_IDX=0
+for _dq_i in "${!DOWNLOAD_QUEUE[@]}"; do
+    fpath="${DOWNLOAD_QUEUE[$_dq_i]}"
+    fdesc="${DOWNLOAD_DESCS[$_dq_i]}"
+    DOWNLOAD_IDX=$((DOWNLOAD_IDX + 1))
+    printf "  (%s/%s) %s\r" "$DOWNLOAD_IDX" "${#DOWNLOAD_QUEUE[@]}" "$fpath"
+
     REMOTE_FILE="$TMPDIR_UPDATE/files/$fpath"
-    mkdir -p "$(dirname "$REMOTE_FILE")"
 
     # issue #350: a failed download used to `continue` silently — the file landed in
     # no list at all, not even the UNCHANGED counter, so the preview said nothing about
     # it while a later run (network back) applied it. "Could not check" is not "up to
-    # date"; it now gets its own list and taints the verdict below.
-    if ! curl $CURL_BASE_OPTS $_CURL_SSL_OPT -sSfL "$RAW_BASE/$fpath" -o "$REMOTE_FILE" 2>/dev/null; then
+    # date"; it now gets its own list and taints the verdict below. Integrity
+    # failures already removed the file above (both passes), so a missing
+    # file here covers both causes — the category split (network vs.
+    # integrity) that the old per-file loop reported is no longer knowable
+    # after two retry rounds have run, so both land in the same list.
+    if [ ! -s "$REMOTE_FILE" ]; then
         SKIPPED_DOWNLOAD+=("$fpath")
         continue
-    fi
-
-    if [ -n "$expected_hash" ]; then
-        REMOTE_HASH=$(hash_file "$REMOTE_FILE")
-        if [ "$REMOTE_HASH" != "$expected_hash" ]; then
-            echo "  ⚠ $fpath: sha256 не совпадает с манифестом" >&2
-            SKIPPED_DOWNLOAD+=("$fpath (ошибка целостности)")
-            rm -f "$REMOTE_FILE"
-            continue
-        fi
     fi
 
     if [ ! -f "$SCRIPT_DIR/$fpath" ]; then
@@ -1060,27 +1217,7 @@ while IFS='|' read -r fpath fdesc expected_hash; do
             UNCHANGED=$((UNCHANGED + 1))
         fi
     fi
-done < <(
-    # Parse JSON: extract path|desc|sha256 lines. Path via argv (issue #402,
-    # defect 2), not interpolated into the -c string — see FILES_MATCH above.
-    if py_available; then
-        $PY_BIN -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-for entry in data.get('files', []):
-    print(entry['path'] + '|' + entry.get('desc', '') + '|' + entry.get('sha256', ''))
-" "$MANIFEST" 2>/dev/null
-    else
-        # Fallback: basic grep parsing if no working python interpreter.
-        # No sha256 in this path — integrity check below is skipped (already
-        # documented via SKIPPED_DOWNLOAD, not silently trusted).
-        grep '"path"' "$MANIFEST" | while read -r line; do
-            fpath=$(echo "$line" | sed 's/.*"path"[[:space:]]*:[[:space:]]*"//;s/".*//')
-            echo "$fpath|"
-        done
-    fi
-)
+done
 printf "\n"
 
 # === Step 2b: Deprecated files (устаревшие L1-файлы к удалению) ===
@@ -1159,7 +1296,18 @@ if [ "$TOTAL_CHANGES" -eq 0 ] && [ ${#SKIPPED_DOWNLOAD[@]} -gt 0 ]; then
     if $CHECK_ONLY; then
         assert_self_unmutated
     else
+        # Evgenii Red Team review 2026-08-19 (defect #3 continued, found on the
+        # sibling branch below): the TOTAL_CHANGES=0 branch two if-blocks down
+        # got the transaction/build-runtime fail-closed contract in this same
+        # F6 commit — this branch, with the identical TOTAL_CHANGES=0 condition
+        # plus a download hiccup, was left with the pre-fix behavior: repair_pass
+        # writes to disk with no open transaction, so a build-runtime failure
+        # here would exit EXIT_RUNTIME with no .update-incomplete marker at all.
+        # Same three calls, same order, as the branch below.
+        begin_update_transaction
         repair_pass
+        run_build_runtime_or_die
+        finish_update_transaction
         report_settings_merge_drift
     fi
     exit 0
@@ -1179,6 +1327,15 @@ if [ "$TOTAL_CHANGES" -eq 0 ]; then
         echo "  ℹ Режим --check: repair-pass пропущен (может чинить workspace, запусти без --check)."
         assert_self_unmutated
     else
+        # Evgenii Red Team review 2026-08-19 (defect #3): repair_pass() below
+        # writes files to disk and run_build_runtime_or_die() can fail — but
+        # this branch never called begin_update_transaction(), so a build
+        # failure here exited EXIT_RUNTIME with NO marker on disk at all.
+        # Same fail-closed contract this F6 commit already gives Step 6d
+        # (message text: "no transaction was opened" was true only because
+        # nothing ever opened one here — the actual bug was the missing open,
+        # not the message).
+        begin_update_transaction
         repair_pass
         # issue #279: TOTAL_CHANGES=0 сравнивает только содержимое файлов, не
         # версию в update-manifest.json — без этого локальный манифест навсегда
@@ -1192,8 +1349,17 @@ if [ "$TOTAL_CHANGES" -eq 0 ]; then
                     && echo "  • update-manifest.json: версия синхронизирована (v$UPSTREAM_VERSION)"
             fi
         fi
+        # WP-529 F6 (Evgenii defect #5, 18.08): repair_pass may have refreshed
+        # workspace copies, and this branch used to close the transaction
+        # without ever rebuilding .iwe-runtime/ — recovery ended with a removed
+        # marker but stale substitutions. Same fail-closed contract as Step 6d.
+        run_build_runtime_or_die
+        # Cold review 2026-08-19 (Critical): finish must stay OUT of --check —
+        # the preview used to clear a live .update-incomplete from a previous
+        # failed run without repair or build-runtime, disarming the contract
+        # this marker now carries (runtime freshness + role-runner guard).
+        finish_update_transaction
     fi
-    finish_update_transaction
     # Флаги stage B осмысленны и когда обновлений нет: workspace-копии могли
     # отстать от уже актуального шаблона (repair_pass выше их классифицировал).
     apply_settings_merge_if_requested
@@ -1980,15 +2146,7 @@ fi
 # из-за чего install.sh брал плисты из устаревшего .iwe-runtime/ или legacy FMT с placeholder'ами.
 # Правильный порядок: сначала пересобрать .iwe-runtime/ из актуального FMT + .exocortex.env,
 # потом install.sh каждой роли (чтение из свежего runtime).
-if [ -x "$SCRIPT_DIR/setup/build-runtime.sh" ] || [ -f "$SCRIPT_DIR/setup/build-runtime.sh" ]; then
-    echo ""
-    echo "Generated runtime (.iwe-runtime/)..."
-    bash "$SCRIPT_DIR/setup/build-runtime.sh" \
-        --workspace "$WORKSPACE_DIR" \
-        --env-file "${WORKSPACE_DIR}/.exocortex.env" \
-        --quiet 2>&1 | sed 's/^/  /' || \
-        echo "  ⚠ build-runtime.sh завершился с ошибкой. Запустите вручную: bash $SCRIPT_DIR/setup/build-runtime.sh"
-fi
+run_build_runtime_or_die
 
 # Reinstall roles if changed (ПОСЛЕ build-runtime — install читает из свежего .iwe-runtime/)
 ROLES_CHANGED=false
@@ -2114,13 +2272,18 @@ echo ""
 echo "Проверка применённых изменений..."
 
 validate_no_install_values_in_applied_additions() {
-    local env_file="$WORKSPACE_DIR/.exocortex.env" key value failed=0 fpath applied_additions i
+    local env_file="$WORKSPACE_DIR/.exocortex.env"
+    local key value fpath applied_additions added_line historical_lines upstream_ref
+    local i failed=0
     local -a install_keys=() install_values=()
+
     [ -f "$env_file" ] || return 0
     [ "${#APPLIED_PATHS[@]}" -gt 0 ] || return 0
 
     for key in WORKSPACE_DIR HOME_DIR CLAUDE_PATH IWE_TEMPLATE IWE_RUNTIME; do
-        value=$(grep -E "^${key}=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | sed -E 's/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
+        value=$(grep -E "^${key}=" "$env_file" 2>/dev/null |
+            head -1 | cut -d= -f2- |
+            sed -E 's/^"//; s/"$//; s/^'"'"'//; s/'"'"'$//')
         [ -n "$value" ] || continue
         # issue #397: guard ищет значение как ПОДСТРОКУ во всех добавленных строках.
         # Для путей (WORKSPACE_DIR и т.п.) это осмысленно — случайное совпадение с
@@ -2137,32 +2300,64 @@ validate_no_install_values_in_applied_additions() {
         install_values+=("$value")
     done
 
-    # Guard only files handled by this update. Tracked paths use working-tree
-    # additions; a newly delivered untracked file is scanned in full. No staging is
-    # needed: update.sh must not mutate the user's index or create local commits (#386).
+    # issue #459: guard считал совпадение по подстроке уже утечкой, хотя
+    # substitute_claude_placeholders() никогда не пишет в $SCRIPT_DIR (только
+    # во временную workspace-копию CLAUDE.md) — совпадение здесь могло быть
+    # текстом, который апстрим и раньше приносил под другим значением, не
+    # реальной подстановкой личного пути. Полностью убирать guard нельзя (он
+    # защищает от любой утечки install-path, не только через подстановку —
+    # например, случайно скопированный фрагмент личного конфига в коммит
+    # шаблона); вместо этого сужаем срабатывание: install-значение блокирует
+    # только если добавленная строка ЦЕЛИКОМ (не подстрока) не встречалась
+    # раньше ни в одной прошлой upstream-версии этого же файла.
+    upstream_ref=$(git -C "$SCRIPT_DIR" rev-parse --verify --quiet '@{upstream}' 2>/dev/null || true)
+
     for fpath in "${APPLIED_PATHS[@]}"; do
-        if git -C "$SCRIPT_DIR" ls-files --error-unmatch -- "$fpath" >/dev/null 2>&1; then
-            applied_additions=$(git -C "$SCRIPT_DIR" diff --no-color --no-ext-diff --no-textconv --unified=0 -- "$fpath" |
-                awk '
-                    /^diff --git / { in_hunk=0; next }
-                    /^@@ / { in_hunk=1; next }
-                    in_hunk && /^\+/ { print substr($0, 2) }
-                ')
-        elif [ -f "$SCRIPT_DIR/$fpath" ]; then
+        # Полное текущее содержимое файла на диске, не git-diff working
+        # tree против HEAD. Cold-context review нашёл живую дыру: если файл
+        # уже ЗАКОММИЧЕН до этого прогона (второй прогон update.sh после
+        # ручного коммита, пре-commit хук и т.п.) — git diff между working
+        # tree и HEAD пуст для этого файла (разницы нет), applied_additions
+        # становится пустой строкой, "[ -n ... ] || continue" молча
+        # пропускает файл ЦЕЛИКОМ из проверки — реальная утечка проходит
+        # незамеченной. Файл в APPLIED_PATHS означает "этот прогон его
+        # затронул", независимо от git-статуса — сканировать нужно то, что
+        # реально лежит на диске сейчас.
+        if [ -f "$SCRIPT_DIR/$fpath" ]; then
             applied_additions=$(sed -n 'p' "$SCRIPT_DIR/$fpath")
         else
             continue
         fi
         [ -n "$applied_additions" ] || continue
 
-        for i in "${!install_keys[@]}"; do
-            if grep -Fq -- "${install_values[$i]}" <<<"$applied_additions"; then
-                echo "  ✗ install-value ${install_keys[$i]} найден в добавленных строках обновления:" >&2
-                printf '    %s\n' "$fpath" >&2
-                failed=1
-            fi
-        done
+        # Полные строки из всех прошлых версий именно этого файла в upstream.
+        # Нет upstream ref / нет истории — исключения нет, guard fail-closed.
+        historical_lines=""
+        if [ -n "$upstream_ref" ]; then
+            historical_lines=$(git -C "$SCRIPT_DIR" log --follow --format= \
+                --no-ext-diff --no-textconv -p "$upstream_ref" -- "$fpath" |
+                awk '
+                    /^diff --git / { in_hunk=0; next }
+                    /^@@ / { in_hunk=1; next }
+                    in_hunk && /^[+-]/ { print substr($0, 2) }
+                ')
+        fi
+
+        while IFS= read -r added_line || [ -n "$added_line" ]; do
+            for i in "${!install_keys[@]}"; do
+                [[ "$added_line" == *"${install_values[$i]}"* ]] || continue
+
+                # Исключение только для идентичной полной строки, уже
+                # поставлявшейся upstream; совпадение одной подстроки не достаточно.
+                if ! grep -Fqx -- "$added_line" <<<"$historical_lines"; then
+                    echo "  ✗ install-value ${install_keys[$i]} найден в новой строке обновления:" >&2
+                    printf '    %s\n' "$fpath" >&2
+                    failed=1
+                fi
+            done
+        done <<<"$applied_additions"
     done
+
     [ "$failed" -eq 0 ]
 }
 

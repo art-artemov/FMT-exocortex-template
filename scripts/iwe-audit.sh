@@ -534,6 +534,86 @@ for bin in git curl python3; do
 done
 echo ""
 
+echo "### Доступная память"
+echo ""
+# issue #461 (РП-7 Ф76): PreToolUse hook timeouts на живой установке диагностировались
+# как "хук не ответил", хотя замер (4 хука на пути Edit/Write, суммарно ~1,2с при
+# таймауте в десятки секунд) исключил хуки как причину — реальная причина оказалась
+# голоданием по памяти хост-процесса. Проактивная проверка ловит это ДО того, как
+# отказ проявится посреди ритуала, а не только задним числом в тексте ошибки.
+# Capability-based: PSI (/proc/pressure/memory) — Linux cgroup v2 механизм без
+# кроссплатформенного эквивалента (пир-сессия 2026-08-18-08-wp7-f75-f76-smoke-memory,
+# консенсус с Codex) — macOS получает RAM/swap через vm_stat/sysctl без PSI-аналога,
+# не притворный суррогат.
+MEM_WARN_THRESHOLD_PCT=15  # свободно < 15% от total — предупреждение, не жёсткий блок
+case "$(uname)" in
+    Linux)
+        if [ -r /proc/meminfo ]; then
+            MEM_TOTAL_KB=$(awk '/^MemTotal:/{print $2}' /proc/meminfo)
+            MEM_AVAIL_KB=$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)
+            if [ -n "$MEM_TOTAL_KB" ] && [ -n "$MEM_AVAIL_KB" ] && [ "$MEM_TOTAL_KB" -gt 0 ]; then
+                MEM_AVAIL_PCT=$((MEM_AVAIL_KB * 100 / MEM_TOTAL_KB))
+                MEM_TOTAL_GIB=$(awk -v kb="$MEM_TOTAL_KB" 'BEGIN{printf "%.1f", kb/1024/1024}')
+                MEM_AVAIL_GIB=$(awk -v kb="$MEM_AVAIL_KB" 'BEGIN{printf "%.1f", kb/1024/1024}')
+                if [ "$MEM_AVAIL_PCT" -lt "$MEM_WARN_THRESHOLD_PCT" ]; then
+                    echo "⚠️ Свободно ${MEM_AVAIL_GIB} ГиБ из ${MEM_TOTAL_GIB} ГиБ (${MEM_AVAIL_PCT}%) — ниже порога ${MEM_WARN_THRESHOLD_PCT}%. Отказы инструментов записи/чтения с сообщением \`PreToolUse hook did not respond\` при таком уровне памяти — известный класс (issue #461), не обязательно проблема хуков."
+                    UPD_WARN=$((UPD_WARN + 1))
+                else
+                    echo "✅ Свободно ${MEM_AVAIL_GIB} ГиБ из ${MEM_TOTAL_GIB} ГиБ (${MEM_AVAIL_PCT}%)"
+                fi
+            else
+                echo "ℹ️ Не удалось разобрать \`/proc/meminfo\` (MemTotal/MemAvailable)."
+            fi
+            if [ -r /proc/pressure/memory ]; then
+                PSI_SOME=$(awk '/^some/{for(i=1;i<=NF;i++) if ($i ~ /^avg60=/) print $i}' /proc/pressure/memory | cut -d= -f2)
+                if [ -n "$PSI_SOME" ]; then
+                    echo "ℹ️ Memory pressure (PSI avg60, some): ${PSI_SOME}%"
+                fi
+            fi
+        else
+            echo "ℹ️ \`/proc/meminfo\` недоступен — проверка памяти пропущена."
+        fi
+        ;;
+    Darwin)
+        set +e
+        MEM_TOTAL_BYTES=$(sysctl -n hw.memsize 2>/dev/null)
+        VM_STAT_OUT=$(vm_stat 2>/dev/null)
+        set -e
+        if [ -n "$MEM_TOTAL_BYTES" ] && [ "$MEM_TOTAL_BYTES" -gt 0 ] && [ -n "$VM_STAT_OUT" ]; then
+            PAGE_SIZE=$(echo "$VM_STAT_OUT" | head -1 | grep -oE '[0-9]+' | head -1)
+            PAGE_SIZE=${PAGE_SIZE:-4096}
+            PAGES_FREE=$(echo "$VM_STAT_OUT" | awk '/Pages free:/{gsub(/\./,"",$3); print $3}')
+            PAGES_INACTIVE=$(echo "$VM_STAT_OUT" | awk '/Pages inactive:/{gsub(/\./,"",$3); print $3}')
+            if [ -n "$PAGES_FREE" ] && [ -n "$PAGES_INACTIVE" ]; then
+                MEM_AVAIL_BYTES=$(( (PAGES_FREE + PAGES_INACTIVE) * PAGE_SIZE ))
+                MEM_AVAIL_PCT=$((MEM_AVAIL_BYTES * 100 / MEM_TOTAL_BYTES))
+                MEM_TOTAL_GIB=$(awk -v b="$MEM_TOTAL_BYTES" 'BEGIN{printf "%.1f", b/1024/1024/1024}')
+                MEM_AVAIL_GIB=$(awk -v b="$MEM_AVAIL_BYTES" 'BEGIN{printf "%.1f", b/1024/1024/1024}')
+                if [ "$MEM_AVAIL_PCT" -lt "$MEM_WARN_THRESHOLD_PCT" ]; then
+                    echo "⚠️ Свободно+inactive ${MEM_AVAIL_GIB} ГиБ из ${MEM_TOTAL_GIB} ГиБ (${MEM_AVAIL_PCT}%) — ниже порога ${MEM_WARN_THRESHOLD_PCT}%. Отказы инструментов записи/чтения с сообщением \`PreToolUse hook did not respond\` при таком уровне памяти — известный класс (issue #461), не обязательно проблема хуков."
+                    UPD_WARN=$((UPD_WARN + 1))
+                else
+                    echo "✅ Свободно+inactive ${MEM_AVAIL_GIB} ГиБ из ${MEM_TOTAL_GIB} ГиБ (${MEM_AVAIL_PCT}%)"
+                fi
+            else
+                echo "ℹ️ Не удалось разобрать вывод \`vm_stat\` (Pages free/inactive)."
+            fi
+        else
+            echo "ℹ️ \`sysctl hw.memsize\`/\`vm_stat\` недоступны — проверка памяти пропущена."
+        fi
+        set +e
+        SWAP_USED=$(sysctl -n vm.swapusage 2>/dev/null | grep -oE 'used = [0-9.]+[MG]' | grep -oE '[0-9.]+[MG]')
+        set -e
+        if [ -n "$SWAP_USED" ]; then
+            echo "ℹ️ Своп использован: ${SWAP_USED}"
+        fi
+        ;;
+    *)
+        echo "ℹ️ Проверка памяти не реализована для платформы $(uname)."
+        ;;
+esac
+echo ""
+
 echo "### Конфигурация (.exocortex.env)"
 echo ""
 # WP-273: setup.sh ≥0.7.0 сохраняет .exocortex.env в $IWE_ROOT/, не в $HOME/

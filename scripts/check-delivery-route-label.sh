@@ -61,7 +61,8 @@ dump_arrays() {
 }
 
 TMP_BASE_GEN=$(mktemp)
-trap 'rm -f "$TMP_BASE_GEN"' EXIT
+TMP_ARRAY_MAP=$(mktemp)
+trap 'rm -f "$TMP_BASE_GEN" "$TMP_ARRAY_MAP"' EXIT
 
 if ! git -C "$SCRIPT_DIR" show "$BASE:generate-manifest.sh" > "$TMP_BASE_GEN" 2>/dev/null; then
     echo "  ℹ generate-manifest.sh не существовал на base-ревизии — проверка меток пропущена"
@@ -83,10 +84,18 @@ done
 
 # category-id → derived_from_block, from docs/critical-files-map.yaml — a
 # rename in the yaml is picked up automatically, no hardcoded second copy.
-declare -A ARRAY_TO_CATEGORY
-while IFS=$'\t' read -r cat_id array_name; do
-    ARRAY_TO_CATEGORY["$array_name"]="$cat_id"
-done < <(python3 - "$MAP" <<'PY'
+# WP-529 (continuation, 19.08, peer-session 2026-08-19-29 turn 7): resolved
+# via the shared F6 resolver instead of bare python3, same defect class
+# Evgenii found elsewhere. Explicit failure on resolver miss (this file
+# already fails hard on missing MANIFEST/MAP above -- same convention, not a
+# soft skip like day-open-scaffold.sh's best-effort sites).
+RESOLVED_PYTHON3=$("$SCRIPT_DIR/scripts/lib/find-python3.sh" 2>/dev/null) || RESOLVED_PYTHON3=""
+[ -n "$RESOLVED_PYTHON3" ] || { echo "ERROR: python3 с библиотекой PyYAML не найден (pip install pyyaml)"; exit 2; }
+# WP-529 Ф9 (Evgenii 20.08, bash 3.2 finding): было `declare -A` — Bash 3.2
+# (stock macOS /bin/bash) не умеет ассоциативные массивы. CURATED_ARRAYS
+# короткий (7 записей), и лукап идёт только внутри его цикла, не на каждый
+# git-tracked файл — лукап через awk по TSV-файлу вместо hash.
+"$RESOLVED_PYTHON3" - "$MAP" > "$TMP_ARRAY_MAP" <<'PY'
 import re
 import sys
 import yaml
@@ -101,20 +110,27 @@ for cat in data.get("categories", []):
     for name in re.split(r",\s*", val):
         name = name.strip()
         if name:
-            print(f"{cat['id']}\t{name}")
+            print(f"{name}\t{cat['id']}")
 PY
-)
 
 IMPLICATED=()
 for arr in "${CURATED_ARRAYS[@]}"; do
     old_var="OLD_$arr"
     new_var="NEW_$arr"
-    old_ref="${old_var}[@]"
-    new_ref="${new_var}[@]"
-    old_sorted=$(printf '%s\n' "${!old_ref}" | sort)
-    new_sorted=$(printf '%s\n' "${!new_ref}" | sort)
+    # WP-529 Ф9 (found live by this job's own first real run on system
+    # /bin/bash, 20.08): `"${!ref}"` indirect array expansion (ref holding
+    # "VAR[@]") crashed with "unbound variable" under Bash 3.2 — pre-existing
+    # since Ф2, never exercised on real macOS before this CI job started
+    # actually running these two scripts there. `eval` is the traditional,
+    # maximally-portable indirect-array-access idiom (works since Bash 2).
+    # `:-` guard is load-bearing, not defensive fluff: under `set -u`, Bash
+    # 3.2 treats `${empty_arr[@]}` itself as unbound (fixed in Bash 4.4+) —
+    # hit live on `NEW_GITHUB_EXPLICIT_INCLUDE` (empty on this diff range),
+    # second real crash from the same CI run that caught the first.
+    old_sorted=$(eval "printf '%s\n' \"\${${old_var}[@]:-}\"" | sort)
+    new_sorted=$(eval "printf '%s\n' \"\${${new_var}[@]:-}\"" | sort)
     if [ "$old_sorted" != "$new_sorted" ]; then
-        cat_id="${ARRAY_TO_CATEGORY[$arr]:-}"
+        cat_id=$(awk -F'\t' -v k="$arr" '$1==k{print $2; exit}' "$TMP_ARRAY_MAP")
         if [ -z "$cat_id" ]; then
             echo "  ❌ $arr изменился, но не сопоставлен ни одной категории в $MAP — карта разошлась с гейтом" >&2
             exit 1
@@ -129,7 +145,12 @@ done
 # and both map to dev-only-excluded. That is one route decision, not two;
 # dedupe so the same category is not reported/required twice.
 if [ "${#IMPLICATED[@]}" -gt 0 ]; then
-    mapfile -t IMPLICATED < <(printf '%s\n' "${IMPLICATED[@]}" | sort -u)
+    # WP-529 Ф9 (Evgenii 20.08, bash 3.2 finding): mapfile — bash4-only.
+    IMPLICATED_DEDUP=()
+    while IFS= read -r cat_id; do
+        IMPLICATED_DEDUP+=("$cat_id")
+    done < <(printf '%s\n' "${IMPLICATED[@]}" | sort -u)
+    IMPLICATED=("${IMPLICATED_DEDUP[@]}")
 fi
 
 # deprecated_files — manually curated list, not derived from a bash array at

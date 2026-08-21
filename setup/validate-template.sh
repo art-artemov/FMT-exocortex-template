@@ -217,13 +217,19 @@ HARDCODE_SCAN_INCLUDES=(--include="*.md" --include="*.sh" --include="*.json" --i
 # files" в своём --help, но фактически сканировал весь репозиторий).
 # Печатает совпадение-count в stdout, построчные hits — в файл $3.
 hardcode_scan_staged() {
-    local pattern="$1" exclude_re="$2" hits_file="$3"
+    # $4 (optional): regex of file PATHS to skip for this scan only — the
+    # $2 exclude_re filters content lines (no filename in them), so per-file
+    # exceptions cannot be expressed there (WP-529 F6).
+    local pattern="$1" exclude_re="$2" hits_file="$3" skip_files_re="${4:-}"
     local f file_hits count=0
     : > "$hits_file"
     while IFS= read -r f; do
         case "$f" in
             */validate-template.sh|validate-template.sh|*/setup.sh|setup.sh|CHANGELOG.md) continue ;;
         esac
+        if [ -n "$skip_files_re" ] && echo "$f" | grep -qE "$skip_files_re"; then
+            continue
+        fi
         case "$f" in
             *.md|*.sh|*.json|*.plist) ;;
             *) continue ;;
@@ -282,7 +288,10 @@ if [ "$MODE" = "installed" ]; then
     echo "SKIP (installed mode — CLAUDE_PATH может быть /opt/homebrew/...)"
 elif [ "$MODE" = "staged" ]; then
     TMPDIR_CHECK3_HITS_FILE="$(mktemp)"
-    count=$(hardcode_scan_staged '/opt/homebrew' 'README\.md|PLATFORM-COMPAT\.md|validate-template\.yml|/usr/local/bin.*:/opt/homebrew' "$TMPDIR_CHECK3_HITS_FILE")
+    # scripts/lib/find-python3.sh: sanctioned exception (WP-529 F6, #453/#463) —
+    # the resolver's whole job is enumerating STANDARD system python locations
+    # (/opt/homebrew is stock macOS Apple Silicon), not an author-machine leak.
+    count=$(hardcode_scan_staged '/opt/homebrew' 'README\.md|PLATFORM-COMPAT\.md|validate-template\.yml|/usr/local/bin.*:/opt/homebrew' "$TMPDIR_CHECK3_HITS_FILE" '^scripts/lib/find-python3\.sh$|^scripts/tests/test_issue_463_setup_reuses_resolved_python3\.sh$')
     if [ "$count" -gt 0 ]; then
         echo "FAIL ($count hits)"
         head -3 "$TMPDIR_CHECK3_HITS_FILE" || true
@@ -292,8 +301,12 @@ elif [ "$MODE" = "staged" ]; then
     fi
     rm -f "$TMPDIR_CHECK3_HITS_FILE"
 else
+    # scripts/lib/find-python3.sh: sanctioned exception (WP-529 F6, #453/#463) —
+    # the resolver's whole job is enumerating STANDARD system python locations
+    # (/opt/homebrew is stock macOS Apple Silicon), not an author-machine leak.
     count=$(grep -rn '/opt/homebrew' "$TEMPLATE_DIR" "${HARDCODE_SCAN_INCLUDES[@]}" \
             --exclude='validate-template.sh' --exclude='setup.sh' \
+            --exclude='find-python3.sh' --exclude='test_issue_463_setup_reuses_resolved_python3.sh' \
             --exclude='CHANGELOG.md' 2>/dev/null \
             | grep -v 'README.md' \
             | grep -v 'PLATFORM-COMPAT.md' \
@@ -304,6 +317,7 @@ else
         echo "FAIL ($count hits)"
         grep -rn '/opt/homebrew' "$TEMPLATE_DIR" "${HARDCODE_SCAN_INCLUDES[@]}" \
             --exclude='validate-template.sh' --exclude='setup.sh' \
+            --exclude='find-python3.sh' --exclude='test_issue_463_setup_reuses_resolved_python3.sh' \
             --exclude='CHANGELOG.md' 2>/dev/null \
             | grep -v 'README.md' | grep -v 'PLATFORM-COMPAT.md' \
             | grep -v 'validate-template.yml' \

@@ -15,10 +15,13 @@ declare -F validate_no_install_values_in_applied_additions >/dev/null
 
 SCRIPT_DIR="$TMP/template"
 WORKSPACE_DIR="$TMP/workspace"
+UPSTREAM="$TMP/upstream.git"
 mkdir -p "$SCRIPT_DIR" "$WORKSPACE_DIR"
+git init -q --bare "$UPSTREAM"
 git -C "$SCRIPT_DIR" init -q
 git -C "$SCRIPT_DIR" config user.email test@example.invalid
 git -C "$SCRIPT_DIR" config user.name 'Install path guard test'
+git -C "$SCRIPT_DIR" remote add origin "$UPSTREAM"
 
 cat >"$WORKSPACE_DIR/.exocortex.env" <<EOF
 WORKSPACE_DIR=$WORKSPACE_DIR
@@ -31,11 +34,20 @@ EOF
 
 # Existing tracked install-like values are outside the updater's responsibility.
 # An unrelated working-tree addition must not be blocked by historical container docs.
+# Pushed to upstream (not just committed locally): the guard now derives
+# legitimacy from upstream provenance (historical_lines), not from the local
+# working-tree-vs-HEAD diff — a real installation always has an upstream
+# remote (setup.sh configures it), so this fixture must too (issue #459
+# provenance rewrite; a real committed-only-locally leak is covered by the
+# "leak.md" scenario below, which never appears in upstream history).
 cat >"$SCRIPT_DIR/existing.md" <<'EOF'
 The container user has HOME=/root and stores Claude config in /root/.claude.
 EOF
 git -C "$SCRIPT_DIR" add existing.md
 git -C "$SCRIPT_DIR" commit -qm baseline
+git -C "$SCRIPT_DIR" push -q origin HEAD:main
+git -C "$SCRIPT_DIR" branch -q --set-upstream-to=origin/main 2>/dev/null ||
+    git -C "$SCRIPT_DIR" branch -q -u origin/main
 printf 'Safe update line.\n' >>"$SCRIPT_DIR/existing.md"
 APPLIED_PATHS=(existing.md)
 validate_no_install_values_in_applied_additions

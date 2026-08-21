@@ -27,35 +27,26 @@ fi
 
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty')
 
-# #369: a shared sentinel may only be removed by the session that created it.
-# The random capability is kept in a mode-600 owner file; compare-and-delete is
-# serialized by mkdir, which is atomic on both macOS and Linux. A Stop from a
-# subagent or neighbouring session therefore cannot switch off somebody else's
-# rehearsal. Explicit cleanup and the 10-minute TTL remain fallbacks.
+# #369 protected the shared sentinel from a NEIGHBOUR session's Stop (matched
+# by session_id + owner-token, confirmed still correct by issue #460 path 7).
+# It did not protect against the SAME session's own Stop: audit-installation
+# creates the sentinel, launches a subagent rehearsal, and the parent turn's
+# Stop can fire (session_id matches trivially) while that subagent is still
+# writing under it — issue #460 path 6. Fix: this hook no longer deletes the
+# shared sentinel at all, matched session or not. Removal is now only the
+# explicit `rm -f` at the end of the owning procedure, backed by the
+# fail-closed TTL in dry-run-gate.sh (path 3) as the crash fallback. The
+# owner-file is still cleared here, but only once it's confirmed residue
+# (sentinel already gone) — never while the sentinel it points at is live.
 cleanup_owned_dry_run_sentinel() {
-  local sid="$1" safe_sid owner_file expected actual sentinel_sid lock
+  local sid="$1" safe_sid owner_file
   [ -n "$sid" ] || return 0
   safe_sid=$(printf '%s' "$sid" | tr -cd 'A-Za-z0-9._-')
   [ -n "$safe_sid" ] || return 0
   owner_file="/tmp/iwe-dry-run-owner-${safe_sid}.token"
   [ -f "$owner_file" ] || return 0
-
-  # Explicit cleanup may already have removed the sentinel. The matching owner
-  # file is then only residue from this session and can be removed safely.
-  if [ ! -f /tmp/iwe-dry-run.flag ]; then
-    rm -f "$owner_file" 2>/dev/null || true
-    return 0
-  fi
-  command -v jq >/dev/null 2>&1 || return 0
-  lock=/tmp/iwe-dry-run.flag.lock
-  mkdir "$lock" 2>/dev/null || return 0
-  expected=$(jq -r '.owner_token // empty' /tmp/iwe-dry-run.flag 2>/dev/null || true)
-  sentinel_sid=$(jq -r '.session_id // empty' /tmp/iwe-dry-run.flag 2>/dev/null || true)
-  actual=$(cat "$owner_file" 2>/dev/null || true)
-  if [ -n "$expected" ] && [ "$sid" = "$sentinel_sid" ] && [ "$actual" = "$expected" ]; then
-    rm -f /tmp/iwe-dry-run.flag "$owner_file" 2>/dev/null || true
-  fi
-  rmdir "$lock" 2>/dev/null || true
+  [ -f /tmp/iwe-dry-run.flag ] && return 0
+  rm -f "$owner_file" 2>/dev/null || true
 }
 
 cleanup_owned_dry_run_sentinel "$SESSION_ID"

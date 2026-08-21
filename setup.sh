@@ -687,6 +687,29 @@ fi
 
 # === 4e. Generate executor-catalog.yaml for task routing (issue #197) ===
 # route-task.sh (DP.ROLE.059, Маршрутизатор) looks this up at
+# WP-529 F6 (#463): one visible PyYAML preflight instead of per-script
+# surprises. Warning only — never blocks install: calendar/news/wp-sweep are
+# optional features and every consumer now fails with an explicit dependency
+# error at use time (scripts/lib/find-python3.sh).
+#
+# Evgenii Red Team review 2026-08-19 (defect #2): this used to run the
+# resolver for its exit code only and discard stdout — the executor-catalog
+# generation below then called bare `python3` again, which on the same Apple
+# Silicon machine can be a DIFFERENT interpreter (no yaml) than the one the
+# resolver just found. Keep the resolved path and reuse it everywhere below.
+YAML_PYTHON3=""
+if YAML_PYTHON3=$("$TEMPLATE_DIR/scripts/lib/find-python3.sh" 2>/dev/null); then
+    :
+else
+    YAML_PYTHON3=""
+    echo "  ⚠ Не найден python3 с библиотекой PyYAML — календарь, лента «Мир» и обзор РП будут отключаться с явной ошибкой зависимости."
+    if [ "$(uname)" = "Linux" ]; then
+        echo "    Установи: sudo apt install python3-yaml (или: pip3 install pyyaml)"
+    else
+        echo "    Установи: pip3 install pyyaml (python3 из Homebrew уже содержит pip3)"
+    fi
+fi
+
 # ~/IWE/$GOVERNANCE_REPO/scripts/executor-catalog.yaml — without generating it on
 # install, a fresh install has no catalog and route-task.sh always fails ("not found").
 # Non-fatal on error: routing is a convenience feature, not a hard setup prerequisite
@@ -695,25 +718,19 @@ if $CORE_ONLY; then
     echo "[4e] executor-catalog.yaml... пропущено (core mode, нет агента для маршрутизации)"
 elif $DRY_RUN; then
     echo "[DRY RUN] Would generate executor-catalog.yaml (IWE_GOVERNANCE_REPO=$GOVERNANCE_REPO)"
+elif [ -z "$YAML_PYTHON3" ]; then
+    # Resolver above already found and printed the remediation — no yaml-capable
+    # interpreter exists on this machine at all, running generate-executor-catalog.py
+    # would just repeat the same ModuleNotFoundError one indirection later.
+    echo "[4e] executor-catalog.yaml... пропущено (нет python3 с PyYAML, см. предупреждение выше)"
 else
     echo "[4e] Generating executor-catalog.yaml..."
-    if CATALOG_OUTPUT=$(IWE_GOVERNANCE_REPO="$GOVERNANCE_REPO" python3 "$TEMPLATE_DIR/scripts/generate-executor-catalog.py" 2>&1); then
+    if CATALOG_OUTPUT=$(IWE_GOVERNANCE_REPO="$GOVERNANCE_REPO" "$YAML_PYTHON3" "$TEMPLATE_DIR/scripts/generate-executor-catalog.py" 2>&1); then
         echo "$CATALOG_OUTPUT" | sed 's/^/  /'
-    elif echo "$CATALOG_OUTPUT" | grep -q "No module named 'yaml'"; then
-        # Голая Ubuntu/Debian не тащит PyYAML в system python3 (issue найден живым
-        # прогоном WP-5, 2026-07-27) — сырой traceback пугает новичка без подсказки.
-        echo "  ⚠ executor-catalog.yaml не сгенерирован — не хватает библиотеки PyYAML для python3."
-        if [ "$(uname)" = "Linux" ]; then
-            echo "    Установи: sudo apt install python3-yaml (или: pip3 install pyyaml, если pip3 уже стоит)"
-        else
-            echo "    Установи: pip3 install pyyaml"
-        fi
-        echo "    Потом выполни вручную:"
-        echo "    python3 $TEMPLATE_DIR/scripts/generate-executor-catalog.py"
     else
         echo "$CATALOG_OUTPUT" | sed 's/^/  /'
         echo "  ⚠ executor-catalog.yaml не сгенерирован — запусти вручную:"
-        echo "    python3 $TEMPLATE_DIR/scripts/generate-executor-catalog.py"
+        echo "    \"$YAML_PYTHON3\" $TEMPLATE_DIR/scripts/generate-executor-catalog.py"
     fi
 fi
 

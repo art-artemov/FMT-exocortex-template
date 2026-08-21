@@ -186,8 +186,15 @@ select_semaphore() {
       [ -z "$cand" ] && continue
       cand_wp=$(grep "^wp: " "$cand" | cut -d' ' -f2- || true)
       cand_slug=$(grep "^slug: " "$cand" | cut -d' ' -f2- || true)
-      if { [ -n "$want_wp" ] && [ "$cand_wp" = "$want_wp" ]; } || \
-         { [ -n "$want_slug" ] && [ "$cand_slug" = "$want_slug" ]; }; then
+      # WP-530 Ф12 (20.08, пир-сессия с Codex): with both selectors given, this
+      # must be an intersection -- a plain OR (as this copy had until now)
+      # matches a stale sibling session sharing only the wp, causing false
+      # ambiguity. Synced from the canonical ~/IWE/scripts/session-guard.sh
+      # (WP-484 Ф49, 04.08) -- same fix, this copy just hadn't received it.
+      if { [ -n "$want_wp" ] && [ -n "$want_slug" ] &&
+           [ "$cand_wp" = "$want_wp" ] && [ "$cand_slug" = "$want_slug" ]; } || \
+         { [ -z "$want_slug" ] && [ -n "$want_wp" ] && [ "$cand_wp" = "$want_wp" ]; } || \
+         { [ -z "$want_wp" ] && [ -n "$want_slug" ] && [ "$cand_slug" = "$want_slug" ]; }; then
         matches+=("$cand")
       fi
     done <<< "$candidates"

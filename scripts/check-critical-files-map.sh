@@ -25,6 +25,13 @@ MANIFEST="$SCRIPT_DIR/update-manifest.json"
 [ -f "$MAP" ] || { echo "ERROR: $MAP не найден"; exit 2; }
 [ -f "$GENERATOR" ] || { echo "ERROR: $GENERATOR не найден"; exit 2; }
 
+# WP-529 (continuation, 19.08, peer-session 2026-08-19-29 turn 7): resolved
+# once here for both PyYAML consumers below, instead of each calling bare
+# python3 -- same defect class Evgenii found elsewhere. Explicit failure on
+# resolver miss, same convention as the MAP/GENERATOR checks just above.
+RESOLVED_PYTHON3=$("$SCRIPT_DIR/scripts/lib/find-python3.sh" 2>/dev/null) || RESOLVED_PYTHON3=""
+[ -n "$RESOLVED_PYTHON3" ] || { echo "ERROR: python3 с библиотекой PyYAML не найден (pip install pyyaml)"; exit 2; }
+
 # generate-manifest.sh regenerates $MANIFEST as a side effect — same
 # technique scripts/verify-manifest.sh already uses safely in CI.
 BACKUP=$(mktemp)
@@ -49,7 +56,7 @@ fail() { echo "  ❌ $*" >&2; FAIL=1; }
 ok() { echo "  ✅ $*"; }
 
 echo "[1/3] Блоки generate-manifest.sh, на которые ссылается карта..."
-python3 - "$MAP" > "$WORKDIR/referenced_blocks.txt" <<'PY'
+"$RESOLVED_PYTHON3" - "$MAP" > "$WORKDIR/referenced_blocks.txt" <<'PY'
 import re
 import sys
 import yaml
@@ -76,9 +83,23 @@ while IFS= read -r block; do
 done < "$WORKDIR/referenced_blocks.txt"
 
 echo "[2/3] Покрытие: каждый git-tracked файл — ровно в одной категории..."
-declare -A FILES_SET EXCLUDED_SET
-for f in "${FILES[@]}"; do FILES_SET["$f"]=1; done
-for f in "${EXCLUDED_PATHS[@]}"; do EXCLUDED_SET["$f"]=1; done
+# WP-529 Ф9 (Evgenii 20.08, bash 3.2 finding): membership used to be two
+# `declare -A` hash sets checked per file. Bash 3.2 (stock macOS /bin/bash)
+# has no associative arrays. Replaced with one set-difference over sorted
+# files (`comm`) instead of a bash4 hash *or* an N×grep loop — same O(n log n)
+# shape, portable to Bash 3.2.
+FILES_SORTED="$WORKDIR/files_sorted.txt"
+EXCLUDED_SORTED="$WORKDIR/excluded_sorted.txt"
+ALL_TRACKED_SORTED="$WORKDIR/all_tracked_sorted.txt"
+REMAINING="$WORKDIR/remaining.txt"
+printf '%s\n' "${FILES[@]}" | LC_ALL=C sort -u > "$FILES_SORTED"
+printf '%s\n' "${EXCLUDED_PATHS[@]}" | LC_ALL=C sort -u > "$EXCLUDED_SORTED"
+git -C "$SCRIPT_DIR" ls-files | LC_ALL=C sort > "$ALL_TRACKED_SORTED"
+LC_ALL=C comm -23 "$ALL_TRACKED_SORTED" "$FILES_SORTED" | LC_ALL=C comm -23 - "$EXCLUDED_SORTED" > "$REMAINING"
+
+FILES_COUNT=$(wc -l < "$FILES_SORTED" | tr -d ' ')
+EXCLUDED_COUNT=$(wc -l < "$EXCLUDED_SORTED" | tr -d ' ')
+TOTAL=$(wc -l < "$ALL_TRACKED_SORTED" | tr -d ' ')
 
 is_in() {
     local rel="$1"; shift
@@ -87,17 +108,12 @@ is_in() {
     return 1
 }
 
-TOTAL=0
 INVISIBLE_VCS=0
 INVISIBLE_SETUP=0
 INVISIBLE_USERSPACE=0
 UNCLASSIFIED=()
 
 while IFS= read -r rel; do
-    TOTAL=$((TOTAL + 1))
-    [ -n "${FILES_SET[$rel]:-}" ] && continue
-    [ -n "${EXCLUDED_SET[$rel]:-}" ] && continue
-
     matched=false
     for pattern in "${SKIP_PATTERNS[@]}"; do
         case "$rel" in "$pattern"*) matched=true; break ;; esac
@@ -116,13 +132,13 @@ while IFS= read -r rel; do
     if $matched; then INVISIBLE_USERSPACE=$((INVISIBLE_USERSPACE + 1)); continue; fi
 
     UNCLASSIFIED+=("$rel")
-done < <(git -C "$SCRIPT_DIR" ls-files)
+done < "$REMAINING"
 
-ACCOUNTED=$((${#FILES_SET[@]} + ${#EXCLUDED_SET[@]} + INVISIBLE_VCS + INVISIBLE_SETUP + INVISIBLE_USERSPACE))
+ACCOUNTED=$((FILES_COUNT + EXCLUDED_COUNT + INVISIBLE_VCS + INVISIBLE_SETUP + INVISIBLE_USERSPACE))
 
 echo "  Всего файлов в git: $TOTAL"
-echo "  delivered-default/explicit-include (files[]): ${#FILES_SET[@]}"
-echo "  видимые исключения (excluded_paths[]): ${#EXCLUDED_SET[@]}"
+echo "  delivered-default/explicit-include (files[]): $FILES_COUNT"
+echo "  видимые исключения (excluded_paths[]): $EXCLUDED_COUNT"
 echo "  vcs-tooling-internal: $INVISIBLE_VCS"
 echo "  setup-install-time-only: $INVISIBLE_SETUP"
 echo "  user-space-excluded: $INVISIBLE_USERSPACE"
@@ -137,7 +153,7 @@ else
 fi
 
 echo "[3/3] owner + proof_of_delivery непустые для каждой категории/special_route..."
-if python3 - "$MAP" <<'PY'
+if "$RESOLVED_PYTHON3" - "$MAP" <<'PY'
 import sys
 import yaml
 

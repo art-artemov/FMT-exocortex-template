@@ -184,14 +184,46 @@ grep_body_wps() {
     || true
 }
 
+# issue #473: колонка статуса регистра — по шапке `| # | ... |`, не по
+# жёсткой позиции (совпадает по духу с find_header_columns() в
+# scripts/build-active-wp.py: разные реестры называют/переставляют колонки).
+registry_status_column() {
+  local header
+  header=$(grep -E '^\|[[:space:]]*#[[:space:]]*\|' "$REGISTRY_FILE" 2>/dev/null | head -1)
+  [[ -z "$header" ]] && return 1
+  awk -F'|' -v h="$header" 'BEGIN {
+    n = split(h, cells, "|")
+    for (i = 1; i <= n; i++) {
+      c = cells[i]; gsub(/^[ \t]+|[ \t]+$/, "", c)
+      lc = tolower(c)
+      if (lc == "статус" || lc == "ст") { print i; exit }
+    }
+  }'
+}
+
 registry_status() {
   local num="$1"
+  # Найдено пир-сессией с Codex (ход 3): единственный вызывающий (строка ~514)
+  # сейчас всегда передаёт голое число (та же инвариантность проверяется
+  # соседним `grep -cE '^[0-9]+$'` на строке ~608), но публичная функция не
+  # обязана полагаться на дисциплину вызывающего — "WP-47" тихо не находился бы.
+  num="${num#WP-}"
+  num="${num#wp-}"
+  if [[ ! "$num" =~ ^[0-9]{1,4}$ ]]; then
+    echo "_некорректный номер РП: ${1}_"
+    return
+  fi
   if [[ ! -f "$REGISTRY_FILE" ]]; then
     echo "_нет файла REGISTRY_"
     return
   fi
+  # issue #473: раньше строка искалась через `grep "WP-${num}[^0-9]"` —
+  # подстрока, которая срабатывает и на прозу ЧУЖИХ строк (например,
+  # "открыт как спин-офф WP-47" в статусе WP-49 возвращал статус WP-49 при
+  # запросе WP-47). Строка опознаётся по СВОЕЙ первой ячейке (номер РП),
+  # тем же приёмом, что ROW_RE в build-active-wp.py.
   local line
-  line=$(grep -E "WP-${num}[^0-9]" "$REGISTRY_FILE" 2>/dev/null | head -1 || true)
+  line=$(grep -E "^\|[[:space:]]*(~~)?(\*\*)?${num}(\*\*)?(~~)?[[:space:]]*\|" "$REGISTRY_FILE" 2>/dev/null | head -1 || true)
   if [[ -z "$line" ]]; then
     echo "_не в реестре_"
     return
@@ -200,16 +232,29 @@ registry_status() {
     echo "~~done~~ (зачёркнут)"
     return
   fi
-  if echo "$line" | grep -q '✅'; then
+  local status_col status_cell
+  status_col=$(registry_status_column)
+  if [[ -z "$status_col" ]]; then
+    echo "_колонка статуса не найдена в шапке реестра_"
+    return
+  fi
+  # Статус берётся из СВОЕЙ ячейки, не грепом эмодзи по всей строке —
+  # эмодзи в описании соседней колонки раньше мог перебить вердикт.
+  status_cell=$(echo "$line" | awk -F'|' -v col="$status_col" '{ v=$col; gsub(/^[ \t]+|[ \t]+$/, "", v); print v }')
+  if echo "$status_cell" | grep -q '✅'; then
     echo "✅ done"
-  elif echo "$line" | grep -q '🔄'; then
+  elif echo "$status_cell" | grep -q '🔄'; then
     echo "🔄 in_progress"
-  elif echo "$line" | grep -q '⏳'; then
+  elif echo "$status_cell" | grep -q '⏳'; then
     echo "⏳ pending"
-  elif echo "$line" | grep -q '📦'; then
+  elif echo "$status_cell" | grep -q '📦'; then
     echo "📦 archived"
+  elif echo "$status_cell" | grep -q '⏹'; then
+    echo "⏹ снят"
+  elif echo "$status_cell" | grep -q '🔁'; then
+    echo "🔁 свёрнут в спринт"
   else
-    echo "$line" | grep -oE '(done|in_progress|pending|closed|open)' | head -1 || echo "_статус неизвестен_"
+    echo "$status_cell" | grep -oE '(done|in_progress|pending|closed|open)' | head -1 || echo "_статус неизвестен_"
   fi
 }
 
@@ -380,11 +425,19 @@ main() {
   local wp_path
   wp_path=$(wp_path_label "$wp_file")
 
-  local status name spawned updated
+  local status name spawned updated created last_session
   status=$(extract_fm_field "$wp_file" "status")
   name=$(extract_fm_field "$wp_file" "name")
   spawned=$(extract_fm_field "$wp_file" "spawned")
   updated=$(extract_fm_field "$wp_file" "updated")
+  # F19 (REVIEW-ARCHITECTURE.md, WP-503 Ф6.6 план): карточки без `updated:` в
+  # frontmatter (created вручную, не auto-touched) молча выключали drift-детектор
+  # №2 ("коммиты завершения после ref_date") — сам ref_date оставался пустым для
+  # них, включая WP-503. `created`/`last_session` расширяют цепочку без изменения
+  # приоритета уже используемых полей (updated по-прежнему первый — самый свежий
+  # признак реальной активности карточки).
+  created=$(extract_fm_field "$wp_file" "created")
+  last_session=$(extract_fm_field "$wp_file" "last_session")
 
   [[ -z "$status" ]] && status="_не указан_"
   [[ -z "$name" ]] && name="_не указано_"
@@ -417,7 +470,7 @@ main() {
   local _df="$drift_file"
   trap 'rm -f "${_df:-}"' EXIT
 
-  local ref_date="${updated:-$spawned}"
+  local ref_date="${updated:-${last_session:-${spawned:-$created}}}"
 
   # ---------------------------------------------------------------------------
   # Output header

@@ -41,11 +41,17 @@ die() {
 
 warn() { echo "WARN: $*" >&2; }
 
+# Evgenii Red Team review 2026-08-19 (defect #5): this used to probe bare
+# `python3` directly instead of the shared resolver every other PyYAML
+# consumer switched to in F6 (#453/#463) — on Apple Silicon the resolver
+# finds the Homebrew python3 with PyYAML while PATH's own `python3` can be
+# a different, yaml-less interpreter, so this script reported "PyYAML not
+# found" on machines where it was actually available. RESOLVED_PYTHON3 is set
+# once here and reused by every `python3 -` call below instead of each one
+# deriving its own bare `python3`.
+RESOLVER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh"
 require_python() {
-    if ! command -v python3 &>/dev/null; then
-        die "python3 not found — required for catalog lookup" 1
-    fi
-    if ! python3 -c "import yaml" &>/dev/null; then
+    if ! RESOLVED_PYTHON3=$("$RESOLVER"); then
         die "PyYAML not found — required for catalog lookup (pip install pyyaml)" 1
     fi
 }
@@ -102,7 +108,7 @@ lookup_skill() {
     local skill_name="$1"
     require_python
     require_catalog
-    python3 - "$CATALOG" "$skill_name" << 'PYEOF'
+    "$RESOLVED_PYTHON3" - "$CATALOG" "$skill_name" << 'PYEOF'
 import sys, yaml
 
 catalog_path, skill_name = sys.argv[1], sys.argv[2]
@@ -128,18 +134,36 @@ PYEOF
 # Executors
 # ---------------------------------------------------------------------------
 
+# WP-529 Ф9 (Evgenii 20.08): most .py entrypoints don't need PyYAML (6 of 33
+# top-level scripts/*.py do) — RESOLVER hard-requires it (see find-python3.sh),
+# so a blanket switch to $RESOLVER here would hard-fail the majority on any
+# machine lacking PyYAML. Best-effort only: try the resolver (fixes the
+# Apple-Silicon wrong-interpreter class for scripts that DO need yaml),
+# fall back to plain `python3` + warn otherwise. Entrypoints known to require
+# yaml unconditionally (iwe-agent-dispatcher.py via headless-runner.sh) use
+# the resolver directly with a hard failure instead of this fallback.
+_resolve_python3() {
+    local resolved
+    if resolved=$("$RESOLVER" 2>/dev/null); then
+        printf '%s\n' "$resolved"
+    else
+        warn "PyYAML-capable python3 not found (checked PATH/homebrew/nix) — falling back to plain python3; scripts that import yaml may fail"
+        printf '%s\n' "python3"
+    fi
+}
+
 _resolve_interpreter() {
     local script_path="$1"
     local ext="${script_path##*.}"
     if [[ "$ext" == "py" ]]; then
-        echo "python3"
+        _resolve_python3
     elif [[ "$ext" == "rb" ]]; then
         echo "ruby"
     elif [[ -r "$script_path" ]]; then
         local shebang
         shebang=$(head -n1 "$script_path" 2>/dev/null)
         if [[ "$shebang" =~ ^#!/usr/bin/env[[:space:]]+python ]]; then
-            echo "python3"
+            _resolve_python3
         elif [[ "$shebang" =~ ^#!/usr/bin/env[[:space:]]+ruby ]]; then
             echo "ruby"
         else
@@ -314,7 +338,7 @@ dispatch_skill() {
 show_list() {
     require_python
     require_catalog
-    python3 - "$CATALOG" << 'PYEOF'
+    "$RESOLVED_PYTHON3" - "$CATALOG" << 'PYEOF'
 import sys, yaml
 
 with open(sys.argv[1]) as f:
@@ -342,7 +366,7 @@ PYEOF
 validate_catalog() {
     require_python
     require_catalog
-    python3 - "$CATALOG" << 'PYEOF'
+    "$RESOLVED_PYTHON3" - "$CATALOG" << 'PYEOF'
 import sys, yaml
 
 VALID = {"script", "haiku", "sonnet", "opus", "mcp-direct"}

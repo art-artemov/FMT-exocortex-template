@@ -6,7 +6,7 @@ type: reference
 horizon: warm
 domains: [reference]
 status: active
-owner: platform
+owner: user
 schema_version: 1
 
 name: "roles"
