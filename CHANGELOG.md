@@ -137,6 +137,94 @@ Refs: WP-NNN
 
 
 
+
+## [0.38.6] — 2026-08-20
+
+### Added
+
+- `088aaad` feat(dev): явный список Python-зависимостей + инструкция venv
+- `3fa093f` feat(pipeline): promote wp-pool-cascade.sh + ledger primitives from author IWE
+- `81fb1c1` feat(WP-529 Ф3): fail-closed release receipt для критичных CI-проверок
+- `8bf8801` feat(#461): preflight-проверка памяти в iwe-audit.sh
+- `f578fac` feat(delivery): WP-529 Ф2 — предрелизный гейт для карты критичных путей
+- `57d351d` feat(delivery): WP-529 Ф1 — карта критичных путей доставки шаблона
+
+### Changed
+
+- `abd056e` Merge pull request #488 from TserenTserenov/wp529-merge-478-480
+- `43e170a` chore(wp529): regenerate manifest after merging #478+#480
+- `8e3bc40` Merge branch 'pr480' into wp529-merge-478-480
+- `c1c5bd3` Merge branch 'pr478' into wp529-merge-478-480
+- `56a28f8` chore(wp529): пустой коммит для нового прогона CI
+- `67bde25` chore(wp529): пересобрать манифест после ребейза на main
+- `f0eb4ec` Merge pull request #483 from TserenTserenov/wp452-f5-proposal-process
+- `11876de` chore: перегенерировать манифест после Ф5 и venv-инструкции
+- `3e53700` docs(wp452): добавить GitHub issue-шаблон для предложений разработчика
+- `5443f7c` docs(wp452): Ф5 — процесс предложений разработчика IWE
+- `6228705` Merge pull request #476 from TserenTserenov/fix/issue-funnel-batch-18aug
+- `14fbe1f` merge: sync with main before landing issue-funnel fixes
+- `cc86bc9` chore: перегенерировать манифест — актуализировать после всех фиксов сессии
+- `713c81e` Merge pull request #475 from TserenTserenov/wp503-f13-pipeline-template-scope
+- `bf6a23e` merge: sync with main before landing WP-503 Ф13 pipeline slice
+- `2812ce0` merge: land orphaned fixes for #426, #466, #460 (paths 1-2)
+- `2f0a511` Merge pull request #472 from TserenTserenov/wp529-f3-release-receipt
+- `7052305` Merge pull request #467 from TserenTserenov/fix-issues-456-458-459
+- `0a1f342` chore(release): sync README version badge to 0.38.5
+- `31a3e8c` docs(#461): назвать минимальные требования к памяти в README
+
+### Fixed
+
+- `9a6e60a` fix(wp529): register 2 issue-tests in delivery contract (cold review find)
+- `ea4551c` fix(wp-545): исключить временные worktree из iCloud-бэкапа
+- `4d3727c` fix(WP-529): delivery-route-label фикстура должна нести find-python3.sh рядом с копией чекера
+- `4da487e` fix(WP-529): T11-фикстура должна нести find-python3.sh для изолированного source
+- `6908df9` fix(WP-529): перевести оставшихся heredoc-потребителей PyYAML на общий резолвер
+- `becf4e4` fix(wp529): удалить дубль-файл теста, застрявший в предыдущем коммите
+- `76d2cdd` fix(WP-529): закрыть 5 находок Red Team-ревью Евгения (раунд 2, 19.08)
+- `1a6ca46` fix(WP-529 Ф6): конвейер доставки — фиксы по находкам Евгения 18.08
+- `2654bfa` fix(manifest): фиксы дрейфа манифеста, найденного Евгением 19.08
+- `3f23a21` fix(ci): синхронизировать seed-снимки после фиксов #434/#455
+- `75ee3bd` fix(ci): обезличить фикстуру теста #473 — validate-template.sh ловил DS-my-strategy
+- `5a9ed97` fix(#473): усилить по итогам код-ревью Кодекса — валидация номера + защита шапки
+- `1e0310b` fix(#473): парсинг WP-REGISTRY.md по именам колонок из шапки, не по позиции
+- `7159d97` fix(#469): settings-merge-preview.py — дедупликация хуков по смыслу, не по тексту
+- `8df6eff` fix(#434): day-open-pipeline.sh — флаг --scaffold-only для установок без LLM Proxy
+- `2f8ed96` fix(#471): drift-scan — слово статуса в пояснении не перебивает ведущий значок
+- `530ec7c` fix(#463): задекларировать pyyaml и дать понятную диагностику при отсутствии
+- `5b1a893` fix(seed): resync day-open-checks-runner.sh seed snapshot after merging main
+- `43d9db9` fix(#455): day-open-scaffold.sh — отсутствие lib/common.sh теперь фатально
+- `49eda5e` fix(#470): memory/roles.md больше не мигрирует блайндом owner:user → platform
+- `4744cb1` fix(#453): server-calendar.sh — приватные события больше не теряются молча
+- `98763af` fix(manifest): resync update-manifest.json after merging main
+- `7522a46` fix(#465): перегенерировать манифест — sha256 устарели, не рассинхрон схем
+- `3ed8711` fix(pipeline): resolve ledger-append.sh/telegram.sh via FMT, not the recipient's governance repo
+- `3677189` fix(#460): dry-run-gate paths 3, 5, 6 — close remaining fail-open holes
+- `0815502` fix(wp-sync-bundle): F19 — расширить fallback-цепочку ref_date (WP-503)
+- `765fa42` fix(#460): dry-run-gate.sh fails closed on jq-missing and lost-sentinel
+- `c8fe5ab` fix(#466): day-open-checks-runner.sh no longer fakes success on 0 checks
+- `60337bb` fix(#426): day-open-preflight.sh resolves server-calendar.sh relative to itself
+- `ecdfb51` fix: три замечания пользователей шаблона (#456, #458, #459)
+- `1b17c36` fix(delivery): restage check-delivery-route-label.sh after review fixes
+- `1fd9b32` fix(update): regenerate stale manifest + atomic fail-fast on partial fetch
+- `bda0f2c` fix(#457): iwe-bug-report — nonexistent docs label, cd blocked by own hook
+- `a230296` fix(#454): cron fallback for Linux hosts without a systemd --user bus
+- `34b8e43` fix(strategy-session): route to monthly mode + fix tracker path docs/->Lifework/
+- `a222ff3` fix(validate-fmt-scripts): recognize the auto-detect follow-up assignment
+- `4bb183a` fix(setup): section 6 respects the auto-detected governance-repo name
+- `70d4f70` fix(validate-fmt-scripts): harden the #446/#450 exemptions after cold-context review
+- `a5bd0cc` fix(build-active-wp): recognize WP-NNN registry rows, not just bare numbers
+- `8ffd545` fix(validate-fmt-scripts): stop flagging test fixtures and self-documenting docstrings
+- `6640870` fix(pre-commit): RELEASE-SYNC does not block forks where CHANGELOG.md is intentionally frozen
+
+
+## [0.38.5] — 2026-08-18
+
+### Fixed
+
+- Регламент журнала гипотез теперь объясняет значения приоритетов П1-П4, и новый валидатор отклоняет запись с недопустимым значением (#456).
+- `pending-phases-sweep.sh` распознаёт таблицы, чек-листы и заголовки любого уровня с любым суффиксом номера фазы; проверено на реальных данных — 0 ложных срабатываний (#458).
+- Сторож `update.sh` больше не путает случайное текстовое совпадение с реальной подстановкой личного пути установки; заодно исправлена дыра, где уже закоммиченная утечка проходила проверку незамеченной (#459).
+
 ## [0.38.4] — 2026-08-16
 
 ### Added
