@@ -12,7 +12,8 @@
 # зеркалом, чтобы переезд на другое устройство / сбой не терял правки, сделанные среди дня.
 # Раньше это был ручной `cp + commit` (правило feedback_exocortex_sync) — теперь авто.
 #
-# Инвариант: exocortex/ ⊇ актуальное состояние memory/ и extensions/ в любой момент.
+# Инвариант: exocortex/ ⊇ актуальное состояние memory/ и extensions/ в любой момент,
+# кроме day-rhythm-config.yaml: его конфликт-aware синхронизацию откладываем до Day Close.
 # extensions/ зеркалится в exocortex/extensions/ (отдельная подпапка — предотвращает
 # коллизии имён с memory/, если когда-нибудь совпадут).
 # Принципы:
@@ -76,17 +77,24 @@ mirror_file() {
 
 if [ -n "${RECONCILE_BASH:-}" ]; then
     reconcile_dir() {
-        local src_dir="$1" dst_dir="$2"
+        local src_dir="$1" dst_dir="$2" skip_day_rhythm="${3:-0}"
         [ -d "$src_dir" ] || return 0
         find "$src_dir" -maxdepth 1 -type f \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' \) 2>/dev/null |
         while IFS= read -r f; do
             local fname; fname=$(basename "$f")
+            # day-rhythm has a conflict-aware Day Close contract (#536). A raw
+            # hook cp would bypass the empty-calendar guard and destroy its
+            # byte-preserving decision, so neither direct nor Bash reconcile
+            # may mirror this root file.
+            if [ "$skip_day_rhythm" = "1" ] && [ "$fname" = "day-rhythm-config.yaml" ]; then
+                continue
+            fi
             if [ ! -f "$dst_dir/$fname" ] || [ "$f" -nt "$dst_dir/$fname" ]; then
                 mirror_file "$src_dir" "$dst_dir" "$fname"
             fi
         done
     }
-    reconcile_dir "$MEMORY_REAL" "$EXOCORTEX_DST"
+    reconcile_dir "$MEMORY_REAL" "$EXOCORTEX_DST" 1
     [ -n "$EXTENSIONS_REAL" ] && reconcile_dir "$EXTENSIONS_REAL" "$EXOCORTEX_DST/extensions"
     exit 0
 fi
@@ -97,6 +105,7 @@ FNAME=$(basename "$FILE_PATH")
 
 # Файл должен лежать ПРЯМО в memory/ или в extensions/ (плоская структура обеих папок)
 if [ "$FILE_DIR" = "$MEMORY_REAL" ]; then
+    [ "$FNAME" = "day-rhythm-config.yaml" ] && exit 0
     mirror_file "$MEMORY_REAL" "$EXOCORTEX_DST" "$FNAME"
 elif [ -n "$EXTENSIONS_REAL" ] && [ "$FILE_DIR" = "$EXTENSIONS_REAL" ]; then
     mirror_file "$EXTENSIONS_REAL" "$EXOCORTEX_DST/extensions" "$FNAME"

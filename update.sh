@@ -17,14 +17,29 @@ EXIT_OK=0
 EXIT_USAGE=1
 EXIT_NETWORK=2
 EXIT_RUNTIME=3   # build-runtime.sh failed — transaction left open (WP-529 F6)
+EXIT_TAINTED=4   # peer-session 2026-08-21-09: grep-fallback manifest parsing ran
+                 # (no Python), so file integrity was never verified by sha256 —
+                 # only file names were compared. Overrides EXIT_OK specifically;
+                 # a real operational error (network/conflict/runtime) still
+                 # takes priority over this code, it never masks one.
 EXIT_CONFLICT=49
 EXIT_GENERAL=1
+GITHUB_API_AUTH_FAILURE=90
+GITHUB_API_INVALID_TOKEN=91
+GITHUB_API_UNSAFE_CURL_OPTIONS=92
 
 trap 'echo "ОШИБКА: update.sh прервался на строке ${LINENO}: ${BASH_COMMAND}" >&2' ERR
 
 VERSION="2.4.1"  # fix (WP-401): deprecated-file removal now checks is_protected_user_file() — a protected file (e.g. sessions/00-index.md) listed in deprecated_files by mistake could previously be deleted despite the "Не затрагиваются" report claiming otherwise; fix #229: repair-pass no longer stale-repairs memory files with owner: user in frontmatter; fix #228: hot-budget validator warns when memory/*.md horizon:hot lines exceed threshold
 REPO="TserenTserenov/FMT-exocortex-template" # UPSTREAM-CONST: do not substitute
 BRANCH="main"
+# Delivery channel (WP-529 F7, pilot decision 2026-08-21, prompted by an
+# external user's report): "release" (default) pins the delivery to the last
+# published release tag — users must not receive unreleased, possibly red,
+# main. IWE_UPDATE_CHANNEL=main is the ONLY way onto the moving branch
+# (author/dev workflow) — a failed release lookup aborts fail-closed (#501),
+# it never falls back to main automatically.
+UPDATE_CHANNEL="${IWE_UPDATE_CHANNEL:-release}"
 RAW_BASE="https://raw.githubusercontent.com/$REPO/$BRANCH"
 API_BASE="https://api.github.com/repos/$REPO"
 
@@ -35,6 +50,22 @@ FAST_CHECK=false
 # только наблюдает (stage A) и ничего не пишет в пользовательские файлы.
 APPLY_SETTINGS_MERGE=false
 REFRESH_STALE=false
+
+# #533: governance compatibility entrypoints are upgraded as one ownership
+# unit.  The updater may write them only after every target passes the same
+# provenance/import-consumer preflight; no member is migrated independently.
+AGENT_FAULT_LEGACY_SHIMS=(
+    "scripts/iwe_checklist_memory.py"
+    "scripts/sync_feedback_to_memory.py"
+    "scripts/agent_fault_remind.py"
+    "scripts/agent_fault_remind.sh"
+)
+AGENT_FAULT_SHIM_PREFLIGHT_PATHS=()
+AGENT_FAULT_SHIM_TARGET_SNAPSHOTS=()
+AGENT_FAULT_SHIM_GIT_READY=()
+AGENT_FAULT_SHIM_GIT_PATHSPECS=()
+AGENT_FAULT_SHIM_TRACKED_SNAPSHOTS=()
+AGENT_FAULT_SHIM_STATUS_SNAPSHOTS=()
 
 # Allow extra curl flags via env var (e.g. CURL_OPTS="--insecure" for Windows corporate firewall).
 # --max-time 20: without it a stalled/slow connection hangs update.sh forever with no
@@ -581,6 +612,922 @@ finish_update_transaction() {
     UPDATE_TRANSACTION_STARTED=false
 }
 
+effective_governance_repo() {
+    local configured="${ENV_GOVERNANCE_REPO:-}"
+    local env_file
+
+    # Normal installs keep the file in the workspace root. Older installs can
+    # still have it inside the template repository, so a zero-diff recovery
+    # must honour the same fallback as the main update path. Parse only the one
+    # data line; never source either file.
+    for env_file in "$WORKSPACE_DIR/.exocortex.env" "$SCRIPT_DIR/.exocortex.env"; do
+        [ -z "$configured" ] || break
+        [ -f "$env_file" ] || continue
+        configured=$(grep -E '^GOVERNANCE_REPO=' "$env_file" 2>/dev/null \
+            | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+    done
+    configured="${configured:-${IWE_GOVERNANCE_REPO:-DS-strategy}}"
+    case "$configured" in
+        ""|.|..|.*|*/*|*[!A-Za-z0-9._-]*)
+            echo "ОШИБКА: GOVERNANCE_REPO должен быть именем каталога, не путём: $configured" >&2
+            return 1
+            ;;
+    esac
+    if [ -L "$WORKSPACE_DIR/$configured" ]; then
+        echo "ОШИБКА: governance repo является symlink; backfill запрещён: $WORKSPACE_DIR/$configured" >&2
+        return 1
+    fi
+    if [ -d "$WORKSPACE_DIR/$configured" ] && [ -d "$SCRIPT_DIR" ]; then
+        local governance_real script_real
+        governance_real=$(cd -P "$WORKSPACE_DIR/$configured" 2>/dev/null && pwd -P) || return 1
+        script_real=$(cd -P "$SCRIPT_DIR" 2>/dev/null && pwd -P) || return 1
+        if [ "$governance_real" = "$script_real" ]; then
+            echo "ОШИБКА: GOVERNANCE_REPO указывает на template repo; backfill запрещён: $configured" >&2
+            return 1
+        fi
+    fi
+    printf '%s\n' "$configured"
+}
+
+atomic_copy_executable() {
+    if [ "$#" -ne 2 ]; then
+        echo "ОШИБКА: atomic_copy_executable требует <source> <target>" >&2
+        return 1
+    fi
+    local source_path="$1" target_path="$2" target_dir temporary_path
+    target_dir=$(dirname "$target_path")
+    if [ -L "$target_dir" ]; then
+        echo "ОШИБКА: каталог назначения является symlink: $target_dir" >&2
+        return 1
+    fi
+    if ! mkdir -p "$target_dir"; then
+        echo "ОШИБКА: не удалось создать каталог $target_dir" >&2
+        return 1
+    fi
+    if ! temporary_path=$(mktemp "$target_dir/.iwe-update-copy.XXXXXX"); then
+        echo "ОШИБКА: не удалось создать временный файл рядом с $target_path" >&2
+        return 1
+    fi
+    if ! cp "$source_path" "$temporary_path" || \
+       ! chmod +x "$temporary_path" || \
+       ! mv -f "$temporary_path" "$target_path"; then
+        rm -f "$temporary_path"
+        echo "ОШИБКА: атомарная доставка $target_path не завершена" >&2
+        return 1
+    fi
+}
+
+agent_fault_git() {
+    if [ "$#" -lt 2 ]; then
+        echo "ОШИБКА: agent_fault_git требует <repo> <git-args...>" >&2
+        return 1
+    fi
+    local repository="$1"
+    shift
+    env -u GIT_INDEX_FILE -u GIT_DIR -u GIT_WORK_TREE -u GIT_COMMON_DIR \
+        -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES \
+        -u GIT_CEILING_DIRECTORIES \
+        GIT_OPTIONAL_LOCKS=0 \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        git -C "$repository" "$@"
+}
+
+agent_fault_target_snapshot() {
+    if [ "$#" -ne 1 ] || [ -z "${PY_BIN:-}" ]; then
+        echo "agent-fault target snapshot requires Python 3 and one path" >&2
+        return 2
+    fi
+    # PY_BIN can intentionally be the two-word Windows launcher `py -3`.
+    # shellcheck disable=SC2086
+    $PY_BIN -c '
+import hashlib
+import json
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    before = os.lstat(path)
+except FileNotFoundError:
+    print("missing")
+    raise SystemExit(0)
+if not stat.S_ISREG(before.st_mode):
+    print(json.dumps(["non-regular", before.st_dev, before.st_ino, before.st_mode]))
+    raise SystemExit(0)
+flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+descriptor = os.open(path, flags)
+try:
+    opened = os.fstat(descriptor)
+    identity = (
+        before.st_dev, before.st_ino, before.st_mode, before.st_size,
+        before.st_mtime_ns, before.st_ctime_ns,
+    )
+    if (
+        opened.st_dev, opened.st_ino, opened.st_mode, opened.st_size,
+        opened.st_mtime_ns, opened.st_ctime_ns,
+    ) != identity:
+        raise RuntimeError("target identity changed before snapshot")
+    digest = hashlib.sha256()
+    while True:
+        chunk = os.read(descriptor, 1024 * 1024)
+        if not chunk:
+            break
+        digest.update(chunk)
+finally:
+    os.close(descriptor)
+after = os.lstat(path)
+after_identity = (
+    after.st_dev, after.st_ino, after.st_mode, after.st_size,
+    after.st_mtime_ns, after.st_ctime_ns,
+)
+if after_identity != identity:
+    raise RuntimeError("target identity changed during snapshot")
+print(json.dumps(["file", *identity, digest.hexdigest()], separators=(",", ":")))
+' "$1"
+}
+
+agent_fault_legacy_hash_is_blessed() {
+    if [ "$#" -ne 2 ]; then
+        return 1
+    fi
+    local relative_path="$1" digest="$2"
+    # Exact bytes formerly shipped by FMT.  Keep provenance per path: a digest
+    # valid for one legacy command never authorizes replacement of another.
+    # c180e6a (v0.33.0): Python reminder + feedback importer + shell reminder.
+    # ceca611: shell reminder gained its platform routing header.
+    case "$relative_path:$digest" in
+        scripts/agent_fault_remind.py:9e4e354e3829c558fa4c35659084fdc6b024d3fb1dd69ff1640e9c58d7c98b60|\
+        scripts/sync_feedback_to_memory.py:776a18c30c45ba164e21376e17872b5070274aab72a911d5ad1363773c48ad67|\
+        scripts/agent_fault_remind.sh:913779508fc0144cfae0f345ec9e733b95d64333c74b42d17c84ed5d9ce0f03d|\
+        scripts/agent_fault_remind.sh:632ef75c7d1ed5d3bbb5546c279edf58b730a15706ee8e47ee5240bbe4b17cc3)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+scan_legacy_agent_fault_import_consumers() {
+    if [ "$#" -ne 1 ] || [ -z "${PY_BIN:-}" ]; then
+        echo "agent-fault consumer scan requires Python 3" >&2
+        return 2
+    fi
+    local scripts_dir="$1"
+    [ -d "$scripts_dir" ] || return 0
+    # PY_BIN can intentionally be the two-word Windows launcher `py -3`.
+    # shellcheck disable=SC2086
+    $PY_BIN -c '
+import ast
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+matches = []
+
+def is_legacy_module(name):
+    return name == "iwe_checklist_memory" or name.endswith(".iwe_checklist_memory")
+
+try:
+    for directory, names, files in os.walk(root, followlinks=False):
+        for name in names:
+            candidate_directory = Path(directory, name)
+            if candidate_directory.is_symlink():
+                print(
+                    f"consumer scan refused symlinked directory: {candidate_directory}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            candidate = Path(directory, name)
+            if candidate.is_symlink():
+                print(
+                    f"consumer scan refused symlinked Python file: {candidate}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            text = candidate.read_text(encoding="utf-8", errors="replace")
+            try:
+                tree = ast.parse(text, filename=str(candidate))
+            except (SyntaxError, ValueError) as exc:
+                line = getattr(exc, "lineno", None) or 1
+                message = getattr(exc, "msg", type(exc).__name__)
+                print(
+                    f"consumer scan failed to parse {candidate}:{line}: {message}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(2)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    found = any(is_legacy_module(alias.name) for alias in node.names)
+                elif isinstance(node, ast.ImportFrom):
+                    found = bool(node.module and is_legacy_module(node.module)) or any(
+                        is_legacy_module(alias.name) for alias in node.names
+                    )
+                else:
+                    found = False
+                if found:
+                    matches.append(f"{candidate}:{node.lineno}")
+except OSError as exc:
+    print(f"consumer scan failed: {exc}", file=sys.stderr)
+    raise SystemExit(2)
+print("\n".join(matches))
+' "$scripts_dir"
+}
+
+print_legacy_agent_fault_manual_remediation() {
+    if [ "$#" -ne 1 ]; then
+        return 1
+    fi
+    local governance_dir="$1" relative_path source_path target_path backup_path
+    echo "  Manual remediation prerequisites (do not run copy commands yet):" >&2
+    echo "    1. Migrate every listed legacy import consumer to canonical immutable read_faults(...)." >&2
+    echo "    2. Review each source/target diff and keep a backup." >&2
+    echo "  Only after both reviews, run the applicable command:" >&2
+    for relative_path in "${AGENT_FAULT_LEGACY_SHIMS[@]}"; do
+        source_path="$SCRIPT_DIR/seed/strategy/$relative_path"
+        target_path="$governance_dir/$relative_path"
+        backup_path="$target_path.before-fmt-533"
+        if [ -f "$target_path" ] && [ ! -L "$target_path" ]; then
+            printf '    mkdir -p %q && cp -p %q %q && cp %q %q && chmod +x %q\n' \
+                "$(dirname "$backup_path")" "$target_path" "$backup_path" \
+                "$source_path" "$target_path" "$target_path" >&2
+        else
+            printf '    mkdir -p %q && cp %q %q && chmod +x %q\n' \
+                "$(dirname "$target_path")" "$source_path" "$target_path" \
+                "$target_path" >&2
+        fi
+    done
+}
+
+preflight_legacy_agent_fault_shims() {
+    if [ "$#" -ne 1 ]; then
+        echo "ОШИБКА: preflight_legacy_agent_fault_shims требует <governance-dir>" >&2
+        return 1
+    fi
+    local governance_dir="$1" relative_path source_path target_path digest
+    local target_snapshot
+    local git_prefix git_relative_path git_pathspec tracked_paths
+    local git_ready=false tracked=false status_output consumer_matches
+    local blocked=0
+    AGENT_FAULT_SHIMS_TO_APPLY=()
+    AGENT_FAULT_SHIM_PREFLIGHT_PATHS=()
+    AGENT_FAULT_SHIM_TARGET_SNAPSHOTS=()
+    AGENT_FAULT_SHIM_GIT_READY=()
+    AGENT_FAULT_SHIM_GIT_PATHSPECS=()
+    AGENT_FAULT_SHIM_TRACKED_SNAPSHOTS=()
+    AGENT_FAULT_SHIM_STATUS_SNAPSHOTS=()
+
+    if [ -L "$governance_dir" ] || [ ! -d "$governance_dir" ]; then
+        echo "  ✗ governance must be an existing real directory; legacy shim migration refused." >&2
+        print_legacy_agent_fault_manual_remediation "$governance_dir"
+        return 1
+    fi
+    if [ -L "$governance_dir/scripts" ] || \
+       { [ -e "$governance_dir/scripts" ] && [ ! -d "$governance_dir/scripts" ]; }; then
+        echo "  ✗ governance/scripts must be a real directory; legacy shim migration refused." >&2
+        print_legacy_agent_fault_manual_remediation "$governance_dir"
+        return 1
+    fi
+    if agent_fault_git "$governance_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git_ready=true
+        if ! git_prefix=$(agent_fault_git "$governance_dir" rev-parse --show-prefix); then
+            echo "  ✗ cannot resolve governance path inside Git; legacy shim migration refused." >&2
+            print_legacy_agent_fault_manual_remediation "$governance_dir"
+            return 1
+        fi
+    fi
+
+    for relative_path in "${AGENT_FAULT_LEGACY_SHIMS[@]}"; do
+        source_path="$SCRIPT_DIR/seed/strategy/$relative_path"
+        target_path="$governance_dir/$relative_path"
+        if [ -L "$source_path" ] || [ ! -f "$source_path" ]; then
+            echo "  ✗ release payload is missing a real $relative_path shim." >&2
+            blocked=1
+            continue
+        fi
+        if [ -L "$target_path" ]; then
+            echo "  ✗ $relative_path is a symlink; automatic migration refused." >&2
+            blocked=1
+            continue
+        fi
+        if [ -e "$target_path" ] && [ ! -f "$target_path" ]; then
+            echo "  ✗ $relative_path is not a regular file; automatic migration refused." >&2
+            blocked=1
+            continue
+        fi
+        if ! target_snapshot=$(agent_fault_target_snapshot "$target_path"); then
+            echo "  ✗ cannot snapshot $relative_path before migration." >&2
+            blocked=1
+            continue
+        fi
+        tracked=false
+        tracked_paths=""
+        status_output=""
+        git_pathspec=""
+        if $git_ready; then
+            git_relative_path="${git_prefix}${relative_path}"
+            git_pathspec=":(top,icase,literal)${git_relative_path}"
+            if ! tracked_paths=$(agent_fault_git "$governance_dir" ls-files -- "$git_pathspec"); then
+                echo "  ✗ cannot inspect tracked paths for $relative_path; automatic migration refused." >&2
+                blocked=1
+                continue
+            fi
+            if [ -n "$tracked_paths" ]; then
+                tracked=true
+                if [ "$tracked_paths" != "$git_relative_path" ]; then
+                    echo "  ✗ $relative_path has a case-insensitive tracked alias; automatic migration refused." >&2
+                    blocked=1
+                    continue
+                fi
+            fi
+            if ! status_output=$(agent_fault_git "$governance_dir" \
+                status --porcelain=v1 --untracked-files=all -- "$git_pathspec"); then
+                echo "  ✗ cannot inspect Git state for $relative_path; automatic migration refused." >&2
+                blocked=1
+                continue
+            fi
+        fi
+        AGENT_FAULT_SHIM_PREFLIGHT_PATHS+=("$relative_path")
+        AGENT_FAULT_SHIM_TARGET_SNAPSHOTS+=("$target_snapshot")
+        if $git_ready; then
+            AGENT_FAULT_SHIM_GIT_READY+=("1")
+        else
+            AGENT_FAULT_SHIM_GIT_READY+=("0")
+        fi
+        AGENT_FAULT_SHIM_GIT_PATHSPECS+=("$git_pathspec")
+        AGENT_FAULT_SHIM_TRACKED_SNAPSHOTS+=("$tracked_paths")
+        AGENT_FAULT_SHIM_STATUS_SNAPSHOTS+=("$status_output")
+        if [ -f "$target_path" ] && cmp -s "$source_path" "$target_path"; then
+            if [ ! -x "$target_path" ]; then
+                AGENT_FAULT_SHIMS_TO_APPLY+=("$relative_path")
+            fi
+            continue
+        fi
+        if ! $git_ready; then
+            echo "  ✗ $relative_path needs migration but governance is non-Git; provenance cannot be proven." >&2
+            blocked=1
+            continue
+        fi
+        if [ ! -e "$target_path" ]; then
+            if $tracked; then
+                echo "  ✗ $relative_path is a tracked deletion; automatic resurrection refused." >&2
+                blocked=1
+                continue
+            fi
+            if [ -n "$status_output" ]; then
+                echo "  ✗ $relative_path has a case-insensitive untracked or staged alias; automatic migration refused." >&2
+                blocked=1
+            else
+                AGENT_FAULT_SHIMS_TO_APPLY+=("$relative_path")
+            fi
+            continue
+        fi
+        digest=$(hash_file "$target_path") || {
+            echo "  ✗ cannot hash $relative_path; automatic migration refused." >&2
+            blocked=1
+            continue
+        }
+        if agent_fault_legacy_hash_is_blessed "$relative_path" "$digest" && \
+           $tracked && [ -z "$status_output" ]; then
+            AGENT_FAULT_SHIMS_TO_APPLY+=("$relative_path")
+            continue
+        fi
+        if [ -n "$status_output" ]; then
+            echo "  ✗ $relative_path is dirty, staged, or untracked; automatic migration refused." >&2
+        elif $tracked; then
+            echo "  ✗ $relative_path is clean but has unknown bytes; it is not an FMT-owned version." >&2
+        else
+            echo "  ✗ $relative_path is an unknown untracked file; automatic migration refused." >&2
+        fi
+        blocked=1
+    done
+
+    if ! consumer_matches=$(scan_legacy_agent_fault_import_consumers "$governance_dir/scripts"); then
+        echo "  ✗ legacy import consumer scan failed; no compatibility shim was changed." >&2
+        blocked=1
+    elif [ -n "$consumer_matches" ]; then
+        echo "  ✗ legacy import consumer(s) still require init_db/DB_PATH-style facade removal:" >&2
+        printf '%s\n' "$consumer_matches" | sed 's/^/    /' >&2
+        echo "  Migrate them to the canonical immutable read_faults(...) API, then rerun update.sh." >&2
+        blocked=1
+    fi
+    if [ "$blocked" -ne 0 ]; then
+        AGENT_FAULT_SHIMS_TO_APPLY=()
+        print_legacy_agent_fault_manual_remediation "$governance_dir"
+        return 1
+    fi
+    if [ "${#AGENT_FAULT_SHIM_PREFLIGHT_PATHS[@]}" -ne \
+         "${#AGENT_FAULT_LEGACY_SHIMS[@]}" ]; then
+        echo "  ✗ incomplete legacy shim snapshot; automatic migration refused." >&2
+        AGENT_FAULT_SHIMS_TO_APPLY=()
+        return 1
+    fi
+}
+
+agent_fault_revalidate_shim_snapshot() {
+    if [ "$#" -ne 2 ]; then
+        return 1
+    fi
+    local governance_dir="$1" relative_path="$2" target_path
+    local expected_index=-1 index=0 snapshot_path
+    local current_snapshot current_tracked current_status
+    for snapshot_path in "${AGENT_FAULT_SHIM_PREFLIGHT_PATHS[@]}"; do
+        if [ "$snapshot_path" = "$relative_path" ]; then
+            expected_index=$index
+            break
+        fi
+        index=$((index + 1))
+    done
+    if [ "$expected_index" -lt 0 ]; then
+        echo "  ✗ no preflight snapshot for $relative_path; apply refused." >&2
+        return 1
+    fi
+    target_path="$governance_dir/$relative_path"
+    if ! current_snapshot=$(agent_fault_target_snapshot "$target_path") || \
+       [ "$current_snapshot" != \
+         "${AGENT_FAULT_SHIM_TARGET_SNAPSHOTS[$expected_index]}" ]; then
+        echo "  ✗ $relative_path changed after preflight; apply refused." >&2
+        return 1
+    fi
+    if [ "${AGENT_FAULT_SHIM_GIT_READY[$expected_index]}" = "1" ]; then
+        if ! current_tracked=$(agent_fault_git "$governance_dir" ls-files -- \
+                "${AGENT_FAULT_SHIM_GIT_PATHSPECS[$expected_index]}") || \
+           ! current_status=$(agent_fault_git "$governance_dir" \
+                status --porcelain=v1 --untracked-files=all -- \
+                "${AGENT_FAULT_SHIM_GIT_PATHSPECS[$expected_index]}"); then
+            echo "  ✗ Git state for $relative_path cannot be revalidated." >&2
+            return 1
+        fi
+        if [ "$current_tracked" != \
+             "${AGENT_FAULT_SHIM_TRACKED_SNAPSHOTS[$expected_index]}" ] || \
+           [ "$current_status" != \
+             "${AGENT_FAULT_SHIM_STATUS_SNAPSHOTS[$expected_index]}" ]; then
+            echo "  ✗ Git state for $relative_path changed after preflight; apply refused." >&2
+            return 1
+        fi
+    elif agent_fault_git "$governance_dir" \
+        rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "  ✗ $relative_path entered a Git worktree after preflight; apply refused." >&2
+        return 1
+    fi
+}
+
+apply_legacy_agent_fault_shims() {
+    if [ "$#" -ne 1 ]; then
+        echo "ОШИБКА: apply_legacy_agent_fault_shims требует <governance-dir>" >&2
+        return 1
+    fi
+    local governance_dir="$1" backup_root relative_path source_path target_path
+    local backup_path restore_temp index=0 applied_count=0 rollback_failed=0
+    local transaction_active=false transaction_signal="" transaction_code=1
+    local saved_exit saved_hup saved_int saved_term
+    local -a originals
+
+    if [ "${#AGENT_FAULT_SHIMS_TO_APPLY[@]}" -eq 0 ]; then
+        echo "  ✓ legacy agent-fault shims already match the release payload."
+        return 0
+    fi
+    if ! backup_root=$(mktemp -d "${TMPDIR_UPDATE:-${TMPDIR:-/tmp}}/iwe-agent-fault-shims.XXXXXX"); then
+        echo "  ✗ cannot create rollback storage for legacy shims." >&2
+        return 1
+    fi
+
+    saved_exit=$(trap -p EXIT)
+    saved_hup=$(trap -p HUP)
+    saved_int=$(trap -p INT)
+    saved_term=$(trap -p TERM)
+
+    agent_fault_restore_transaction_traps() {
+        trap - EXIT HUP INT TERM
+        [ -z "$saved_exit" ] || eval "$saved_exit"
+        [ -z "$saved_hup" ] || eval "$saved_hup"
+        [ -z "$saved_int" ] || eval "$saved_int"
+        [ -z "$saved_term" ] || eval "$saved_term"
+    }
+
+    agent_fault_rollback_applied_prefix() {
+        local rollback_index=0 rollback_relative rollback_target
+        local rollback_backup rollback_temp
+        rollback_failed=0
+        while [ "$rollback_index" -lt "$applied_count" ]; do
+            rollback_relative="${AGENT_FAULT_SHIMS_TO_APPLY[$rollback_index]}"
+            rollback_target="$governance_dir/$rollback_relative"
+            rollback_backup="$backup_root/$rollback_index"
+            if [ "${originals[$rollback_index]}" = "file" ]; then
+                rollback_temp="$rollback_target.iwe-rollback.$$.$rollback_index"
+                if ! cp -p "$rollback_backup" "$rollback_temp" || \
+                   ! mv -f "$rollback_temp" "$rollback_target"; then
+                    rm -f "$rollback_temp"
+                    rollback_failed=1
+                fi
+            elif ! rm -f "$rollback_target"; then
+                rollback_failed=1
+            fi
+            rollback_index=$((rollback_index + 1))
+        done
+        rm -rf "$backup_root"
+    }
+
+    agent_fault_transaction_exit() {
+        local exit_code=$?
+        if $transaction_active; then
+            transaction_active=false
+            agent_fault_rollback_applied_prefix
+        fi
+        agent_fault_restore_transaction_traps
+        exit "$exit_code"
+    }
+
+    agent_fault_transaction_signal() {
+        transaction_signal="$1"
+        transaction_code="$2"
+        if $transaction_active; then
+            transaction_active=false
+            agent_fault_rollback_applied_prefix
+        fi
+        agent_fault_restore_transaction_traps
+        kill -s "$transaction_signal" "$$"
+        return "$transaction_code"
+    }
+
+    transaction_active=true
+    trap 'agent_fault_transaction_exit' EXIT
+    trap 'agent_fault_transaction_signal HUP 129' HUP
+    trap 'agent_fault_transaction_signal INT 130' INT
+    trap 'agent_fault_transaction_signal TERM 143' TERM
+
+    originals=()
+    for relative_path in "${AGENT_FAULT_SHIMS_TO_APPLY[@]}"; do
+        target_path="$governance_dir/$relative_path"
+        backup_path="$backup_root/$index"
+        if [ -f "$target_path" ]; then
+            if ! cp -p "$target_path" "$backup_path"; then
+                echo "  ✗ cannot snapshot $relative_path before migration." >&2
+                transaction_active=false
+                rm -rf "$backup_root"
+                agent_fault_restore_transaction_traps
+                unset -f agent_fault_restore_transaction_traps \
+                    agent_fault_rollback_applied_prefix \
+                    agent_fault_transaction_exit agent_fault_transaction_signal
+                return 1
+            fi
+            originals+=("file")
+        else
+            originals+=("missing")
+        fi
+        index=$((index + 1))
+    done
+
+    index=0
+    for relative_path in "${AGENT_FAULT_SHIMS_TO_APPLY[@]}"; do
+        source_path="$SCRIPT_DIR/seed/strategy/$relative_path"
+        target_path="$governance_dir/$relative_path"
+        if ! agent_fault_revalidate_shim_snapshot "$governance_dir" "$relative_path"; then
+            echo "  ✗ apply precondition drift at $relative_path; rolling back applied legacy shims." >&2
+            break
+        fi
+        # Include the in-flight target in rollback: TERM may arrive after its
+        # atomic rename but before this loop regains control.
+        applied_count=$((index + 1))
+        if ! atomic_copy_executable "$source_path" "$target_path"; then
+            echo "  ✗ apply failed at $relative_path; rolling back applied legacy shims." >&2
+            break
+        fi
+        index=$((index + 1))
+    done
+
+    if [ "$index" -ne "${#AGENT_FAULT_SHIMS_TO_APPLY[@]}" ]; then
+        transaction_active=false
+        agent_fault_rollback_applied_prefix
+        agent_fault_restore_transaction_traps
+        if [ "$rollback_failed" -ne 0 ]; then
+            echo "  ✗ legacy shim rollback was incomplete; inspect all four paths manually." >&2
+        else
+            echo "  ✓ legacy shim apply failure rolled back without index changes." >&2
+        fi
+        unset -f agent_fault_restore_transaction_traps \
+            agent_fault_rollback_applied_prefix \
+            agent_fault_transaction_exit agent_fault_transaction_signal
+        return 1
+    fi
+
+    transaction_active=false
+    rm -rf "$backup_root"
+    agent_fault_restore_transaction_traps
+    unset -f agent_fault_restore_transaction_traps \
+        agent_fault_rollback_applied_prefix \
+        agent_fault_transaction_exit agent_fault_transaction_signal
+    echo "  ✓ four legacy agent-fault names now delegate to the canonical CLI."
+}
+
+backfill_legacy_agent_fault_shims() {
+    local governance_repo="${EFFECTIVE_GOVERNANCE_REPO:-}"
+    local governance_dir
+    if [ -z "$governance_repo" ]; then
+        governance_repo=$(effective_governance_repo) || return 1
+    fi
+    governance_dir="$WORKSPACE_DIR/$governance_repo"
+    if [ ! -e "$governance_dir" ] && [ ! -L "$governance_dir" ]; then
+        echo "  ○ $governance_repo: governance repo не найден, legacy agent-fault migration пропущена."
+        return 0
+    fi
+    preflight_legacy_agent_fault_shims "$governance_dir" || return 1
+    # The consumer scan may take long enough for a user/agent to create or
+    # stage one of the targets. Re-run the full read-only preflight so apply
+    # receives a snapshot taken after that scan, not before it.
+    preflight_legacy_agent_fault_shims "$governance_dir" || return 1
+    apply_legacy_agent_fault_shims "$governance_dir"
+}
+
+backfill_platform_hooks() {
+    local governance_repo="${EFFECTIVE_GOVERNANCE_REPO:-$(effective_governance_repo)}"
+    local governance_dir="$WORKSPACE_DIR/$governance_repo"
+    local source_installer="$SCRIPT_DIR/seed/strategy/scripts/install-hooks.sh"
+    local target_installer="$governance_dir/scripts/install-hooks.sh"
+    local backup_dir="$governance_dir/.git/hook-backups"
+    local backup backup_index
+
+    if [ -L "$governance_dir" ] || [ -L "$governance_dir/.git" ] || [ -L "$backup_dir" ]; then
+        echo "  ✗ $governance_repo: governance/.git/hook-backups symlink запрещён; platform hooks не изменены." >&2
+        return 1
+    fi
+    if [ -f "$governance_dir/.git" ]; then
+        echo "  ⚠ $governance_repo: обнаружен Git worktree (.git — файл); platform hooks не установлены. Используйте обычный clone или установите hooks вручную после проверки общего core.hooksPath." >&2
+        return 0
+    fi
+    if [ ! -d "$governance_dir/.git" ]; then
+        echo "  ○ $governance_repo: git-репозиторий не найден, миграция hooks пропущена."
+        return 0
+    fi
+    if [ -L "$governance_dir/scripts" ] || [ -L "$governance_dir/.githooks" ]; then
+        echo "  ✗ Каталоги scripts/.githooks в $governance_repo не должны быть symlink; platform hooks не изменены." >&2
+        return 1
+    fi
+
+    for source_path in \
+        "$source_installer" \
+        "$SCRIPT_DIR/seed/strategy/.githooks/pre-commit" \
+        "$SCRIPT_DIR/seed/strategy/.githooks/pre-push"
+    do
+        if [ -L "$source_path" ] || [ ! -f "$source_path" ]; then
+            echo "  ✗ Канонический platform-hook не доставлен: ${source_path#"$SCRIPT_DIR"/}" >&2
+            return 1
+        fi
+    done
+    if [ -L "$target_installer" ]; then
+        echo "  ✗ scripts/install-hooks.sh является symlink; автоматическая перезапись запрещена." >&2
+        return 1
+    fi
+
+    if ! mkdir -p "$governance_dir/scripts" "$backup_dir"; then
+        echo "  ✗ Не удалось подготовить каталоги platform hooks." >&2
+        return 1
+    fi
+    if [ -f "$target_installer" ] && ! cmp -s "$source_installer" "$target_installer"; then
+        backup="$backup_dir/install-hooks.sh.backup.$(date +%s)"
+        backup_index=0
+        while [ -e "$backup" ]; do
+            backup_index=$((backup_index + 1))
+            backup="$backup_dir/install-hooks.sh.backup.$(date +%s).$backup_index"
+        done
+        if ! cp "$target_installer" "$backup"; then
+            echo "  ✗ Не удалось сохранить backup существующего install-hooks.sh." >&2
+            return 1
+        fi
+        echo "  📝 Existing install-hooks.sh backed up to: $backup"
+    fi
+    if [ ! -f "$target_installer" ] || ! cmp -s "$source_installer" "$target_installer"; then
+        atomic_copy_executable "$source_installer" "$target_installer" || return 1
+    elif ! chmod +x "$target_installer"; then
+        echo "  ✗ Не удалось восстановить executable bit у install-hooks.sh." >&2
+        return 1
+    fi
+
+    if ! IWE_TEMPLATE="$SCRIPT_DIR" IWE_ROOT="$WORKSPACE_DIR" \
+        bash "$target_installer" "$governance_dir"; then
+        return 1
+    fi
+}
+
+backfill_executor_catalog() {
+    local governance_repo="${EFFECTIVE_GOVERNANCE_REPO:-$(effective_governance_repo)}"
+    local governance_dir="$WORKSPACE_DIR/$governance_repo"
+    local skills_dir="$WORKSPACE_DIR/.claude/skills"
+    local output_path="$governance_dir/scripts/executor-catalog.yaml"
+    local resolved_python catalog_output
+
+    if [ -L "$governance_dir" ]; then
+        echo "  ✗ executor-catalog.yaml не обновлён: governance repo является symlink." >&2
+        return 1
+    fi
+    if [ ! -d "$governance_dir" ] || [ ! -d "$skills_dir" ]; then
+        echo "  ○ executor-catalog.yaml: governance repo или skills не найдены, backfill пропущен."
+        return 0
+    fi
+    if [ -L "$governance_dir/scripts" ] || [ -L "$output_path" ]; then
+        echo "  ✗ executor-catalog.yaml не обновлён: scripts или сам target является symlink." >&2
+        return 1
+    fi
+    if ! resolved_python=$("$SCRIPT_DIR/scripts/lib/find-python3.sh" 2>/dev/null); then
+        echo "  ⚠ executor-catalog.yaml не сгенерирован: нет python3 с PyYAML." >&2
+        return 1
+    fi
+
+    if catalog_output=$(IWE_ROOT="$WORKSPACE_DIR" IWE_GOVERNANCE_REPO="$governance_repo" \
+        "$resolved_python" "$SCRIPT_DIR/scripts/generate-executor-catalog.py" \
+        --skills-dir "$skills_dir" --output "$output_path" 2>&1); then
+        [ -n "$catalog_output" ] && printf '%s\n' "$catalog_output" | sed 's/^/  /'
+        return 0
+    fi
+
+    [ -n "$catalog_output" ] && printf '%s\n' "$catalog_output" | sed 's/^/  /' >&2
+    echo "  ⚠ executor-catalog.yaml не сгенерирован: повторите после исправления ошибки выше." >&2
+    return 1
+}
+
+backfill_governance_seed_script() {
+    if [ "$#" -ne 1 ]; then
+        echo "ОШИБКА: backfill_governance_seed_script требует <relative-path>" >&2
+        return 1
+    fi
+    local governance_repo="${EFFECTIVE_GOVERNANCE_REPO:-$(effective_governance_repo)}"
+    local governance_dir="$WORKSPACE_DIR/$governance_repo"
+    local relative_path="$1"
+    local source_path="$SCRIPT_DIR/seed/strategy/$relative_path"
+    local target_path="$governance_dir/$relative_path"
+    local git_prefix git_relative_path git_pathspec tracked_paths status_output
+
+    if [ -L "$governance_dir" ]; then
+        echo "  ✗ $relative_path не обновлён: governance repo является symlink." >&2
+        return 1
+    fi
+    if [ ! -d "$governance_dir" ]; then
+        echo "  ○ $governance_repo: governance repo не найден, backfill $relative_path пропущен."
+        return 0
+    fi
+    if [ -L "$source_path" ] || [ ! -f "$source_path" ]; then
+        echo "  ✗ $relative_path не доставлен в целевом release payload." >&2
+        return 1
+    fi
+    if [ -L "$governance_dir/scripts" ]; then
+        echo "  ✗ $relative_path не обновлён: governance scripts является symlink." >&2
+        return 1
+    fi
+    if [ -L "$target_path" ]; then
+        echo "  ✗ $relative_path является symlink; автоматическая перезапись запрещена." >&2
+        return 1
+    fi
+
+    # Fresh installs receive the seed copy, including its provenance header.
+    # Existing installations may be upgraded only when their platform snapshot
+    # is either absent or a clean tracked file. A local deletion is a worktree
+    # change too: never silently resurrect it over the user's Git state.
+    if [ ! -f "$target_path" ] || ! cmp -s "$source_path" "$target_path"; then
+        if agent_fault_git "$governance_dir" \
+            rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            if ! git_prefix=$(agent_fault_git "$governance_dir" rev-parse --show-prefix); then
+                echo "  ✗ $relative_path: не удалось определить Git prefix; backfill запрещён." >&2
+                return 1
+            fi
+            git_relative_path="${git_prefix}${relative_path}"
+            git_pathspec=":(top,icase,literal)${git_relative_path}"
+            if ! tracked_paths=$(agent_fault_git "$governance_dir" \
+                    ls-files -- "$git_pathspec") || \
+               ! status_output=$(agent_fault_git "$governance_dir" \
+                    status --porcelain=v1 --untracked-files=all -- "$git_pathspec"); then
+                echo "  ✗ $relative_path: Git state не прочитан; backfill запрещён." >&2
+                return 1
+            fi
+            if [ -n "$tracked_paths" ] && \
+               [ "$tracked_paths" != "$git_relative_path" ]; then
+                echo "  ✗ $relative_path имеет case-insensitive tracked alias; backfill запрещён." >&2
+                return 1
+            fi
+            if [ -n "$status_output" ]; then
+                echo "  ✗ $relative_path содержит локальные изменения/удаление или case alias; сначала разберите Git state." >&2
+                return 1
+            fi
+            if [ -z "$tracked_paths" ] && [ -e "$target_path" ]; then
+                echo "  ✗ $relative_path существует как пользовательский untracked-файл; автоматическая перезапись запрещена." >&2
+                return 1
+            fi
+        elif [ -e "$target_path" ]; then
+            echo "  ✗ $relative_path отличается, а governance directory не является git-репозиторием; автоматическая перезапись запрещена." >&2
+            return 1
+        fi
+    fi
+
+    if [ ! -f "$target_path" ] || ! cmp -s "$source_path" "$target_path"; then
+        atomic_copy_executable "$source_path" "$target_path" || return 1
+        echo "  ⟳ $relative_path обновлён в $governance_repo."
+    else
+        echo "  ✓ $relative_path уже совпадает с release payload."
+    fi
+}
+
+backfill_derived_snapshot_updater() {
+    backfill_governance_seed_script "scripts/update-derived-snapshot.py"
+}
+
+backfill_day_open_fault_reader() {
+    backfill_governance_seed_script "scripts/day-open-llm-fill.py"
+}
+
+# #533: update is the one reliable point at which an existing private fault
+# profile can be brought onto the current schema and permission contract.  The
+# canonical CLI's no-create observational `stats` command is used here: it
+# deliberately migrates and hardens an existing untracked DB, but create=False
+# means a user who never enabled the profile gets no profile/.gitignore/DB as
+# update debris.
+# A tracked private DB remains fail-closed.  Surface that refusal as a warning
+# without ever running `git rm --cached` or otherwise mutating the user's index.
+harden_agent_fault_profile_after_update() {
+    local governance_repo="${EFFECTIVE_GOVERNANCE_REPO:-}"
+    local cli="$SCRIPT_DIR/scripts/agent-fault/iwe_checklist_memory.py"
+    local harden_output harden_status
+
+    if [ -z "$governance_repo" ] && \
+       ! governance_repo=$(effective_governance_repo); then
+        echo "  ⚠ agent-fault profile не проверен: governance repo не определён." >&2
+        return 0
+    fi
+    if [ ! -f "$cli" ]; then
+        echo "  ⚠ agent-fault profile не проверен: canonical CLI не доставлен." >&2
+        return 0
+    fi
+    if ! py_available; then
+        echo "  ⚠ agent-fault profile не проверен: Python 3 недоступен." >&2
+        return 0
+    fi
+
+    if harden_output=$(IWE_WORKSPACE="$WORKSPACE_DIR" \
+        IWE_GOVERNANCE_REPO="$governance_repo" \
+        "$PY_BIN" "$cli" stats 2>&1 >/dev/null); then
+        return 0
+    else
+        harden_status=$?
+    fi
+    printf '  ⚠ agent-fault profile оставлен без изменений (код %s): %s\n' \
+        "$harden_status" "$harden_output" >&2
+    return 0
+}
+
+run_post_apply_backfills_or_die() {
+    $CHECK_ONLY && return 0
+    if ! EFFECTIVE_GOVERNANCE_REPO=$(effective_governance_repo); then
+        return 1
+    fi
+
+    bash "$SCRIPT_DIR/setup/install-iwe-paths.sh" \
+        --workspace "$WORKSPACE_DIR" --governance "$EFFECTIVE_GOVERNANCE_REPO" \
+        --quiet 2>&1 | sed 's/^/  /'
+    local install_paths_status="${PIPESTATUS[0]}"
+    if [ "$install_paths_status" -ne 0 ]; then
+        echo "  ⚠ install-iwe-paths.sh завершился с ошибкой (exit $install_paths_status). Запустите вручную: bash $SCRIPT_DIR/setup/install-iwe-paths.sh --workspace $WORKSPACE_DIR --governance $EFFECTIVE_GOVERNANCE_REPO"
+    fi
+
+    echo ""
+    echo "Day Open fault reader (upgrade backfill)..."
+    if ! backfill_day_open_fault_reader; then
+        echo "  ОШИБКА: governance Day Open reader не обновлён; обновление оставлено незавершённым." >&2
+        return 1
+    fi
+
+    echo ""
+    echo "Agent fault profile (safe update hardening)..."
+    harden_agent_fault_profile_after_update
+
+    echo ""
+    echo "Agent fault legacy entrypoints (all-or-none upgrade)..."
+    if ! backfill_legacy_agent_fault_shims; then
+        echo "  ОШИБКА: legacy agent-fault entrypoints не мигрированы; canonical profile hardening уже выполнен независимо." >&2
+        return 1
+    fi
+
+    echo ""
+    echo "Platform hooks (upgrade backfill)..."
+    if ! backfill_platform_hooks; then
+        echo "  ОШИБКА: platform hooks не мигрированы; обновление оставлено незавершённым." >&2
+        return 1
+    fi
+
+    echo ""
+    echo "Derived snapshot updater (upgrade backfill)..."
+    if ! backfill_derived_snapshot_updater; then
+        echo "  ОШИБКА: governance snapshot updater не обновлён; обновление оставлено незавершённым." >&2
+        return 1
+    fi
+
+    echo ""
+    echo "Executor catalog (upgrade backfill)..."
+    backfill_executor_catalog || true
+}
+
 record_rule_workspace_state() {
     local fpath="$1" src dst
     case "$fpath" in .claude/rules/*) ;; *) return 0 ;; esac
@@ -658,11 +1605,27 @@ CLAUDE_MEMORY_DIR=$(resolve_workspace_memory_dir "$WORKSPACE_DIR") || exit 1
 # users found out by losing an edit. Called from every branch that shows a preview,
 # including the "no changes" one — there a repair-pass still writes to all of these.
 print_extra_write_targets() {
+    local governance_repo governance_dir
+    if governance_repo=$(effective_governance_repo 2>/dev/null); then
+        governance_dir="$WORKSPACE_DIR/$governance_repo"
+    else
+        governance_dir="$WORKSPACE_DIR/<invalid-GOVERNANCE_REPO>"
+    fi
     echo "Кроме перечисленного, обычный запуск (без --check) также пишет — это зоны возможной перезаписи, пофайлового прогноза для них превью не строит (issue #350):"
     echo "  • $WORKSPACE_DIR/.claude/ — рабочие копии скиллов, хуков, правил"
     echo "  • $CLAUDE_MEMORY_DIR — рабочие копии memory-файлов"
     echo "  • $WORKSPACE_DIR/.iwe-runtime/ — пересобирается целиком из шаблона"
     echo "  • $WORKSPACE_DIR/.exocortex.env, $SCRIPT_DIR/.claude.md.base, $SCRIPT_DIR/update-manifest.json"
+    echo "  • $WORKSPACE_DIR/.iwe-paths и $HOME/.zshenv — пересоздаваемое окружение путей"
+    echo "  • local core.hooksPath в git-репозиториях с .githooks под $WORKSPACE_DIR"
+    echo "  • $governance_dir/scripts/install-hooks.sh — установщик platform hooks"
+    echo "  • $governance_dir/.githooks/pre-commit и pre-push — platform hooks"
+    echo "  • $governance_dir/scripts/day-open-llm-fill.py — platform reader профиля ошибок для Day Open"
+    echo "  • $governance_dir/scripts/update-derived-snapshot.py — обновлятор derived snapshot"
+    echo "  • $governance_dir/scripts/executor-catalog.yaml — каталог исполнителей"
+    echo "  • $governance_dir/exocortex/agent-fault-profile/ — только миграция/права существующей приватной БД; отсутствующий профиль не создаётся"
+    echo "    Symlink-пути блокируют backfill. Отличающиеся installer/hooks сохраняются в .git/hook-backups/ и заменяются."
+    echo "    Локально изменённые Day Open reader/snapshot updater блокируют обновление; executor-catalog.yaml — генерируемый файл и заменяется при смысловом расхождении."
     echo "  Расхождение рабочей копии с шаблоном чинится независимо от списков выше."
     echo ""
 }
@@ -678,18 +1641,238 @@ assert_self_unmutated() {
     fi
 }
 
+# exit_clean — the shared exit for every "this run completed with no
+# operational error" path (peer-session 2026-08-21-09, Codex review
+# consensus). Overrides EXIT_OK with EXIT_TAINTED when INTEGRITY_TAINTED is
+# set — i.e. the grep-fallback ran (no Python), so file content was never
+# verified by sha256, only file names were compared. It does not intercept
+# any operational-error exit (EXIT_NETWORK/EXIT_RUNTIME/EXIT_CONFLICT) —
+# those return directly and never reach this function, so a real failure
+# is never masked by a tainted-but-otherwise-clean verdict.
+exit_clean() {
+    if $INTEGRITY_TAINTED; then
+        echo "⚠ Завершено с непроверенной целостностью: Python недоступен, содержимое файлов не сверялось по контрольной сумме." >&2
+        exit "$EXIT_TAINTED"
+    fi
+    exit "$EXIT_OK"
+}
+
 # Resolve main once before fetching the manifest.  Every subsequent download uses
 # that immutable commit, so a push between manifest and file requests cannot mix
 # hashes from one revision with content from another (issue #398).
+github_api_get() {
+    if [ "$#" -ne 1 ]; then
+        echo "ОШИБКА: github_api_get требует один GitHub API URL" >&2
+        return 1
+    fi
+    local trace_was_enabled=false
+    case "$-" in
+        *x*) trace_was_enabled=true; set +x ;;
+    esac
+    local api_url="$1" token="" auth_source="anonymous" endpoint result=0
+    local curl_option numeric_value expecting_numeric="" unsafe_curl_options=false
+    local glob_was_disabled=false
+    local -a authenticated_curl_options=()
+    case "$api_url" in
+        https://api.github.com/*) ;;
+        *)
+            echo "ОШИБКА: github_api_get отклонил URL вне api.github.com" >&2
+            $trace_was_enabled && set -x
+            return 1
+            ;;
+    esac
+
+    if [ -n "${GH_TOKEN:-}" ]; then
+        token="$GH_TOKEN"
+        auth_source="GH_TOKEN"
+    elif [ -n "${GITHUB_TOKEN:-}" ]; then
+        token="$GITHUB_TOKEN"
+        auth_source="GITHUB_TOKEN"
+    fi
+    if [ -n "$token" ]; then
+        if [ "${#token}" -gt 512 ]; then
+            echo "ОШИБКА: $auth_source содержит недопустимый GitHub token." >&2
+            $trace_was_enabled && set -x
+            return "$GITHUB_API_INVALID_TOKEN"
+        fi
+        case "$token" in
+            *[!A-Za-z0-9_]*)
+                echo "ОШИБКА: $auth_source содержит недопустимый GitHub token." >&2
+                $trace_was_enabled && set -x
+                return "$GITHUB_API_INVALID_TOKEN"
+                ;;
+        esac
+        # CURL_OPTS is intentionally flexible for anonymous downloads, but an
+        # authenticated request must never inherit tracing, config, headers or
+        # output flags that could persist the Authorization header. Parse a
+        # small transport-only allowlist without eval (Bash 3.2 compatible).
+        case "$-" in *f*) glob_was_disabled=true ;; *) set -f ;; esac
+        for curl_option in ${CURL_BASE_OPTS:-}; do
+            if [ -n "$expecting_numeric" ]; then
+                numeric_value="$curl_option"
+                case "$numeric_value" in
+                    *[!0-9.]*|*.*.*|"") unsafe_curl_options=true ;;
+                    *[0-9]*) authenticated_curl_options+=("$numeric_value") ;;
+                    *) unsafe_curl_options=true ;;
+                esac
+                expecting_numeric=""
+                $unsafe_curl_options && break
+                continue
+            fi
+            case "$curl_option" in
+                --insecure)
+                    authenticated_curl_options+=("$curl_option")
+                    ;;
+                --max-time|--connect-timeout|--retry|--retry-delay|--retry-max-time)
+                    authenticated_curl_options+=("$curl_option")
+                    expecting_numeric="$curl_option"
+                    ;;
+                --max-time=*|--connect-timeout=*|--retry=*|--retry-delay=*|--retry-max-time=*)
+                    numeric_value="${curl_option#*=}"
+                    case "$numeric_value" in
+                        *[!0-9.]*|*.*.*|"") unsafe_curl_options=true ;;
+                        *[0-9]*) authenticated_curl_options+=("$curl_option") ;;
+                        *) unsafe_curl_options=true ;;
+                    esac
+                    ;;
+                *)
+                    unsafe_curl_options=true
+                    ;;
+            esac
+            $unsafe_curl_options && break
+        done
+        [ -z "$expecting_numeric" ] || unsafe_curl_options=true
+        $glob_was_disabled || set +f
+        if $unsafe_curl_options; then
+            echo "ОШИБКА: authenticated GitHub API отклонил небезопасные CURL_OPTS; разрешены только transport timeout/retry и --insecure." >&2
+            token=""
+            $trace_was_enabled && set -x
+            return "$GITHUB_API_UNSAFE_CURL_OPTIONS"
+        fi
+        if [ -n "${_CURL_SSL_OPT:-}" ]; then
+            authenticated_curl_options+=("$_CURL_SSL_OPT")
+        fi
+        # Never put a credential in argv or xtrace. curl reads the one header
+        # from stdin as configuration; -q must be argv[1] so curl cannot load
+        # a user curlrc that enables tracing before it reads that header.
+        if [ -n "${authenticated_curl_options[*]-}" ]; then
+            printf 'header = "Authorization: Bearer %s"\n' "$token" | \
+                curl -q "${authenticated_curl_options[@]}" -sSfL -K - "$api_url"
+        else
+            # Bash 3.2 with `set -u` treats an explicitly declared empty array
+            # as unbound when expanded with "${array[@]}". Keep the zero-option
+            # path expansion-free while preserving curl -q as argv[1].
+            printf 'header = "Authorization: Bearer %s"\n' "$token" | \
+                curl -q -sSfL -K - "$api_url"
+        fi
+        result=${PIPESTATUS[1]}
+        if [ "$result" -ne 0 ]; then
+            echo "ОШИБКА: authenticated GitHub API request via $auth_source failed; fallback disabled." >&2
+            result="$GITHUB_API_AUTH_FAILURE"
+        fi
+        token=""
+        $trace_was_enabled && set -x
+        return "$result"
+    fi
+
+    if command -v gh >/dev/null 2>&1 && \
+       GH_DEBUG='' DEBUG='' GH_PROMPT_DISABLED=1 \
+           gh auth status --hostname github.com >/dev/null 2>&1; then
+        endpoint="/${api_url#https://api.github.com/}"
+        if ! GH_DEBUG='' DEBUG='' GH_PROMPT_DISABLED=1 \
+             gh api --hostname github.com --method GET "$endpoint"; then
+            echo "ОШИБКА: authenticated GitHub API request via gh failed; fallback disabled." >&2
+            result="$GITHUB_API_AUTH_FAILURE"
+        fi
+        $trace_was_enabled && set -x
+        return "$result"
+    fi
+
+    # No explicit credential and no authenticated gh session: preserve the
+    # public anonymous request path and its native curl status.
+    # shellcheck disable=SC2086
+    curl ${CURL_BASE_OPTS:-} ${_CURL_SSL_OPT:-} -sSfL "$api_url"
+    result=$?
+    $trace_was_enabled && set -x
+    return "$result"
+}
+
 resolve_delivery_ref() {
-    local resolved_ref
+    local resolved_ref release_tag release_json commit_json api_status
+    if [ "$UPDATE_CHANNEL" = "release" ]; then
+        # sed, not python: the tag must be resolvable even on installs where
+        # py_available fails — a release tag is already an immutable-enough
+        # pin, unlike the moving branch the no-python path degrades to below.
+        release_json=""
+        if release_json=$(github_api_get "$API_BASE/releases/latest"); then
+            release_tag=$(printf '%s\n' "$release_json" | \
+                sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+        else
+            api_status=$?
+            release_tag=""
+        fi
+        if [ -n "$release_tag" ]; then
+            if py_available; then
+                commit_json=""
+                if commit_json=$(github_api_get "$API_BASE/commits/$release_tag"); then
+                    api_status=0
+                else
+                    api_status=$?
+                fi
+            else
+                api_status=0
+                commit_json=""
+            fi
+            if [ "$api_status" -eq "$GITHUB_API_AUTH_FAILURE" ] || \
+               [ "$api_status" -eq "$GITHUB_API_INVALID_TOKEN" ] || \
+               [ "$api_status" -eq "$GITHUB_API_UNSAFE_CURL_OPTIONS" ]; then
+                echo "ОШИБКА: authenticated release commit lookup failed; refusing fallback to tag." >&2
+                exit "$EXIT_NETWORK"
+            fi
+            if py_available && [ -n "$commit_json" ] && \
+               resolved_ref=$(printf '%s\n' "$commit_json" | "$PY_BIN" -c '
+import json, re, sys
+sha = json.load(sys.stdin).get("sha", "")
+if not re.fullmatch(r"[0-9a-f]{40}", sha):
+    raise SystemExit(1)
+print(sha)'); then
+                RAW_BASE="https://raw.githubusercontent.com/$REPO/$resolved_ref"
+                echo "  Канал поставки: релиз $release_tag (снимок ${resolved_ref:0:12})"
+            else
+                RAW_BASE="https://raw.githubusercontent.com/$REPO/$release_tag"
+                echo "  Канал поставки: релиз $release_tag (закреплён по тегу)"
+            fi
+            return 0
+        fi
+        # #501 (fail-closed, матрица внешнего пользователя по v0.38.7): молчаливый
+        # откат на подвижную ветку превращал сбой резолва релиза в тихую доставку
+        # непроверенного main — ровно то, от чего release-канал защищает. Явный
+        # main-канал остаётся единственной дорогой к подвижной ветке.
+        echo "ОШИБКА: не удалось определить последний релиз (нет релизов или API недоступен)." >&2
+        echo "  Release-канал работает только от опубликованного релиза (fail-closed, #501)." >&2
+        echo "  Повторите позже, либо осознанно выберите подвижную ветку:" >&2
+        echo "    IWE_UPDATE_CHANNEL=main bash update.sh" >&2
+        exit "$EXIT_NETWORK"
+    fi
     if ! py_available; then
         echo "  ⚠ Нет python3: поставка проверяется по подвижной ветке $BRANCH."
         return 0
     fi
     # shellcheck disable=SC2086  # CURL_BASE_OPTS intentionally contains multiple flags.
-    if resolved_ref=$(curl $CURL_BASE_OPTS $_CURL_SSL_OPT -sSfL "$API_BASE/commits/$BRANCH" 2>/dev/null | \
-        "$PY_BIN" -c '
+    commit_json=""
+    if commit_json=$(github_api_get "$API_BASE/commits/$BRANCH"); then
+        api_status=0
+    else
+        api_status=$?
+    fi
+    if [ "$api_status" -eq "$GITHUB_API_AUTH_FAILURE" ] || \
+       [ "$api_status" -eq "$GITHUB_API_INVALID_TOKEN" ] || \
+       [ "$api_status" -eq "$GITHUB_API_UNSAFE_CURL_OPTIONS" ]; then
+        echo "ОШИБКА: authenticated branch lookup failed; refusing anonymous or moving-branch fallback." >&2
+        exit "$EXIT_NETWORK"
+    fi
+    if [ -n "$commit_json" ] && \
+       resolved_ref=$(printf '%s\n' "$commit_json" | "$PY_BIN" -c '
 import json, re, sys
 sha = json.load(sys.stdin).get("sha", "")
 if not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -728,6 +1911,12 @@ if [ -f "$UPDATE_INCOMPLETE_MARKER" ]; then
 fi
 
 # === Step 0: Self-update (bootstrap) ===
+# issue #505 root, part 1: the channel must be resolved BEFORE self-update.
+# Step 0 used to fetch update.sh from the DEFAULT moving main while Step 1
+# then pinned the delivery to the release snapshot — so the local update.sh
+# ping-ponged between the main and release versions on every run, and Step 5
+# always saw update.sh as "updated" (see part 2 at the apply loop).
+resolve_delivery_ref
 echo "[0] Проверка update.sh..."
 # Capture hash before any network activity — used for --check integrity guard below (fix #205)
 SELF_HASH_BEFORE=$(hash_file "$SCRIPT_DIR/update.sh")
@@ -741,8 +1930,16 @@ if curl $CURL_BASE_OPTS $_CURL_SSL_OPT -sSfL "$RAW_BASE/update.sh" -o "$REMOTE_U
             echo "  ⚠ Новая версия update.sh доступна. Запустите без --check для обновления."
         else
             echo "  Найдена новая версия update.sh — обновляю..."
-            cp "$REMOTE_UPDATE" "$SCRIPT_DIR/update.sh"
-            chmod +x "$SCRIPT_DIR/update.sh"
+            # issue #505 class (residual, found in the same sweep): replace
+            # the RUNNING script via sibling tmp + mv — rename swaps the
+            # directory entry and this process keeps its old inode; a plain cp
+            # truncates the very file bash is executing. Historically survived
+            # only because the few remaining commands sat in bash's read
+            # buffer.
+            _boot_staged="$SCRIPT_DIR/.update.sh.staged.$$"
+            cp "$REMOTE_UPDATE" "$_boot_staged"
+            chmod +x "$_boot_staged"
+            mv -f "$_boot_staged" "$SCRIPT_DIR/update.sh"
             echo "  Перезапуск..."
             exec bash "$SCRIPT_DIR/update.sh" "$@"
         fi
@@ -753,7 +1950,6 @@ echo ""
 
 # === Step 1: Fetch manifest ===
 echo "[1] Загрузка манифеста..."
-resolve_delivery_ref
 MANIFEST_URL="$RAW_BASE/update-manifest.json"
 MANIFEST="$TMPDIR_UPDATE/manifest.json"
 
@@ -871,8 +2067,41 @@ fi
 # на актуальной версии от предыдущего запуска, а workspace остался stale) И
 # после обычной propagation (Step 6) — чтобы не дублировать работу NEW/UPDATED_FILES.
 # REPAIRED — глобальный счётчик, читается вызывающим кодом после возврата.
+sync_workspace_agents() {
+    [ -f "$SCRIPT_DIR/AGENTS.md" ] || return 0
+    local ws_agents_new="$TMPDIR_UPDATE/ws-agents-new-substituted.md"
+    local destination="$WORKSPACE_DIR/AGENTS.md"
+    local destination_temp=""
+    if [ -L "$destination" ]; then
+        echo "  ✗ $destination — symbolic link is forbidden" >&2
+        return 1
+    fi
+    if [ -e "$destination" ] && [ ! -f "$destination" ]; then
+        echo "  ✗ $destination — existing target is not a regular file" >&2
+        return 1
+    fi
+    substitute_claude_placeholders "$SCRIPT_DIR/AGENTS.md" "$ws_agents_new" || return 1
+    if [ ! -f "$destination" ] || ! cmp -s "$destination" "$ws_agents_new"; then
+        destination_temp=$(mktemp "$WORKSPACE_DIR/.AGENTS.md.update.XXXXXX") || {
+            echo "  ✗ $destination — не удалось создать временный файл" >&2
+            return 1
+        }
+        if ! cp "$ws_agents_new" "$destination_temp" || \
+           ! mv -f "$destination_temp" "$destination"; then
+            rm -f "$destination_temp"
+            echo "  ✗ $destination не синхронизирован" >&2
+            return 1
+        fi
+        echo "  ✓ $destination обновлён (generated, substituted)"
+    fi
+    return 0
+}
+
 repair_pass() {
     REPAIRED=0
+    # Generated workspace instructions are part of repair, not only delivery:
+    # both TOTAL_CHANGES=0 recovery branches must restore a missing/stale copy.
+    sync_workspace_agents || return 1
     # Bash 3.2 (macOS) parses the apostrophe in the comment below before it
     # recognizes the closing `)` of a process substitution.  Keep the manifest
     # reader in ordinary temporary files: its diagnostics stay visible and the
@@ -1033,6 +2262,190 @@ CLAUDE_BASE_MISSING_FILES=()
 DOWNLOAD_QUEUE=()
 DOWNLOAD_DESCS=()
 DOWNLOAD_HASHES=()
+# INTEGRITY_TAINTED (peer-session 2026-08-21-09, WP-546 review follow-up,
+# consensus with Codex): true when the fallback path (grep, no sha256 in
+# the manifest lines it emits) is in use — a real parser failure below
+# aborts the script outright instead (cold-context review, same
+# peer-session: an earlier version of this comment claimed the flag also
+# covered that case, which was never reachable — exit happens before this
+# flag would be set). The old fallback comment claimed integrity was
+# "already documented via SKIPPED_DOWNLOAD, not silently trusted" — false:
+# an empty expected_hash makes verify_batch_integrity() skip the file
+# (`[ -n "$expected_hash" ] || continue`), so a corrupted or substituted
+# download was silently accepted as good. This flag makes that condition
+# visible in the final verdict instead of printing an ordinary success.
+INTEGRITY_TAINTED=false
+
+# Parse the manifest into a plain temp file first, not directly via process
+# substitution into the while-loop below (peer-session 2026-08-21-09: the
+# original code piped the parser straight into `while read`, so a Python
+# crash mid-parse — bad JSON, missing field, encoding error — just produced
+# a short or empty stream that `while read` silently accepted as "few/no
+# files to update," indistinguishable from a real empty manifest). Written
+# under $TMPDIR_UPDATE, which cleanup_update()'s EXIT trap already removes.
+MANIFEST_PARSED="$TMPDIR_UPDATE/manifest-parsed.txt"
+if py_available; then
+    # Path via argv (issue #402, defect 2), not interpolated into the -c
+    # string — see FILES_MATCH above. stderr is NOT redirected here (was
+    # `2>/dev/null`): a parse failure on our own manifest should be rare, and
+    # silencing it left nothing to diagnose why the run below fell back to
+    # "no changes."
+    if ! $PY_BIN -c "
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+for entry in data.get('files', []):
+    print(entry['path'] + '|' + entry.get('desc', '') + '|' + entry.get('sha256', ''))
+" "$MANIFEST" > "$MANIFEST_PARSED"; then
+        echo "✗ Не удалось разобрать манифест обновлений ($MANIFEST) — Python вернул ошибку (см. вывод выше)." >&2
+        echo "  Обновление остановлено: продолжать со сбойным разбором значило бы рискнуть тихо решить, что обновлять нечего." >&2
+        exit "$EXIT_RUNTIME"
+    fi
+else
+    # Fallback: basic grep parsing if no working python interpreter. No
+    # sha256 in this path — integrity verification is skipped entirely, so
+    # every file below counts as unverified (INTEGRITY_TAINTED, not merely
+    # "checked composition only" as the old comment claimed).
+    INTEGRITY_TAINTED=true
+    echo "⚠ Python недоступен — только состав файлов сверяется, содержимое НЕ проверяется по контрольной сумме." >&2
+
+    # High 2 fail-closed guard (peer-session 2026-08-21-12, Codex, revised
+    # after cold-context review found the first version tautological — the
+    # extracted-count and found-count were both built from the same grep, so
+    # they were always equal even when sed extracted garbage). The fallback
+    # assumes one "path" key per line — a compact/minified manifest (several
+    # entries on one line) silently breaks that assumption, and the old code
+    # just extracted the FIRST match per line instead of failing, losing
+    # every other entry with no signal. A line-count heuristic
+    # (`wc -l == 1`) was considered and rejected: a trailing-newline-less
+    # minified file gives 0, and a compact multi-line manifest can still
+    # pack several "path" keys onto one physical line. Check the actual
+    # assumption — how many "path" occurrences share a line — not a proxy
+    # for it.
+    #
+    # Scope decision (same peer-session, second round): this fallback
+    # supports ONLY the line-per-field layout this repo's own manifest
+    # generator produces — "path" preceded solely by whitespace on its
+    # line, per PATH_LINE_RE below. A compact single-file manifest like
+    # {"files":[{"path":"x.md"}]} is valid JSON but NOT supported here and
+    # correctly hits EXIT_RUNTIME (test-update-issue-226.sh Scenario H) —
+    # a looser prefix (^.*"path") was considered and rejected: it would
+    # let arbitrary text ahead of the real key mask corruption or a "path"
+    # match inside an unrelated string value, undermining the whole-line
+    # grammar match's actual guarantee.
+    #
+    # Every grep below has an explicit 0/1/>1 status check (peer-session
+    # 2026-08-21-12, High 2): this script has `set -e` but not `pipefail`,
+    # so a grep failing inside a pipe or process substitution would
+    # otherwise be silently absorbed by the next command in the chain —
+    # exactly the "fail-open under error" this guard exists to prevent.
+    # grep_or_die PATTERN FILE DEST-VAR — runs "grep -c PATTERN FILE",
+    # writes stdout to DEST-VAR (a file path), returns 0. Aborts the script
+    # on any grep exit status other than 0 (matches found) or 1 (no
+    # matches) — status >1 means grep itself failed to read/execute.
+    grep_or_die() {
+        local pattern="$1" file="$2" dest="$3" rc=0
+        grep -c -- "$pattern" "$file" > "$dest" 2>/dev/null || rc=$?
+        if [ "$rc" -gt 1 ]; then
+            echo "✗ Не удалось прочитать манифест обновлений для резервного разбора (grep вернул код ${rc})." >&2
+            exit "$EXIT_RUNTIME"
+        fi
+        return 0
+    }
+
+    # -c counts MATCHING LINES; that's exactly what both guards need — the
+    # multi-path check cares whether ANY line has 2+ occurrences (a line
+    # either qualifies as a violation or doesn't), and once that guard has
+    # passed, "at most one path per line" makes line-count and
+    # occurrence-count the same number for the total.
+    MULTI_PATH_COUNT_FILE=$(mktemp)
+    grep_or_die '"path".*"path"' "$MANIFEST" "$MULTI_PATH_COUNT_FILE"
+    MULTI_PATH_LINES=$(cat "$MULTI_PATH_COUNT_FILE")
+    rm -f "$MULTI_PATH_COUNT_FILE"
+    if [ "$MULTI_PATH_LINES" -gt 0 ]; then
+        echo "✗ Манифест обновлений в компактном/минифицированном формате (несколько записей на одной строке) — резервный разбор без Python это не поддерживает." >&2
+        echo "  Обновление остановлено: обычная извлечённая запись отбросила бы соседние записи на той же строке без предупреждения." >&2
+        exit "$EXIT_RUNTIME"
+    fi
+
+    PATH_KEY_COUNT_FILE=$(mktemp)
+    grep_or_die '"path"' "$MANIFEST" "$PATH_KEY_COUNT_FILE"
+    PATH_KEY_TOTAL=$(cat "$PATH_KEY_COUNT_FILE")
+    rm -f "$PATH_KEY_COUNT_FILE"
+
+    # grep_or_die's -c count above already confirms whether "path" occurs;
+    # the actual matching lines still need a second, non-counting pass
+    # (grep without -c) to feed the per-line grammar check below. Same
+    # explicit-status contract as grep_or_die: status 1 (no matches) can't
+    # happen here (PATH_KEY_TOTAL already proved matches exist above), so
+    # >0 is unconditionally a read error, not "no matches." The `|| grep_rc=$?`
+    # form (not a bare `grep ...; grep_rc=$?`, found by cold-context review)
+    # matters under `set -e`: a plain non-zero exit from an unguarded
+    # command aborts the script on that line — the following `grep_rc=$?`
+    # would never run, so a failing grep would kill the script with a raw
+    # exit 1/2 instead of this guard's own EXIT_RUNTIME.
+    PATH_LINES_FILE=$(mktemp)
+    grep_rc=0
+    grep -- '"path"' "$MANIFEST" > "$PATH_LINES_FILE" 2>/dev/null || grep_rc=$?
+    if [ "$grep_rc" -gt 0 ]; then
+        echo "✗ Не удалось прочитать манифест обновлений для резервного разбора (grep вернул код ${grep_rc})." >&2
+        exit "$EXIT_RUNTIME"
+    fi
+
+    # Whole-line grammar match (peer-session 2026-08-21-12, Codex: validate
+    # the full line belongs to the supported form BEFORE extracting, not
+    # just eyeball what sed happened to return). Supported form only:
+    # optional leading whitespace, "path", optional whitespace, colon,
+    # optional whitespace, a double-quoted value with no embedded '"' or
+    # '\' (this fallback cannot decode JSON escapes), then anything after
+    # the closing quote (comma, more keys) is accepted without further
+    # constraint since it isn't part of the path value itself.
+    PATH_LINE_RE='^[[:space:]]*"path"[[:space:]]*:[[:space:]]*"[^"\\]+".*$'
+    PATH_ENTRIES_FOUND=0
+    : > "$MANIFEST_PARSED"
+    while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        case "$line" in
+            *'"path"'*)
+                if ! printf '%s\n' "$line" | grep -Eq -- "$PATH_LINE_RE"; then
+                    echo "✗ Резервный разбор манифеста: строка с ключом \"path\" не в поддерживаемой форме (строка $((PATH_ENTRIES_FOUND + 1)) среди найденных совпадений)." >&2
+                    echo "  Поддерживается только: \"path\": \"значение_без_кавычек_и_обратных_слэшей\" на одной строке." >&2
+                    exit "$EXIT_RUNTIME"
+                fi
+                fpath=$(printf '%s\n' "$line" | sed -E 's/^[[:space:]]*"path"[[:space:]]*:[[:space:]]*"([^"\\]+)".*$/\1/')
+                if [ -z "$fpath" ]; then
+                    echo "✗ Резервный разбор манифеста: строка совпала с формой, но извлечённое значение пути пустое." >&2
+                    exit "$EXIT_RUNTIME"
+                fi
+                PATH_ENTRIES_FOUND=$((PATH_ENTRIES_FOUND + 1))
+                echo "$fpath|" >> "$MANIFEST_PARSED"
+                ;;
+        esac
+    done < "$PATH_LINES_FILE"
+    rm -f "$PATH_LINES_FILE"
+
+    if [ "$PATH_ENTRIES_FOUND" -ne "$PATH_KEY_TOTAL" ]; then
+        echo "✗ Резервный разбор манифеста нашёл ${PATH_KEY_TOTAL} ключ(ей) \"path\", но подтверждённо извлёк только ${PATH_ENTRIES_FOUND} запись(ей) — формат манифеста не полностью соответствует ожиданиям этого разбора." >&2
+        exit "$EXIT_RUNTIME"
+    fi
+fi
+
+# Duplicate-path check (peer-session 2026-08-21-09, Codex: must run on every
+# parsed manifest path BEFORE the skip/protected-file filtering below, not
+# after — a duplicate can disappear from DOWNLOAD_QUEUE if one copy gets
+# skip-if-hash-matches while the other doesn't, hiding the very condition
+# this check exists to catch). Two manifest entries writing the same
+# destination race inside download_batch()'s parallel transfer and each
+# other's --remove-on-error cleanup; this is corrupt manifest data, not a
+# transient network condition, so the run stops instead of continuing with
+# an unspecified winner.
+DUPLICATE_PATHS=$(cut -d'|' -f1 "$MANIFEST_PARSED" | LC_ALL=C sort | LC_ALL=C uniq -d)
+if [ -n "$DUPLICATE_PATHS" ]; then
+    echo "✗ Манифест обновлений содержит повторяющиеся пути файлов:" >&2
+    echo "$DUPLICATE_PATHS" | sed 's/^/  /' >&2
+    echo "  Обновление остановлено — параллельная докачка гарантированно верна только для уникальных путей." >&2
+    exit "$EXIT_RUNTIME"
+fi
 
 while IFS='|' read -r fpath fdesc expected_hash; do
     [ -z "$fpath" ] && continue
@@ -1060,56 +2473,100 @@ while IFS='|' read -r fpath fdesc expected_hash; do
     DOWNLOAD_QUEUE+=("$fpath")
     DOWNLOAD_DESCS+=("$fdesc")
     DOWNLOAD_HASHES+=("$expected_hash")
-done < <(
-    # Parse JSON: extract path|desc|sha256 lines. Path via argv (issue #402,
-    # defect 2), not interpolated into the -c string — see FILES_MATCH above.
-    if py_available; then
-        $PY_BIN -c "
-import json, sys
-with open(sys.argv[1]) as f:
-    data = json.load(f)
-for entry in data.get('files', []):
-    print(entry['path'] + '|' + entry.get('desc', '') + '|' + entry.get('sha256', ''))
-" "$MANIFEST" 2>/dev/null
-    else
-        # Fallback: basic grep parsing if no working python interpreter.
-        # No sha256 in this path — integrity check below is skipped (already
-        # documented via SKIPPED_DOWNLOAD, not silently trusted).
-        grep '"path"' "$MANIFEST" | while read -r line; do
-            fpath=$(echo "$line" | sed 's/.*"path"[[:space:]]*:[[:space:]]*"//;s/".*//')
-            echo "$fpath|"
-        done
-    fi
-)
+done < "$MANIFEST_PARSED"
 
-# download_batch FPATH... — one curl --parallel call for the given fpaths
-# (positional args, not a nameref: `local -n` needs bash 4.3+, but this
-# script's #!/bin/bash shebang resolves to the system bash on macOS, which is
-# 3.2 — a nameref there fails "local: -n: invalid option" and silently no-ops
-# the whole download instead of erroring, since `local`'s exit status doesn't
-# trip `set -e`. Found live testing this exact function). Writes each file to
-# $TMPDIR_UPDATE/files/$fpath. -f makes curl treat an HTTP error page (404)
-# as a failure instead of writing it to disk as if it were the real file —
-# without it a missing manifest entry silently "downloads" successfully.
-# --remove-on-error then deletes that failed transfer's partial/error output
-# so a plain `[ -s ... ]` elsewhere is a reliable "did this file actually
-# arrive" check. `|| true`: a batch failing outright (e.g. every URL in it
-# unreachable) must not trip `set -e` and abort the whole update — the
-# per-file presence check right after this call is what actually decides
-# success per file, same as the old code's per-file `if curl ...` (Ф2
-# peer-session review; all found live testing this exact function).
+# curl_supports_parallel_batch — one-time capability probe (peer-session
+# 2026-08-21-09, consensus with Codex): --parallel/--parallel-max shipped
+# together in curl 7.66.0, --remove-on-error only in 7.83.0, so a curl with
+# the first two but not the third is a real, not hypothetical, combination.
+# `curl --help all` lists every option this curl build understands regardless
+# of network access — checked once here, not per-batch, since download_batch()
+# below runs multiple times (initial pass + retry).
+curl_supports_parallel_batch() {
+    local help_output
+    help_output=$(curl --help all 2>&1) || return 1
+    echo "$help_output" | grep -q -- '--parallel[^-]' || return 1
+    echo "$help_output" | grep -q -- '--parallel-max' || return 1
+    echo "$help_output" | grep -q -- '--remove-on-error' || return 1
+}
+USE_PARALLEL_DOWNLOAD=true
+if ! curl_supports_parallel_batch; then
+    USE_PARALLEL_DOWNLOAD=false
+    echo "⚠ Установленный curl не поддерживает параллельное скачивание (--parallel/--parallel-max/--remove-on-error) — используется более медленный последовательный режим." >&2
+fi
+
+# download_batch FPATH... — downloads the given fpaths to
+# $TMPDIR_UPDATE/files/$fpath, either as one curl --parallel call (fast path)
+# or one curl invocation per file (sequential fallback, only when
+# USE_PARALLEL_DOWNLOAD=false). Positional args, not a nameref: `local -n`
+# needs bash 4.3+, but this script's #!/bin/bash shebang resolves to the
+# system bash on macOS, which is 3.2 — a nameref there fails "local: -n:
+# invalid option" and silently no-ops the whole download instead of
+# erroring, since `local`'s exit status doesn't trip `set -e` (found live
+# testing this exact function).
+#
+# -f makes curl treat an HTTP error page (404) as a failure instead of
+# writing it to disk as if it were the real file — without it a missing
+# manifest entry silently "downloads" successfully. Existence of the
+# destination file (not its size — a legitimate zero-length file is a valid
+# transfer, peer-session 2026-08-21-08/09) is the "did this file actually
+# arrive" signal downstream, which is why both paths below guarantee a
+# failed transfer leaves no file behind: the parallel path via
+# --remove-on-error, the sequential path via a .part-then-rename so a
+# curl exit status other than 0 never leaves a destination file at all.
 download_batch() {
     [ $# -eq 0 ] && return 0
-    local cfg p dst
-    cfg=$(mktemp)
-    for p in "$@"; do
-        dst="$TMPDIR_UPDATE/files/$p"
-        mkdir -p "$(dirname "$dst")"
-        printf 'url = "%s/%s"\noutput = "%s"\n' "$RAW_BASE" "$p" "$dst" >> "$cfg"
-    done
-    # shellcheck disable=SC2086  # CURL_BASE_OPTS/_CURL_SSL_OPT intentionally unquoted (multi-token flags)
-    curl $CURL_BASE_OPTS $_CURL_SSL_OPT -f --remove-on-error --parallel --parallel-max 8 -K "$cfg" 2>/dev/null || true
-    rm -f "$cfg"
+    local p dst
+    if $USE_PARALLEL_DOWNLOAD; then
+        local cfg
+        # Under $TMPDIR_UPDATE, not a bare mktemp (cold-context review,
+        # peer-session 2026-08-21-09): cleanup_update()'s EXIT trap removes
+        # $TMPDIR_UPDATE wholesale, so a signal or crash between this mktemp
+        # and the `rm -f "$cfg"` below no longer leaks a temp file — the old
+        # bare mktemp location was outside that trap's reach.
+        cfg=$(mktemp "$TMPDIR_UPDATE/curl-batch.XXXXXX")
+        for p in "$@"; do
+            dst="$TMPDIR_UPDATE/files/$p"
+            mkdir -p "$(dirname "$dst")"
+            printf 'url = "%s/%s"\noutput = "%s"\n' "$RAW_BASE" "$p" "$dst" >> "$cfg"
+        done
+        # shellcheck disable=SC2086  # CURL_BASE_OPTS/_CURL_SSL_OPT intentionally unquoted (multi-token flags)
+        # `|| true`: a batch failing outright (e.g. every URL in it
+        # unreachable) must not trip `set -e` and abort the whole update —
+        # the per-file presence check right after this call is what
+        # actually decides success per file, same as the old code's
+        # per-file `if curl ...` (Ф2 peer-session review; all found live
+        # testing this exact function).
+        curl $CURL_BASE_OPTS $_CURL_SSL_OPT -f --remove-on-error --parallel --parallel-max 8 -K "$cfg" 2>/dev/null || true
+        rm -f "$cfg"
+    else
+        # Sequential fallback (peer-session 2026-08-21-09): one curl call
+        # per file, same CURL_BASE_OPTS/-f as the parallel path. No
+        # --remove-on-error here (that's the capability we're missing) —
+        # curl writes to a temp sibling and it's renamed into place only on
+        # exit status 0, so a failed transfer never leaves a destination
+        # file, matching the parallel path's guarantee.
+        #
+        # A predictable "$dst.part" suffix (cold-context review found this,
+        # peer-session 2026-08-21-09) can collide with a manifest entry that
+        # is itself literally that name — e.g. paths "a" and "a.part" both
+        # present: downloading "a" would overwrite "a.part"'s own live temp
+        # file mid-transfer, or clobber it after "a.part" already landed.
+        # mktemp in the same destination directory makes the temp name
+        # unpredictable and immune to any manifest content.
+        for p in "$@"; do
+            dst="$TMPDIR_UPDATE/files/$p"
+            mkdir -p "$(dirname "$dst")"
+            local dst_tmp
+            dst_tmp=$(mktemp "$dst.XXXXXX")
+            # shellcheck disable=SC2086
+            if curl $CURL_BASE_OPTS $_CURL_SSL_OPT -f -o "$dst_tmp" "$RAW_BASE/$p" 2>/dev/null; then
+                mv "$dst_tmp" "$dst"
+            else
+                rm -f "$dst_tmp"
+            fi
+        done
+    fi
 }
 
 # verify_batch_integrity — removes any downloaded file whose sha256 doesn't
@@ -1126,7 +2583,12 @@ verify_batch_integrity() {
         expected_hash="${DOWNLOAD_HASHES[$i]}"
         [ -n "$expected_hash" ] || continue
         remote_file="$TMPDIR_UPDATE/files/$fpath"
-        [ -s "$remote_file" ] || continue
+        # -f, not -s (peer-session 2026-08-21-08/09): a legitimate
+        # zero-length file is a valid transfer, not a failed one. Both
+        # download_batch() paths guarantee a failed transfer leaves no
+        # destination file at all (--remove-on-error / .part-then-rename),
+        # so existence alone is now a reliable "did this arrive" signal.
+        [ -f "$remote_file" ] || continue
         if [ "$(hash_file "$remote_file")" != "$expected_hash" ]; then
             # A retry can still recover this file from a different CDN edge
             # (see the retry-pass comment below), so this isn't necessarily
@@ -1142,7 +2604,11 @@ verify_batch_integrity() {
 }
 
 if [ ${#DOWNLOAD_QUEUE[@]} -gt 0 ]; then
-    printf "  Скачиваю %s файлов (до 8 параллельно)...\n" "${#DOWNLOAD_QUEUE[@]}"
+    if $USE_PARALLEL_DOWNLOAD; then
+        printf "  Скачиваю %s файлов (до 8 параллельно)...\n" "${#DOWNLOAD_QUEUE[@]}"
+    else
+        printf "  Скачиваю %s файлов (последовательно)...\n" "${#DOWNLOAD_QUEUE[@]}"
+    fi
     download_batch "${DOWNLOAD_QUEUE[@]}"
 
     # Integrity check BEFORE building the retry queue (Ф2 peer-session
@@ -1159,7 +2625,9 @@ if [ ${#DOWNLOAD_QUEUE[@]} -gt 0 ]; then
     # that already has the current content.
     RETRY_QUEUE=()
     for fpath in "${DOWNLOAD_QUEUE[@]}"; do
-        [ -s "$TMPDIR_UPDATE/files/$fpath" ] || RETRY_QUEUE+=("$fpath")
+        # -f, not -s — see verify_batch_integrity() above for why existence
+        # alone is now the correct "did this arrive" signal.
+        [ -f "$TMPDIR_UPDATE/files/$fpath" ] || RETRY_QUEUE+=("$fpath")
     done
     if [ ${#RETRY_QUEUE[@]} -gt 0 ]; then
         download_batch "${RETRY_QUEUE[@]}"
@@ -1184,7 +2652,9 @@ for _dq_i in "${!DOWNLOAD_QUEUE[@]}"; do
     # file here covers both causes — the category split (network vs.
     # integrity) that the old per-file loop reported is no longer knowable
     # after two retry rounds have run, so both land in the same list.
-    if [ ! -s "$REMOTE_FILE" ]; then
+    # -f, not -s — see verify_batch_integrity() above for why existence
+    # alone is now the correct "did this arrive" signal.
+    if [ ! -f "$REMOTE_FILE" ]; then
         SKIPPED_DOWNLOAD+=("$fpath")
         continue
     fi
@@ -1243,9 +2713,19 @@ done < <(
 import json, sys
 with open(sys.argv[1]) as f:
     data = json.load(f)
+# 2026-08-22 (external report): a path present in BOTH the delivered files
+# set and deprecated_files is a generator inconsistency — removal deleted 10
+# files HEAD still ships, right after a clean no-change update. Delivery wins;
+# the conflict is reported, never acted on. generate-manifest.sh now filters
+# this at the source; this guard protects against a bad published manifest.
+delivered = {e.get('path') for e in data.get('files', [])}
 for entry in data.get('deprecated_files', []):
-    print(entry.get('path','') + '|' + entry.get('reason',''))
-" "$MANIFEST" 2>/dev/null || true
+    path = entry.get('path','')
+    if path in delivered:
+        print('  ⚠ %s: и в поставке, и в deprecated_files — удаление пропущено (несогласованный манифест)' % path, file=sys.stderr)
+        continue
+    print(path + '|' + entry.get('reason',''))
+" "$MANIFEST" || true
     fi)
 fi
 
@@ -1266,6 +2746,16 @@ if [ ${#SKIPPED_DOWNLOAD[@]} -gt 0 ]; then
         printf "  ? %s — файл не скачался, состояние неизвестно\n" "$f"
     done
     echo "  Эти файлы могут отличаться от upstream и быть перезаписаны при обычном запуске."
+    echo ""
+fi
+
+# Same principle as SKIPPED_DOWNLOAD above, for a different failure mode
+# (peer-session 2026-08-21-09): the fallback manifest parser has no sha256,
+# so "no differences found" here means "no differences among what we could
+# verify by name only" — the verdict below must say so, not read as an
+# ordinary clean success.
+if $INTEGRITY_TAINTED; then
+    echo "⚠ Проверка целостности не выполнялась (Python недоступен) — сравнивался только состав файлов, не их содержимое."
     echo ""
 fi
 
@@ -1307,6 +2797,9 @@ if [ "$TOTAL_CHANGES" -eq 0 ] && [ ${#SKIPPED_DOWNLOAD[@]} -gt 0 ]; then
         begin_update_transaction
         repair_pass
         run_build_runtime_or_die
+        if ! run_post_apply_backfills_or_die; then
+            exit "$EXIT_RUNTIME"
+        fi
         finish_update_transaction
         report_settings_merge_drift
     fi
@@ -1354,6 +2847,9 @@ if [ "$TOTAL_CHANGES" -eq 0 ]; then
         # without ever rebuilding .iwe-runtime/ — recovery ended with a removed
         # marker but stale substitutions. Same fail-closed contract as Step 6d.
         run_build_runtime_or_die
+        if ! run_post_apply_backfills_or_die; then
+            exit "$EXIT_RUNTIME"
+        fi
         # Cold review 2026-08-19 (Critical): finish must stay OUT of --check —
         # the preview used to clear a live .update-incomplete from a previous
         # failed run without repair or build-runtime, disarming the contract
@@ -1365,7 +2861,7 @@ if [ "$TOTAL_CHANGES" -eq 0 ]; then
     apply_settings_merge_if_requested
     report_author_skip_summary
     echo "✓ Всё актуально. Обновлений нет. ($UNCHANGED файлов проверено)"
-    exit 0
+    exit_clean
 fi
 
 if [ ${#NEW_FILES[@]} -gt 0 ]; then
@@ -1414,7 +2910,6 @@ echo "  ✓ .secrets/ (ключи)"
 echo "  ✓ .claude/settings.local.json (permissions)"
 echo "  ✓ sessions/00-index.md (журнал peer-сессий)"
 echo "  ✓ personal/ (ваши файлы)"
-echo "  ✓ ${IWE_GOVERNANCE_REPO:-DS-strategy}/ (ваше планирование)"
 echo ""
 
 print_extra_write_targets
@@ -1429,7 +2924,7 @@ if $CHECK_ONLY; then
     echo "Режим --check: изменения не применяются."
     echo "Для применения: bash update.sh"
     assert_self_unmutated
-    exit 0
+    exit_clean
 fi
 
 # === Step 4: Confirmation ===
@@ -1481,6 +2976,20 @@ for f in "${UPDATED_FILES[@]}"; do
         echo "  ⚠ $f — author_mode: несмёрженные правки, файл не тронут."
         echo "    Сверь: diff \"$TMPDIR_UPDATE/files/$f\" \"$SCRIPT_DIR/$f\""
         AUTHOR_SKIPPED=$((AUTHOR_SKIPPED + 1))
+        continue
+    fi
+    # issue #505 root, part 2: update.sh is delivered ONLY by Step 0's
+    # self-update (fetch, compare, replace, re-exec). Applying it here did two
+    # kinds of damage at once: `cp` truncated the very inode bash was still
+    # reading (execution continued into garbage — "line 1875: command not
+    # found", rc=127, stale .update-incomplete), and the placeholder
+    # substitution pass below then baked the install's real paths into the
+    # freshly applied copy's own {{KEY}} sed templates — after which the local
+    # hash never matches upstream again and every run re-applies it. A
+    # residual diff here (e.g. an already-baked local copy) is healed by the
+    # next run's Step 0, which fetches the clean snapshot copy.
+    if [ "$f" = "update.sh" ]; then
+        echo "  ~ $f — пропущен: доставляется только самообновлением Шага 0 (issue #505)"
         continue
     fi
     APPLIED_PATHS+=("$f")
@@ -1804,6 +3313,10 @@ ENVEOF
 
     # Still substitute what we can (HOME_DIR and WORKSPACE_DIR)
     for f in "${NEW_FILES[@]}" "${UPDATED_FILES[@]}"; do
+        # issue #505: update.sh CONTAINS {{KEY}} sed templates as its own code —
+        # substituting into it bakes this install's paths into the updater and
+        # permanently desyncs its hash from upstream. Never touch it here.
+        [ "$f" = "update.sh" ] && continue
         filepath="$SCRIPT_DIR/$f"
         [ -f "$filepath" ] || continue
         sed_inplace \
@@ -2273,7 +3786,8 @@ echo "Проверка применённых изменений..."
 
 validate_no_install_values_in_applied_additions() {
     local env_file="$WORKSPACE_DIR/.exocortex.env"
-    local key value fpath applied_additions added_line historical_lines upstream_ref
+    local key value fpath applied_additions added_line target_file target_sha256
+    local applied_line_count target_line_count
     local i failed=0
     local -a install_keys=() install_values=()
 
@@ -2300,19 +3814,74 @@ validate_no_install_values_in_applied_additions() {
         install_values+=("$value")
     done
 
-    # issue #459: guard считал совпадение по подстроке уже утечкой, хотя
-    # substitute_claude_placeholders() никогда не пишет в $SCRIPT_DIR (только
-    # во временную workspace-копию CLAUDE.md) — совпадение здесь могло быть
-    # текстом, который апстрим и раньше приносил под другим значением, не
-    # реальной подстановкой личного пути. Полностью убирать guard нельзя (он
-    # защищает от любой утечки install-path, не только через подстановку —
-    # например, случайно скопированный фрагмент личного конфига в коммит
-    # шаблона); вместо этого сужаем срабатывание: install-значение блокирует
-    # только если добавленная строка ЦЕЛИКОМ (не подстрока) не встречалась
-    # раньше ни в одной прошлой upstream-версии этого же файла.
-    upstream_ref=$(git -C "$SCRIPT_DIR" rev-parse --verify --quiet '@{upstream}' 2>/dev/null || true)
+    # issue #524: provenance belongs to the exact target release, not the old
+    # installation fork's history. First accept a whole file whose bytes match
+    # its unique target-manifest hash. This also works in the deliberately
+    # tainted no-Python mode, which exits 4 after applying the update.
+    #
+    # A legitimate 3-way merge cannot match the whole-file hash. For that case,
+    # fall through to the already integrity-verified downloaded target payload:
+    # each install-valued line must exist in that exact same target file and may
+    # occur no more often than in the target. Cross-file matches, unverified
+    # payloads and locally duplicated canonical lines remain fail-closed.
+    #
+    # Детерминированно в обоих окружениях (peer-review Codex, 2026-08-24-07):
+    # python-путь и shell-фоллбек дают одинаковый результат на одном манифесте
+    # — P0 не остаётся воспроизводимым только в окружениях без python3/python.
+    manifest_sha256_for_path() {
+        local want="$1"
+        if py_available; then
+            "$PY_BIN" - "$MANIFEST" "$want" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1], encoding='utf-8') as f:
+        data = json.load(f)
+except Exception:
+    sys.exit(1)
+matches = [e.get('sha256') for e in data.get('files', []) if e.get('path') == sys.argv[2]]
+uniq = set(m for m in matches if m)
+if len(uniq) != 1:
+    sys.exit(1)
+print(uniq.pop())
+PYEOF
+            return $?
+        fi
+        # Shell-фоллбек (нет python3/python): не общий JSON-парсер — опирается
+        # на фиксированный layout нашего же generate-manifest.sh
+        # (json.dump(indent=2), "path" непосредственно перед "sha256" в одном
+        # объекте, один ключ на строку). Если формат манифеста когда-нибудь
+        # разъедется с этим предположением — E2E-тест на no-python окружение
+        # это поймает (WP-529 Ф16, В3 codex).
+        awk -v want="$want" '
+            /"path"[[:space:]]*:/ {
+                line = $0
+                sub(/^[^"]*"path"[[:space:]]*:[[:space:]]*"/, "", line)
+                sub(/".*$/, "", line)
+                cur_path = line
+                next
+            }
+            /"sha256"[[:space:]]*:/ && cur_path == want {
+                line = $0
+                sub(/^[^"]*"sha256"[[:space:]]*:[[:space:]]*"/, "", line)
+                sub(/".*$/, "", line)
+                if (found && line != found_val) { ambiguous = 1 }
+                found = 1
+                found_val = line
+            }
+            END {
+                if (found && !ambiguous) { print found_val; exit 0 }
+                exit 1
+            }
+        ' "$MANIFEST"
+    }
 
     for fpath in "${APPLIED_PATHS[@]}"; do
+        if [ -f "$SCRIPT_DIR/$fpath" ] && target_sha256=$(manifest_sha256_for_path "$fpath") \
+           && [ "$(hash_file "$SCRIPT_DIR/$fpath")" = "$target_sha256" ]; then
+            echo "  install-path guard: $fpath exempt (byte-identical to target manifest sha256)" >&2
+            continue
+        fi
+        echo "  install-path guard: $fpath -- no manifest hash match, falling back to verified target-line provenance" >&2
         # Полное текущее содержимое файла на диске, не git-diff working
         # tree против HEAD. Cold-context review нашёл живую дыру: если файл
         # уже ЗАКОММИЧЕН до этого прогона (второй прогон update.sh после
@@ -2330,27 +3899,28 @@ validate_no_install_values_in_applied_additions() {
         fi
         [ -n "$applied_additions" ] || continue
 
-        # Полные строки из всех прошлых версий именно этого файла в upstream.
-        # Нет upstream ref / нет истории — исключения нет, guard fail-closed.
-        historical_lines=""
-        if [ -n "$upstream_ref" ]; then
-            historical_lines=$(git -C "$SCRIPT_DIR" log --follow --format= \
-                --no-ext-diff --no-textconv -p "$upstream_ref" -- "$fpath" |
-                awk '
-                    /^diff --git / { in_hunk=0; next }
-                    /^@@ / { in_hunk=1; next }
-                    in_hunk && /^[+-]/ { print substr($0, 2) }
-                ')
-        fi
+        target_file="${TMPDIR_UPDATE:-}/files/$fpath"
 
         while IFS= read -r added_line || [ -n "$added_line" ]; do
             for i in "${!install_keys[@]}"; do
                 [[ "$added_line" == *"${install_values[$i]}"* ]] || continue
 
-                # Исключение только для идентичной полной строки, уже
-                # поставлявшейся upstream; совпадение одной подстроки не достаточно.
-                if ! grep -Fqx -- "$added_line" <<<"$historical_lines"; then
+                # The exception is scoped to the identical target file and to
+                # the target's exact multiplicity of this full line. A local
+                # duplicate of an otherwise canonical line has no provenance.
+                # Cross-file text and unverified payloads never establish it.
+                if [ "${INTEGRITY_TAINTED:-true}" != false ] || \
+                   [ ! -f "$target_file" ] || \
+                   ! grep -Fqx -- "$added_line" "$target_file"; then
                     echo "  ✗ install-value ${install_keys[$i]} найден в новой строке обновления:" >&2
+                    printf '    %s\n' "$fpath" >&2
+                    failed=1
+                    continue
+                fi
+                applied_line_count=$(grep -Fxc -- "$added_line" "$SCRIPT_DIR/$fpath" || true)
+                target_line_count=$(grep -Fxc -- "$added_line" "$target_file" || true)
+                if [ "$applied_line_count" -gt "$target_line_count" ]; then
+                    echo "  ✗ install-value ${install_keys[$i]} продублирован сверх проверенного target payload:" >&2
                     printf '    %s\n' "$fpath" >&2
                     failed=1
                 fi
@@ -2392,17 +3962,12 @@ if [ -f "$ENV_FILE" ]; then
     fi
 fi
 
-# === Step 7.6: Re-run install-iwe-paths.sh auto-enable (issue #317) ===
-# CHANGELOG 0.28.5 promised this ("update.sh может тоже его вызывать при
-# следующих апгрейдах"), but the call was never added — so a DS-strategy
-# repo that shipped with .githooks/ after this update had no way to get
-# core.hooksPath enabled without a fresh setup.sh run.
-if ! $CHECK_ONLY; then
-    bash "$SCRIPT_DIR/setup/install-iwe-paths.sh" \
-        --workspace "$WORKSPACE_DIR" --governance "${IWE_GOVERNANCE_REPO:-DS-strategy}" --quiet 2>&1 | sed 's/^/  /'
-    INSTALL_PATHS_STATUS="${PIPESTATUS[0]}"
-    [ "$INSTALL_PATHS_STATUS" -eq 0 ] || \
-        echo "  ⚠ install-iwe-paths.sh завершился с ошибкой (exit $INSTALL_PATHS_STATUS). Запустите вручную: bash $SCRIPT_DIR/setup/install-iwe-paths.sh --workspace $WORKSPACE_DIR --governance ${IWE_GOVERNANCE_REPO:-DS-strategy}"
+# === Step 7.6–7.9: post-apply governance backfills ===
+# The same helper also runs in TOTAL_CHANGES=0 recovery branches. Otherwise a
+# failed first backfill could leave .update-incomplete, while a zero-diff retry
+# skipped the failing action and incorrectly cleared the marker.
+if ! run_post_apply_backfills_or_die; then
+    exit "$EXIT_RUNTIME"
 fi
 
 # === Done ===
@@ -2446,3 +4011,4 @@ if $CLAUDE_CONFLICT_DETECTED || [ "${#CLAUDE_BASE_MISSING_FILES[@]}" -gt 0 ]; th
 fi
 
 finish_update_transaction
+exit_clean

@@ -117,10 +117,14 @@ SNIPPET="$TEST_ROOT/snippet.sh"
     echo "#!/bin/bash"
     echo "set -u"
     echo "TEMPLATE_DIR='$TEMPLATE_DIR'"
+    echo "WORKSPACE_DIR='$TEST_ROOT/home/IWE'"
     echo "GOVERNANCE_REPO='irrelevant-for-this-snippet'"
     echo "CORE_ONLY=false"
     echo "DRY_RUN=false"
     sed -n "${SECTION_START},$((SECTION_END - 1))p" "$ROOT/setup.sh"
+    # Production calls this only after step 6 has created/found governance.
+    echo 'mkdir -p "$WORKSPACE_DIR/$GOVERNANCE_REPO"'
+    echo 'generate_executor_catalog_for_governance'
 } > "$SNIPPET"
 chmod +x "$SNIPPET"
 
@@ -140,6 +144,7 @@ name: smoke-fixture
 description: minimal fixture skill for test_issue_463_setup_reuses_resolved_python3.sh
 routing:
   executor: script
+  script_path: scripts/smoke-fixture.sh
   deterministic: true
 ---
 Fixture only — not a real skill.
@@ -205,6 +210,158 @@ if [ "$STATUS" -eq 0 ]; then
     pass "snippet completed successfully (exit 0)"
 else
     fail "snippet exited $STATUS (expected 0 — see output above)"
+fi
+
+echo "--- generator defaults: actual IWE_ROOT and governance repo, not HOME/IWE literals ---"
+CUSTOM_WORKSPACE="$TEST_ROOT/custom-workspace"
+CUSTOM_SKILLS="$CUSTOM_WORKSPACE/.claude/skills"
+CUSTOM_CATALOG="$CUSTOM_WORKSPACE/custom-governance/scripts/executor-catalog.yaml"
+mkdir -p "$CUSTOM_SKILLS"
+cp -R "$FAKE_HOME/IWE/.claude/skills/smoke-fixture" "$CUSTOM_SKILLS/"
+mkdir -p "$CUSTOM_SKILLS/agent-mode" "$CUSTOM_SKILLS/hybrid-mode"
+cat > "$CUSTOM_SKILLS/agent-mode/SKILL.md" <<'EOF'
+---
+name: agent-mode
+description: Agent executor fixture.
+routing:
+  executor: agent
+  model: sonnet
+  deterministic: false
+---
+EOF
+cat > "$CUSTOM_SKILLS/hybrid-mode/SKILL.md" <<'EOF'
+---
+name: hybrid-mode
+description: Script plus judgment fixture.
+routing:
+  executor: script+judgment
+  deterministic: false
+---
+EOF
+DIRECT_OUT=$(IWE_ROOT="$CUSTOM_WORKSPACE" IWE_GOVERNANCE_REPO=custom-governance \
+    "$RESOLVED" "$ROOT/scripts/generate-executor-catalog.py" 2>&1)
+DIRECT_STATUS=$?
+if [ "$DIRECT_STATUS" -eq 0 ] && [ -f "$CUSTOM_CATALOG" ]; then
+    pass "generator writes to the configured workspace/governance path"
+else
+    fail "generator ignored configured paths or failed (status=$DIRECT_STATUS): $DIRECT_OUT"
+fi
+if grep -Fq '${IWE_GOVERNANCE_REPO:-DS-strategy}' "$CUSTOM_CATALOG" 2>/dev/null; then
+    fail "generated catalog still contains a shell-expansion literal"
+else
+    pass "generated catalog contains no shell-expansion path literal"
+fi
+if IWE_EXECUTOR_CATALOG="$CUSTOM_CATALOG" \
+    bash "$ROOT/scripts/route-task.sh" --validate >/dev/null 2>&1; then
+    pass "route-task validates the generator taxonomy"
+else
+    fail "route-task rejects the generated executor catalog"
+fi
+AGENT_ROUTE=$(IWE_EXECUTOR_CATALOG="$CUSTOM_CATALOG" \
+    bash "$ROOT/scripts/route-task.sh" --skill agent-mode 2>&1 || true)
+HYBRID_ROUTE=$(IWE_EXECUTOR_CATALOG="$CUSTOM_CATALOG" \
+    bash "$ROOT/scripts/route-task.sh" --skill hybrid-mode 2>&1 || true)
+if echo "$AGENT_ROUTE" | grep -q 'ROUTE_TO_AGENT skill=agent-mode model=sonnet' && \
+   echo "$HYBRID_ROUTE" | grep -q 'mode=script+judgment'; then
+    pass "compound executor entries are executable by route-task"
+else
+    fail "compound executor dispatch mismatch: agent=[$AGENT_ROUTE] hybrid=[$HYBRID_ROUTE]"
+fi
+
+DIRECT_CATALOG_COPY="$TEST_ROOT/direct-catalog-first.yaml"
+cp "$CUSTOM_CATALOG" "$DIRECT_CATALOG_COPY"
+sleep 1
+DIRECT_SECOND_OUT=$(IWE_ROOT="$CUSTOM_WORKSPACE" IWE_GOVERNANCE_REPO=custom-governance \
+    "$RESOLVED" "$ROOT/scripts/generate-executor-catalog.py" 2>&1)
+DIRECT_SECOND_STATUS=$?
+if [ "$DIRECT_SECOND_STATUS" -eq 0 ] && cmp -s "$DIRECT_CATALOG_COPY" "$CUSTOM_CATALOG"; then
+    pass "unchanged executor input keeps catalog byte-stable across reruns"
+else
+    fail "unchanged direct generator rewrote catalog (status=$DIRECT_SECOND_STATUS): $DIRECT_SECOND_OUT"
+fi
+
+echo "--- update.sh backfill: same resolved Python and explicit installed paths ---"
+UPDATE_WORKSPACE="$TEST_ROOT/update-workspace"
+UPDATE_GOVERNANCE="$UPDATE_WORKSPACE/update-governance"
+mkdir -p "$UPDATE_WORKSPACE/.claude/skills" "$UPDATE_GOVERNANCE/scripts"
+cp -R "$FAKE_HOME/IWE/.claude/skills/smoke-fixture" "$UPDATE_WORKSPACE/.claude/skills/"
+
+UPDATE_FUNCTIONS="$TEST_ROOT/update-backfill-functions.sh"
+awk '
+  /^effective_governance_repo\(\)/ { capture=1 }
+  /^record_rule_workspace_state\(\)/ { exit }
+  capture { print }
+' "$ROOT/update.sh" > "$UPDATE_FUNCTIONS"
+if ! grep -q '^backfill_executor_catalog()' "$UPDATE_FUNCTIONS" \
+    || ! grep -q '^backfill_derived_snapshot_updater()' "$UPDATE_FUNCTIONS"; then
+    fail "could not extract update backfill functions"
+fi
+
+UPDATE_SNIPPET="$TEST_ROOT/update-catalog-snippet.sh"
+{
+    echo "#!/bin/bash"
+    echo "set -u"
+    echo "SCRIPT_DIR='$ROOT'"
+    echo "WORKSPACE_DIR='$UPDATE_WORKSPACE'"
+    echo "ENV_GOVERNANCE_REPO='update-governance'"
+    echo "unset IWE_GOVERNANCE_REPO"
+    cat "$UPDATE_FUNCTIONS"
+    echo 'EFFECTIVE_GOVERNANCE_REPO=$(effective_governance_repo)'
+    echo "backfill_derived_snapshot_updater"
+    echo "backfill_executor_catalog"
+} > "$UPDATE_SNIPPET"
+chmod +x "$UPDATE_SNIPPET"
+
+git -C "$UPDATE_GOVERNANCE" init -q
+git -C "$UPDATE_GOVERNANCE" config user.name "Issue 508 update test"
+git -C "$UPDATE_GOVERNANCE" config user.email "issue-508@example.invalid"
+printf '#!/usr/bin/env python3\nSNAPSHOT_PATH = "${IWE_GOVERNANCE_REPO:-DS-strategy}"\n' \
+    > "$UPDATE_GOVERNANCE/scripts/update-derived-snapshot.py"
+chmod +x "$UPDATE_GOVERNANCE/scripts/update-derived-snapshot.py"
+git -C "$UPDATE_GOVERNANCE" add -- scripts/update-derived-snapshot.py
+git -C "$UPDATE_GOVERNANCE" commit -qm "old installed snapshot updater"
+
+: > "$IWE_TEST_PROBE"
+UPDATE_OUT=$(PATH="$BIN_NO_YAML:$PATH" bash "$UPDATE_SNIPPET" 2>&1)
+UPDATE_STATUS=$?
+UPDATE_CATALOG="$UPDATE_GOVERNANCE/scripts/executor-catalog.yaml"
+if [ "$UPDATE_STATUS" -eq 0 ] && [ -f "$UPDATE_CATALOG" ]; then
+    pass "update backfills executor catalog at the installed governance path"
+else
+    fail "update catalog backfill failed (status=$UPDATE_STATUS): $UPDATE_OUT"
+fi
+if grep -q "generate-executor-catalog.py" "$IWE_TEST_PROBE" 2>/dev/null; then
+    fail "update re-ran the generator with PATH's rejected no-yaml Python"
+else
+    pass "update reuses the resolver-selected Python for catalog generation"
+fi
+if cmp -s "$ROOT/seed/strategy/scripts/update-derived-snapshot.py" \
+    "$UPDATE_GOVERNANCE/scripts/update-derived-snapshot.py"; then
+    pass "update backfills the executed governance snapshot updater from release bytes"
+else
+    fail "governance snapshot updater stayed on the old literal-path implementation"
+fi
+if [ ! -e "$UPDATE_WORKSPACE/DS-strategy" ]; then
+    pass ".exocortex governance value wins without exported IWE_GOVERNANCE_REPO"
+else
+    fail "backfill wrote to default DS-strategy instead of configured governance"
+fi
+
+git -C "$UPDATE_GOVERNANCE" add -- \
+    scripts/executor-catalog.yaml scripts/update-derived-snapshot.py
+git -C "$UPDATE_GOVERNANCE" commit -qm "accept first update backfill"
+UPDATE_CATALOG_COPY="$TEST_ROOT/update-catalog-first.yaml"
+cp "$UPDATE_CATALOG" "$UPDATE_CATALOG_COPY"
+sleep 1
+: > "$IWE_TEST_PROBE"
+UPDATE_SECOND_OUT=$(PATH="$BIN_NO_YAML:$PATH" bash "$UPDATE_SNIPPET" 2>&1)
+UPDATE_SECOND_STATUS=$?
+if [ "$UPDATE_SECOND_STATUS" -eq 0 ] \
+    && cmp -s "$UPDATE_CATALOG_COPY" "$UPDATE_CATALOG" \
+    && [ -z "$(git -C "$UPDATE_GOVERNANCE" status --porcelain)" ]; then
+    pass "second update backfill is byte-stable and leaves governance clean"
+else
+    fail "second update backfill is not idempotent (status=$UPDATE_SECOND_STATUS): $UPDATE_SECOND_OUT"
 fi
 
 echo "---"

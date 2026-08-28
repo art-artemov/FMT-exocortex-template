@@ -54,9 +54,32 @@ cat {{WORKSPACE_DIR}}/params.yaml 2>/dev/null
 | `month-close` | `after` | `extensions/month-close.after.md` | После итогов месяца, перед верификацией |
 | `strategy-session` | `before` | `extensions/strategy-session.before.md` | Перед началом стратегической сессии |
 | `strategy-session` | `after` | `extensions/strategy-session.after.md` | После итогов стратегической сессии |
+| `iwe-update` | `before` | `extensions/iwe-update.before.md` | До превью и применения обновления |
+| `iwe-update` | `checks` | `extensions/iwe-update.checks.md` | После применения, до успешного итогового отчёта |
+| `iwe-update` | `after` | `extensions/iwe-update.after.md` | После итогового отчёта об обновлении |
+| `verify` | `before` | `extensions/verify.before.md` | До выбора типа и запуска проверки |
+| `verify` | `checks` | `extensions/verify.checks.md` | После основной проверки, до итогового verdict |
+| `verify` | `after` | `extensions/verify.after.md` | После показа итогового verdict |
+| `archgate` | `before` | `extensions/archgate.before.md` | До принципов и начала архитектурной оценки; блокирует старт при ошибке |
+| `archgate` | `checks` | `extensions/archgate.checks.md` | После DRR, до единственной публикации вердикта; блокирует публикацию при ошибке |
+| `archgate` | `after` | `extensions/archgate.after.md` | После публикации; предупреждает об ошибках и никогда не меняет вердикт |
+
+Для `archgate.before` и `archgate.checks` последняя инструкция обязана дать
+`ARCHGATE_EXTENSION: PASS` или `ARCHGATE_EXTENSION: BLOCK — <причина>`.
+`BLOCK` — штатная содержательная блокировка, ошибка loader/исполнения — отдельный
+сбой. В `archgate.after` допустим `ARCHGATE_EXTENSION: WARN — <причина>`;
+результат этой фазы не меняет уже опубликованный вердикт.
+Расширению запрещено снова запускать lifecycle АрхГейта через
+`load-extensions.sh archgate ...`: loader возвращает `BLOCK` для `before/checks`
+и `WARN` для `after`. Если среди `archgate.after` есть повреждённый или
+рекурсивный файл, все остальные корректные файлы всё равно выполняются.
 
 **Несколько файлов одного hook** — загружаются в алфавитном порядке.
 Пример: `day-close.after.md` + `day-close.after.health.md` — оба выполнятся.
+
+Файл без имени hook, например `extensions/verify.md`, не является extension
+point. Используйте один из явно перечисленных вариантов `before`, `checks` или
+`after`.
 
 #### Параметры (params.yaml)
 

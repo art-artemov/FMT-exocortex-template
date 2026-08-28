@@ -77,6 +77,19 @@ categories:
       Видимо в update-manifest.json как excluded_paths (issue #423 — раньше
       это было немой пробел, теперь явная классификация с причиной).
 
+  - id: platform-hooks-explicit-include
+    route: "git-дерево seed/strategy platform payload → files[] через узкий allow-list → curl в update.sh → governance repo"
+    derived_from_block: PLATFORM_HOOKS_EXPLICIT_INCLUDE
+    channel: update-curl
+    owner: DP.ROLE.078
+    proof_of_delivery: manifest_sha
+    note: >
+      Точечное исключение из общего seed/ user-space правила для четырёх
+      платформенных файлов: pre-commit, pre-push, install-hooks.sh и
+      update-derived-snapshot.py. update.sh после доставки идемпотентно
+      переносит их в существующий governance repo; остальной seed/ по-прежнему
+      не обновляется (issues #502 и #508.2).
+
   - id: vcs-tooling-internal
     route: "инструментарий репозитория — никуда не доставляется, вообще вне контракта поставки"
     derived_from_block: SKIP_PATTERNS
@@ -86,7 +99,8 @@ categories:
     note: >
       .git/, .github/ (базово), .backups/, .DS_Store, сам
       generate-manifest.sh/update-manifest.json/update-manifest.local.json,
-      seed/, templates/, .gitkeep. Не в files[] и не в excluded_paths[] —
+      seed/ (кроме PLATFORM_HOOKS_EXPLICIT_INCLUDE), templates/, .gitkeep.
+      Не в files[] и не в excluded_paths[] —
       молчаливо вне манифеста намеренно (это не B2-пробел: check-manifest-
       coverage.py и verify-manifest.sh не ожидают эти пути в манифесте).
 

@@ -105,7 +105,7 @@ chmod +x "$SHIM_DIR/curl"
 
 echo "--- Scenario A: build-runtime fails during a real update ---"
 set +e
-PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-a.log" 2>&1
+PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-a.log" 2>&1
 RC_A=$?
 set -e
 
@@ -136,7 +136,7 @@ echo "--- Scenario A2: --check must not clear the marker left by the failed run 
 # next step after a failure — update.sh --check — silently cleared the marker
 # without repair or build-runtime, disarming the contract it now carries.
 set +e
-PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" bash "$SCRIPT_DIR/update.sh" --check > "$TEST_ROOT/out-a2.log" 2>&1
+PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main bash "$SCRIPT_DIR/update.sh" --check > "$TEST_ROOT/out-a2.log" 2>&1
 RC_A2=$?
 set -e
 
@@ -160,7 +160,7 @@ EOF
 chmod +x "$SCRIPT_DIR/setup/build-runtime.sh"
 
 set +e
-PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-b.log" 2>&1
+PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-b.log" 2>&1
 RC_B=$?
 set -e
 
@@ -200,7 +200,7 @@ if [ -f "$SCRIPT_DIR/.update-incomplete" ]; then
 fi
 
 set +e
-PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-c.log" 2>&1
+PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-c.log" 2>&1
 RC_C=$?
 set -e
 
@@ -213,6 +213,256 @@ if [ -f "$SCRIPT_DIR/.update-incomplete" ]; then
     pass "C: transaction was opened — marker present despite starting with none"
 else
     fail "C: no marker at all — the TOTAL_CHANGES=0 branch never opens a transaction"
+fi
+
+echo "--- Scenario D: post-backfill failure then zero-diff recovery on configured governance ---"
+# Build a real installed topology. The first run reaches post-apply backfills
+# but refuses a snapshot symlink; after restoring the tracked regular file, the
+# next TOTAL_CHANGES=0 run must deliver every target and close the transaction.
+mkdir -p \
+    "$SCRIPT_DIR/seed/strategy/scripts" \
+    "$SCRIPT_DIR/seed/strategy/.githooks" \
+    "$SCRIPT_DIR/scripts/agent-fault" \
+    "$SCRIPT_DIR/scripts" \
+    "$WORKSPACE_DIR/.claude/skills/smoke-catalog" \
+    "$WORKSPACE_DIR/custom-governance/scripts"
+cp "$ROOT/seed/strategy/scripts/install-hooks.sh" \
+    "$SCRIPT_DIR/seed/strategy/scripts/install-hooks.sh"
+cp "$ROOT/seed/strategy/.githooks/pre-commit" \
+    "$SCRIPT_DIR/seed/strategy/.githooks/pre-commit"
+cp "$ROOT/seed/strategy/.githooks/pre-push" \
+    "$SCRIPT_DIR/seed/strategy/.githooks/pre-push"
+cp "$ROOT/seed/strategy/scripts/update-derived-snapshot.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/update-derived-snapshot.py"
+cp "$ROOT/seed/strategy/scripts/day-open-llm-fill.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/day-open-llm-fill.py"
+cp "$ROOT/seed/strategy/scripts/iwe_checklist_memory.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/iwe_checklist_memory.py"
+cp "$ROOT/seed/strategy/scripts/sync_feedback_to_memory.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/sync_feedback_to_memory.py"
+cp "$ROOT/seed/strategy/scripts/agent_fault_remind.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/agent_fault_remind.py"
+cp "$ROOT/seed/strategy/scripts/agent_fault_remind.sh" \
+    "$SCRIPT_DIR/seed/strategy/scripts/agent_fault_remind.sh"
+cp "$ROOT/scripts/agent-fault/iwe_checklist_memory.py" \
+    "$SCRIPT_DIR/scripts/agent-fault/iwe_checklist_memory.py"
+cp "$ROOT/scripts/lib/find-python3.sh" "$SCRIPT_DIR/scripts/lib/find-python3.sh"
+cp "$ROOT/scripts/generate-executor-catalog.py" \
+    "$SCRIPT_DIR/scripts/generate-executor-catalog.py"
+cp "$ROOT/scripts/route-task.sh" "$SCRIPT_DIR/scripts/route-task.sh"
+cp "$ROOT/setup/install-iwe-paths.sh" "$SCRIPT_DIR/setup/install-iwe-paths.sh"
+chmod +x \
+    "$SCRIPT_DIR/seed/strategy/scripts/install-hooks.sh" \
+    "$SCRIPT_DIR/seed/strategy/.githooks/pre-commit" \
+    "$SCRIPT_DIR/seed/strategy/.githooks/pre-push" \
+    "$SCRIPT_DIR/seed/strategy/scripts/update-derived-snapshot.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/day-open-llm-fill.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/iwe_checklist_memory.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/sync_feedback_to_memory.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/agent_fault_remind.py" \
+    "$SCRIPT_DIR/seed/strategy/scripts/agent_fault_remind.sh" \
+    "$SCRIPT_DIR/scripts/agent-fault/iwe_checklist_memory.py" \
+    "$SCRIPT_DIR/scripts/lib/find-python3.sh" \
+    "$SCRIPT_DIR/scripts/generate-executor-catalog.py" \
+    "$SCRIPT_DIR/scripts/route-task.sh" \
+    "$SCRIPT_DIR/setup/install-iwe-paths.sh"
+cat > "$WORKSPACE_DIR/.claude/skills/smoke-catalog/SKILL.md" <<'EOF'
+---
+name: smoke-catalog
+description: Deterministic recovery fixture.
+routing:
+  executor: sonnet
+  deterministic: false
+---
+EOF
+printf 'GOVERNANCE_REPO=custom-governance\n' > "$WORKSPACE_DIR/.exocortex.env"
+
+GOVERNANCE="$WORKSPACE_DIR/custom-governance"
+printf '#!/bin/bash\necho old installer\n' > "$GOVERNANCE/scripts/install-hooks.sh"
+printf '#!/usr/bin/env python3\nprint("old snapshot")\n' \
+    > "$GOVERNANCE/scripts/update-derived-snapshot.py"
+cp "$ROOT/seed/strategy/REPO-TYPE.md" "$GOVERNANCE/REPO-TYPE.md"
+cat > "$GOVERNANCE/scripts/day-open-pipeline.sh" <<'EOF'
+#!/usr/bin/env bash
+# Simulates the pre-fix installed caller: it exports a stale workspace identity
+# before launching the updater. update.sh intentionally does not replace this
+# user-owned pipeline, so the updated child must self-identify.
+export IWE_ROOT="${OLD_PIPELINE_IWE_ROOT:?}"
+export IWE_GOVERNANCE_REPO="${OLD_PIPELINE_GOVERNANCE_REPO:?}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+python3 - "$SCRIPT_DIR/update-derived-snapshot.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location("installed_snapshot_upgrade", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(module.SNAPSHOT_PATH)
+PY
+EOF
+chmod +x "$GOVERNANCE/scripts/install-hooks.sh" \
+    "$GOVERNANCE/scripts/update-derived-snapshot.py" \
+    "$GOVERNANCE/scripts/day-open-pipeline.sh"
+git -C "$GOVERNANCE" init -q
+git -C "$GOVERNANCE" config user.email t@t
+git -C "$GOVERNANCE" config user.name t
+git -C "$GOVERNANCE" add -- REPO-TYPE.md scripts/day-open-pipeline.sh \
+    scripts/install-hooks.sh scripts/update-derived-snapshot.py
+git -C "$GOVERNANCE" commit -qm init
+OLD_PIPELINE_HASH=$(shasum -a 256 "$GOVERNANCE/scripts/day-open-pipeline.sh" | cut -d' ' -f1)
+
+OUTSIDE_SNAPSHOT="$TEST_ROOT/outside-snapshot-sentinel.py"
+printf 'outside snapshot sentinel\n' > "$OUTSIDE_SNAPSHOT"
+rm "$GOVERNANCE/scripts/update-derived-snapshot.py"
+ln -s "$OUTSIDE_SNAPSHOT" "$GOVERNANCE/scripts/update-derived-snapshot.py"
+cat > "$SCRIPT_DIR/setup/build-runtime.sh" <<'EOF'
+#!/bin/bash
+echo "brt-invoked-scenario-d" >> "$(cd "$(dirname "$0")/.." && pwd)/brt-probe.log"
+exit 0
+EOF
+chmod +x "$SCRIPT_DIR/setup/build-runtime.sh"
+
+set +e
+PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main \
+    bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-d1.log" 2>&1
+RC_D1=$?
+set -e
+if [ "$RC_D1" -eq 3 ] && \
+   grep -q 'consumer scan refused symlinked Python file' "$TEST_ROOT/out-d1.log"; then
+    pass "D1: snapshot symlink blocks before consumer scan can read through it"
+else
+    fail "D1: expected symlink refusal/exit 3, got rc=$RC_D1"
+fi
+if [ -f "$SCRIPT_DIR/.update-incomplete" ]; then
+    pass "D1: marker remains after post-backfill failure"
+else
+    fail "D1: post-backfill failure cleared the transaction marker"
+fi
+if [ "$(cat "$OUTSIDE_SNAPSHOT")" = "outside snapshot sentinel" ]; then
+    pass "D1: external symlink target bytes remain untouched"
+else
+    fail "D1: snapshot backfill wrote through the symlink"
+fi
+
+rm "$GOVERNANCE/scripts/update-derived-snapshot.py"
+git -C "$GOVERNANCE" restore --worktree -- scripts/update-derived-snapshot.py
+set +e
+PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main \
+    bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-d2.log" 2>&1
+RC_D2=$?
+set -e
+if [ "$RC_D2" -eq 0 ]; then
+    pass "D2: fixed zero-diff rerun converges"
+else
+    fail "D2: fixed zero-diff rerun exited $RC_D2"
+fi
+if [ -f "$SCRIPT_DIR/.update-incomplete" ]; then
+    fail "D2: marker remains after all post-backfills succeeded"
+else
+    pass "D2: marker removed only after all post-backfills succeeded"
+fi
+if cmp -s "$SCRIPT_DIR/seed/strategy/scripts/update-derived-snapshot.py" \
+      "$GOVERNANCE/scripts/update-derived-snapshot.py" && \
+   cmp -s "$SCRIPT_DIR/seed/strategy/scripts/day-open-llm-fill.py" \
+      "$GOVERNANCE/scripts/day-open-llm-fill.py" && \
+   cmp -s "$SCRIPT_DIR/seed/strategy/scripts/iwe_checklist_memory.py" \
+      "$GOVERNANCE/scripts/iwe_checklist_memory.py" && \
+   cmp -s "$SCRIPT_DIR/seed/strategy/scripts/sync_feedback_to_memory.py" \
+      "$GOVERNANCE/scripts/sync_feedback_to_memory.py" && \
+   cmp -s "$SCRIPT_DIR/seed/strategy/scripts/agent_fault_remind.py" \
+      "$GOVERNANCE/scripts/agent_fault_remind.py" && \
+   cmp -s "$SCRIPT_DIR/seed/strategy/scripts/agent_fault_remind.sh" \
+      "$GOVERNANCE/scripts/agent_fault_remind.sh" && \
+   cmp -s "$ROOT/scripts/agent-fault/iwe_checklist_memory.py" \
+      "$SCRIPT_DIR/scripts/agent-fault/iwe_checklist_memory.py" && \
+   cmp -s "$SCRIPT_DIR/seed/strategy/scripts/install-hooks.sh" \
+      "$GOVERNANCE/scripts/install-hooks.sh" && \
+   cmp -s "$SCRIPT_DIR/seed/strategy/.githooks/pre-commit" \
+      "$GOVERNANCE/.githooks/pre-commit" && \
+   cmp -s "$SCRIPT_DIR/seed/strategy/.githooks/pre-push" \
+      "$GOVERNANCE/.githooks/pre-push" && \
+   [ -f "$GOVERNANCE/scripts/executor-catalog.yaml" ]; then
+    pass "D2: snapshot, reader, canonical CLI, shims, hooks and catalog delivered"
+else
+    fail "D2: one or more installed governance backfills are stale or missing"
+fi
+if [ ! -e "$WORKSPACE_DIR/DS-strategy" ]; then
+    pass "D2: config-only governance resolution created no default DS-strategy"
+else
+    fail "D2: backfill escaped to default DS-strategy"
+fi
+OLD_PIPELINE_ACTUAL=$( \
+    OLD_PIPELINE_IWE_ROOT="$TEST_ROOT/stale-foreign-workspace" \
+    OLD_PIPELINE_GOVERNANCE_REPO="stale-foreign-governance" \
+    bash "$GOVERNANCE/scripts/day-open-pipeline.sh"
+)
+GOVERNANCE_PHYSICAL=$(cd "$GOVERNANCE" && pwd -P)
+OLD_PIPELINE_EXPECTED="$GOVERNANCE_PHYSICAL/inbox/WP-425/cache/derived_snapshot.json"
+OLD_PIPELINE_HASH_AFTER=$(shasum -a 256 "$GOVERNANCE/scripts/day-open-pipeline.sh" | cut -d' ' -f1)
+if [ "$OLD_PIPELINE_ACTUAL" = "$OLD_PIPELINE_EXPECTED" ] && \
+   [ "$OLD_PIPELINE_HASH" = "$OLD_PIPELINE_HASH_AFTER" ]; then
+    pass "D2: updated child self-identifies under an unchanged old installed pipeline"
+else
+    fail "D2: old caller routed updater to '$OLD_PIPELINE_ACTUAL' or was overwritten"
+fi
+if IWE_EXECUTOR_CATALOG="$GOVERNANCE/scripts/executor-catalog.yaml" \
+    bash "$SCRIPT_DIR/scripts/route-task.sh" --validate \
+    > "$TEST_ROOT/route-validate.log" 2>&1; then
+    pass "D2: installed route-task validates the generated catalog"
+else
+    fail "D2: installed route-task rejects generated catalog: $(cat "$TEST_ROOT/route-validate.log")"
+fi
+
+CATALOG_HASH_BEFORE=$(shasum -a 256 "$GOVERNANCE/scripts/executor-catalog.yaml" | cut -d' ' -f1)
+set +e
+PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main \
+    bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-d3.log" 2>&1
+RC_D3=$?
+set -e
+CATALOG_HASH_AFTER=$(shasum -a 256 "$GOVERNANCE/scripts/executor-catalog.yaml" | cut -d' ' -f1)
+if [ "$RC_D3" -eq 0 ] && [ "$CATALOG_HASH_BEFORE" = "$CATALOG_HASH_AFTER" ]; then
+    pass "D3: repeated zero-diff recovery is byte-idempotent"
+else
+    fail "D3: repeated recovery rc=$RC_D3 or executor catalog churned"
+fi
+
+echo "--- Scenario E: governance-root symlink fails before install-path writes ---"
+EXTERNAL_GOVERNANCE="$TEST_ROOT/external-governance"
+mkdir -p "$EXTERNAL_GOVERNANCE/.githooks"
+printf '#!/bin/bash\nexit 0\n' > "$EXTERNAL_GOVERNANCE/.githooks/pre-commit"
+printf 'external sentinel\n' > "$EXTERNAL_GOVERNANCE/sentinel.txt"
+git -C "$EXTERNAL_GOVERNANCE" init -q
+git -C "$EXTERNAL_GOVERNANCE" config user.email external@test.invalid
+git -C "$EXTERNAL_GOVERNANCE" config user.name external
+git -C "$EXTERNAL_GOVERNANCE" add -- .githooks/pre-commit sentinel.txt
+git -C "$EXTERNAL_GOVERNANCE" commit -qm init
+EXTERNAL_CONFIG_HASH=$(shasum -a 256 "$EXTERNAL_GOVERNANCE/.git/config" | cut -d' ' -f1)
+EXTERNAL_SENTINEL_HASH=$(shasum -a 256 "$EXTERNAL_GOVERNANCE/sentinel.txt" | cut -d' ' -f1)
+ln -s "$EXTERNAL_GOVERNANCE" "$WORKSPACE_DIR/linked-governance"
+printf 'GOVERNANCE_REPO=linked-governance\n' > "$WORKSPACE_DIR/.exocortex.env"
+
+set +e
+PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main \
+    bash "$SCRIPT_DIR/update.sh" --yes > "$TEST_ROOT/out-e.log" 2>&1
+RC_E=$?
+set -e
+EXTERNAL_CONFIG_HASH_AFTER=$(shasum -a 256 "$EXTERNAL_GOVERNANCE/.git/config" | cut -d' ' -f1)
+EXTERNAL_SENTINEL_HASH_AFTER=$(shasum -a 256 "$EXTERNAL_GOVERNANCE/sentinel.txt" | cut -d' ' -f1)
+if [ "$RC_E" -eq 3 ] && grep -q 'governance repo является symlink' "$TEST_ROOT/out-e.log"; then
+    pass "E: governance-root symlink blocks post-backfill with EXIT_RUNTIME"
+else
+    fail "E: expected early governance symlink refusal/exit 3, got rc=$RC_E"
+fi
+if [ -f "$SCRIPT_DIR/.update-incomplete" ]; then
+    pass "E: transaction marker remains after early symlink refusal"
+else
+    fail "E: symlink refusal cleared the transaction marker"
+fi
+if [ "$EXTERNAL_CONFIG_HASH" = "$EXTERNAL_CONFIG_HASH_AFTER" ] && \
+   [ "$EXTERNAL_SENTINEL_HASH" = "$EXTERNAL_SENTINEL_HASH_AFTER" ]; then
+    pass "E: external git config and sentinel remain byte-identical"
+else
+    fail "E: install-path step wrote through governance-root symlink before refusal"
 fi
 
 echo "---"

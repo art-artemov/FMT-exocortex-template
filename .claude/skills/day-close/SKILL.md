@@ -114,7 +114,138 @@ TODAY_DAYPLAN="${IWE_GOVERNANCE_REPO:-DS-strategy}/archive/day-plans/DayPlan $(d
 `bash .claude/scripts/load-extensions.sh day-close after` → exit 0: `Read` каждый файл из вывода (alphabetic) → выполнить. Exit 1 → пропустить. Поддерживает `extensions/day-close.after.md` И `extensions/day-close.after.<suffix>.md`. Симметрично week-close (шаг 9): вызывается ДО финального коммита (10b), чтобы правки расширений попадали в тот же коммит, не оставались незакоммиченным хвостом (issue #320/#322).
 
 ### 10b. Финальный коммит (все затронутые репозитории, не только governance)
-`git status --short` по КАЖДОМУ репо, который сессия трогала за день — как минимум workspace root (`{{HOME_DIR}}/IWE/`, там физически лежат `MEMORY.md` и `memory/*.md`, их правят шаги 4б/4) и `${IWE_GOVERNANCE_REPO:-DS-strategy}` (WeekPlan/DayPlan/WP-REGISTRY). Незафиксированное (включая правки шага 10a) → `git add <specific paths>` → commit → push. Переходить к шагу 11 только когда `git status` чист во всех репо.
+`git status --short` по КАЖДОМУ репо, который сессия трогала за день — как минимум workspace root (`{{HOME_DIR}}/IWE/`, там физически лежат `MEMORY.md` и `memory/*.md`, их правят шаги 4б/4) и `${IWE_GOVERNANCE_REPO:-DS-strategy}` (WeekPlan/DayPlan/WP-REGISTRY). Незафиксированное (включая правки шага 10a) стадировать и коммитить только одной fail-closed командой ниже: ненулевой код = СТОП, отдельный `git commit` после него запрещён. Переходить к шагу 11 только когда `git status` чист во всех репо.
+
+<!-- issue-511-guard:start -->
+```bash
+assert_staged_scope_or_stop() {
+  if [ "$#" -lt 2 ]; then
+    echo "STOP: assert_staged_scope_or_stop requires <repo> <path>..." >&2
+    return 74
+  fi
+  local repo="$1"
+  shift
+  local status staged_path staged_path_after allowed_path path normalized_path display_path
+  while IFS= read -r -d '' status; do
+    IFS= read -r -d '' staged_path || {
+      echo "STOP: staged index status could not be parsed" >&2
+      return 76
+    }
+    staged_path_after=""
+    case "$status" in
+      R*|C*)
+        IFS= read -r -d '' staged_path_after || {
+          echo "STOP: staged rename/copy status could not be parsed" >&2
+          return 76
+        }
+        ;;
+    esac
+    allowed_path=false
+    for path in "$@"; do
+      normalized_path="${path#./}"
+      if [ "$staged_path" = "$normalized_path" ] || \
+         [ "$staged_path_after" = "$normalized_path" ]; then
+        allowed_path=true
+        break
+      fi
+    done
+    if ! $allowed_path; then
+      display_path="$staged_path"
+      [ -n "$staged_path_after" ] && display_path="$staged_path -> $staged_path_after"
+      echo "STOP: staged path is outside the explicit commit scope: $display_path" >&2
+      return 75
+    fi
+  done < <(git -C "$repo" diff --cached --name-status -z -M)
+}
+
+stage_and_commit_or_stop() {
+  if [ "$#" -lt 3 ]; then
+    echo "STOP: usage: stage_and_commit_or_stop <repo> <message> <path>..." >&2
+    return 63
+  fi
+  local repo="$1" message="$2"
+  shift 2
+  if [ "$#" -eq 0 ]; then
+    echo "STOP: no explicit paths supplied for commit" >&2
+    return 64
+  fi
+
+  local path normalized_path tracked_descendant
+  for path in "$@"; do
+    case "$path" in
+      .|./|-A|--all|-u|--update)
+        echo "STOP: broad git-add path/options are forbidden: $path" >&2
+        return 65
+        ;;
+    esac
+    if [ -d "$repo/$path" ]; then
+      echo "STOP: explicit commit scope requires files, not a directory: $path" >&2
+      return 65
+    fi
+    normalized_path="${path#./}"
+    normalized_path="${normalized_path%/}"
+    tracked_descendant=""
+    while IFS= read -r -d '' tracked_descendant; do
+      break
+    done < <(git -C "$repo" ls-files -z -- "$normalized_path/")
+    if [ -n "$tracked_descendant" ]; then
+      echo "STOP: explicit commit scope resolves to tracked descendants, not one file: $path" >&2
+      return 65
+    fi
+    local path_status=""
+    if ! path_status=$(git -C "$repo" status --porcelain=v1 --untracked-files=all -- "$path"); then
+      echo "STOP: path status could not be inspected: $path" >&2
+      return 66
+    fi
+    if [ -z "$path_status" ]; then
+      echo "STOP: explicit path has no pending or staged change: $path" >&2
+      return 67
+    fi
+  done
+
+  # A shared repository can already contain another agent's staged work.
+  # Refuse it before mutating the index; `git commit -m` commits the whole
+  # index, not only the pathspec later passed to `git add`.
+  assert_staged_scope_or_stop "$repo" "$@" || return $?
+
+  if ! git -C "$repo" add -- "$@"; then
+    echo "STOP: git add failed; commit was not attempted" >&2
+    return 68
+  fi
+  for path in "$@"; do
+    if git -C "$repo" diff --cached --quiet --exit-code -- "$path"; then
+      echo "STOP: explicit path has no staged content: $path" >&2
+      return 69
+    else
+      local path_diff_rc=$?
+      if [ "$path_diff_rc" -ne 1 ]; then
+        echo "STOP: staged content could not be inspected for: $path" >&2
+        return 70
+      fi
+    fi
+  done
+  if git -C "$repo" diff --cached --quiet --exit-code; then
+    echo "STOP: staged diff is empty" >&2
+    return 71
+  else
+    local diff_rc=$?
+    if [ "$diff_rc" -ne 1 ]; then
+      echo "STOP: staged diff could not be inspected" >&2
+      return 72
+    fi
+  fi
+  if ! git -C "$repo" commit -m "$message"; then
+    echo "STOP: git commit failed" >&2
+    return 73
+  fi
+}
+```
+<!-- issue-511-guard:end -->
+
+> **Двойной сторож коммита (#511, дважды воспроизведённый класс «git mv + правка → пустой/устаревший дифф»):** механизм 21.08 доказан — `git mv` уже положил rename в индекс, правка нового пути осталась только в worktree, `git add` старого пути упал, но отдельный commit проигнорировал ошибку и зафиксировал прежний staged rename. Функция выше устраняет именно этот путь: commit недостижим после failed add. Механизм 18.08 по имеющейся фактуре всё ещё не установлен, поэтому issue остаётся открытым.
+> 1. ПЕРЕД commit: функция сначала запрещает staged-пути вне явного списка, затем сама проверяет код `git add`, непустой общий staged diff и непустой staged-контент каждого явно переданного пути (`git diff --cached -- <path>`). `git add -- <явные пути>` после этой проверки не может добавить чужой путь; повторная проверка по именам после add дала бы ложный отказ для rename, который Git переклассифицировал в delete+add после изменения содержимого. Не повторять commit вручную после отказа функции.
+> 2. ПОСЛЕ commit: сверить, что правки реально в HEAD — `git show HEAD --stat` содержит перемещённый файл, и `git diff HEAD -- <файл>` пуст (на диске нет незакоммиченных остатков правок).
+> 3. Любое срабатывание → СТОП + собрать диагностику в отчёт дня: `git status`, `git diff`, `git log -1 --stat`, точная последовательность выполненных команд — и сообщить пилоту. Индекс намеренно не сбрасывать автоматически: там может быть доказательство инцидента или ранее сделанный `git mv`. После диагностики исправить список путей и повторить единую функцию. Это материал для установления корня #511.
 
 ### 10c. Heartbeat для Day Open guard
 Пишется ПОСЛЕ push шага 10b — DayPlan уже реально закоммичен. day-open-pipeline.sh на следующий день читает этот файл как сигнал «Day Close сделан» (fallback — присутствие архивного DayPlan в git, симметрично day-open):
@@ -146,6 +277,7 @@ Sub-agent Haiku R23 (context isolation): передать чеклист + че�
 - [ ] open-sessions.log: строки закрытых сессий удалены
 - [ ] Captures за день применены (все Quick Close → KE пройден)
 - [ ] Синхронизация downstream: `update.sh` выполнен
+- [ ] **Синхронизация рабочих копий (поручение пилота 21.08):** все машины/копии установки ↔ GitHub синхронизированы, за исключением работающих сейчас сессий. Проверка: `git status -sb` в governance-репо (без ahead/behind) + статус sync-скрипта вторичных копий (если настроен, напр. `tsekh1-git-sync.sh --status`). «Deferred из-за живого семафора» — норма для реально работающей сессии; протухший семафор при запушенном отчёте — аномалия: закрыть семафор до завершения Day Close.
 - [ ] Linear sync: статусы соответствуют git. Кол-во active РП в REGISTRY = active issues в Linear
 - [ ] Repo CLAUDE.md: feat-коммиты → новые правила?
 - [ ] DayPlan сегодня → `archive/day-plans/` (старые DayPlan'ы в `current/` тоже) — **DayPlan сегодня N/A на strategy_day** (шаг 0в), старые — архивировать в любом случае
@@ -155,7 +287,7 @@ Sub-agent Haiku R23 (context isolation): передать чеклист + че�
 - [ ] Видео: обработанные помечены (если video.enabled)
 - [ ] Governance: REPOSITORY-REGISTRY, navigation.md, MAP.002
 - [ ] Backup: `day-close.sh` выполнен
-- [ ] **Rule-engine FP-stats** (WP-272 Ф2.5): `[ -f ~/IWE/.claude/scripts/fp-stats.py ] && python3 ~/IWE/.claude/scripts/fp-stats.py --date $(date +%Y-%m-%d) || echo "skip: fp-stats.py требует rule-classifier.py"` → если есть `⚠️ REVISE` → записать в «Завтра начать с»
+- [ ] **Rule-engine FP-stats** (WP-272 Ф2.5): `[ -f ~/IWE/.claude/scripts/fp-stats.py ] && python3 ~/IWE/.claude/scripts/fp-stats.py --date $(date +%Y-%m-%d) || echo "skip: fp-stats.py требует rule-classifier.py"` → если есть `⚠️ REVISE` → **спросить пилота по факту флага** (WP-545 Ф5, 21.08 — заменяет прежний еженедельный R8-вопрос, который спрашивал вслепую по расписанию, не по конкретному сигналу): «правило `<X>` — это ложные срабатывания детектора, или реальный, но неудобный сигнал?» Ответ → в «Завтра начать с» вместе с решением (переформулировать правило / оставить как есть)
 - [ ] Верификация compliance: /verify запускался сегодня?
 - [ ] WakaTime + Мультипликатор: часы / бюджет ПО ФАКТУ (sessions/00-index.md перечислен; ad-hoc оценены по ходам; сверхплановое — по факту); sanity check ≥10 peer-сессий
 - [ ] Итоги дня записаны в DayPlan **(postcondition 9a: grep подтверждён)** — **N/A на strategy_day** (шаг 0в)

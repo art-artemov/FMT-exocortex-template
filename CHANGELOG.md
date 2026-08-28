@@ -138,6 +138,67 @@ Refs: WP-NNN
 
 
 
+
+
+
+
+
+
+## [Unreleased]
+
+## [0.38.11] — 2026-08-24
+
+### Security
+- [security] Профиль ошибок агента переведён на единый нейтральный CLI с ленивой приватной SQLite-БД, безопасной миграцией старых записей и доставкой в fresh/update и нестандартные workspace-пути (#533).
+- [security] Обновление шаблона использует `GH_TOKEN`, затем `GITHUB_TOKEN` или авторизованный `gh` для всех GitHub API-запросов; секреты не попадают в аргументы и трассировку, а ошибка авторизации не маскируется анонимным запросом (#538).
+
+### Fixed
+- [data-safety] Day Close сохраняет `day-rhythm-config.yaml` и `params.yaml` побайтово, удаляет только собственные неизменённые копии и восстанавливается после коллизий, гонок и прерванной транзакции без потери пользовательских данных (#536).
+
+## [0.38.10] — 2026-08-24
+
+### Security
+- [security] Состояние согласий вынесено из Git в закрытое локальное хранилище с атомарной миграцией, повторной проверкой старых писателей и защитой от ссылок; усилены границы hook-доставки, commit/owner/self-scan и DayPlan-гейтов (#502 #511 #521 #529 #530 #532).
+
+### Fixed
+- [behavior] Закрыт пакет пользовательских дефектов: ленивый State-Transition Gate, полный lifecycle АрхГейта, каталог extensions, опциональные Hindsight/Obsidian-пути, происхождение манифеста, role-prefix, scheduler и точный статус index-health (#481 #490 #508 #522 #523 #524 #525 #527 #528 #531).
+- [migration] Fresh-install и update/recovery теперь одинаково доставляют `AGENTS.md`, lazy-правило, Python-resolver и governance hooks, включая повторный запуск после частичного обновления (#481 #502 #508 #521).
+
+## [0.38.9] — 2026-08-24
+### Fixed
+- `6c4f52b` fix(template): batch of nine small user-reported defects (#515 #514 #513 #503 #499 #507 #512 #511 + flush) — WP-529 F14, peer session with Kimi (#520)
+
+## [0.38.8] — 2026-08-23
+### Fixed
+- `8364a30` fix(update,setup): fail-closed release channel (#501), Step 0 double negative control, resolver-baseline delivery, IWE_RUNTIME isolation (WP-529 F13, v0.38.7 matrix) (#519)
+- `c36bd90` fix(release,manifest): pin release tag to the validated SHA; fail-closed manifest verification (post-v0.38.7 peer review) (#518)
+- `fdd7a55` fix(update): Step 0 self-update replaces the running script via staged rename, not cp (issue #505 residual) (#517)
+
+## [0.38.7] — 2026-08-22
+### Added
+- `90fa53b` feat(day-open): ship a default day-open.checks.md — the Checks step must have something to run on a fresh install (WP-529 F7) (#509)
+- `4500dda` feat(day-open): контракт доставки Day Open графа (WP-529 Ф7) + un-red main (Ф4 tests) (#504)
+- `9fa32ce` feat(week-close): проактивный сторож каденции архивации карточек (WP-545 Ф3)
+- `86a1c01` feat(day-close): чек-лист — синхронизация рабочих копий ↔ GitHub кроме живых сессий (поручение пилота 21.08)
+- `a16106a` feat(hooks): git add -A/-u/. guard in destructive-guard.sh (WP-544 Ф1 Д5) (#497)
+- `f6d4132` feat(hooks): расширить защиту от необратимых действий (WP-544 Ф1) (#495)
+- `8112b1a` feat(update.sh): параллелизация скачивания манифеста + skip-if-hash-matches
+### Fixed
+- update.sh: доставка update.sh — только самообновлением Шага 0 (issue #505: cp затирал работающий скрипт, подстановка запекала личные пути в его sed-шаблоны); канал резолвится ДО самообновления; deprecated_files не может пересекаться с git-деревом (10 живых файлов удалялись после no-change update); релизная цепочка замкнута (анти-рекурсия workflow_run), дайджест анонсирует только существующие теги; Bash 3.2 фиксы тестовой обвязки (эта запись — PR #511)
+- `621e5ba` fix(release): bump commit now syncs the README badge and rebuilds the manifest — weekly release can go green without a manual follow-up (WP-529) (#510)
+- `de34d6d` fix(wp545): решения пилота по находкам 1 и 3 (хвост 5/5 приложения)
+- `9630b5a` fix(wp545): починить счётчик в r-questionnaire.md (хвост 5/5, находка 2)
+- `c8d20e8` fix(update.sh): закрыть 2 тестовых долга ревью параллелизации (WP-546 Ф5)
+- `7996b69` fix(update.sh): 5 находок независимого ревью параллелизации (WP-546 Ф4)
+- `e129754` fix(session-guard): select_semaphore() -- строгая конъюнкция wp+slug
+- `d0f9a4d` fix(wp529): Ф9 — python3-resolver contract + bash 3.2 compat (2 confirmed sites) (#494)
+- `52a5189` fix(update): shellcheck-safe comment + real unbound-variable bug it caught
+- `7fd3837` fix(update): restore integrity-mismatch message + fix curl shim for -K batch mode
+- `0958b5f` test(wp529): fail-closed tests for update.sh parallel fetch (Ф4)
+- `68d8d88` fix(day-open,calendar,manifest): closes #477, #489, #486
+### Changed
+- `7566a1d` chore(release): weekly auto-bump to v0.38.7
+
 ## [0.38.6] — 2026-08-20
 
 ### Added

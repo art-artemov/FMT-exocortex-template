@@ -121,6 +121,18 @@ WP-NNN: pending-фазы (M):
 5. Для каждого вердикта — явное действие (обновить уверенность на будущее / добавить шаг в чек-лист / завести РП / зафиксировать кандидат в паттерн — §6 Capture-to-Pack). Вердикт без действия = «повисший», не закрывать неделю с повисшими вердиктами.
 6. Если сверенных записей нет — пометить явно «сверка гипотез: 0 записей с наступившей датой» в WeekReport (не пропускать шаг молча).
 
+### 6b. Проактивная сверка каденции архивации карточек (WP-545 Ф3)
+
+> **Зачем:** протокол Close (§ 5c) — реактивный: предлагает архивацию только когда агент случайно касается конкретной карточки. Прецедент WP-7 — механизм архива существовал, но использование прекратилось на 2 месяца, пока карточка не была замечена вручную. Этот шаг закрывает разрыв: сканирует весь `inbox/` безусловно каждую неделю.
+
+```bash
+python3 ${IWE_SCRIPTS}/archive-cadence-sweep.py --format md
+```
+
+Критерий (тот же, что и в § 5c, не переизобретается): `created` >14 дней И карточка >400 строк, при отсутствии `inbox/WP-N/WP-N-archive.md`. Отказ пилота (`archive_declined: YYYY-MM-DD`) уважается 14 дней от отметки.
+
+Вывод — список кандидатов, отложенных по cooldown и (диагностически) расхождений `archive:`-поля с фактом файла. **Не архивировать автоматически** — только вставить список в WeekReport (§8) как явную рекомендацию; решение по каждой карточке пилот принимает при следующем открытии (через § 5c реактивного механизма).
+
 ### 7. Платформенные шаги
 
 #### 7a. Проверка здоровья бэкапов
@@ -178,19 +190,37 @@ echo "=== memory/ файлы (mtime >14д) ===" && find {{MEMORY_DIR}} -name "*.
 | MEMORY.md строк | **> 200** | Флаг превышения лимита. Предложить архивацию старых feedback в `archive/`. |
 | memory/*.md без обращения > 14д | **> 5 файлов** | Предложить понизить `horizon: warm` (пользователь решает при Month Close). |
 
-#### 7f. Hindsight health check
+#### 7f. Hindsight health check (только при явном подключении)
 
-> **WP-337:** L2-memory = always-on, но требует периодической проверки.
+> Hindsight — опциональное L2-расширение. Week Close проверяет уже подключённый
+> сервис, но не запускает его автоматически и не превращает отсутствие сервиса
+> в ошибку закрытия недели.
 
 ```bash
-echo "=== Hindsight container ===" && docker ps --format "table {{.Names}}\t{{.Status}}" | grep iwe-hindsight || echo "❌ Container not running"
-echo "=== Hindsight log (last 20) ===" && cat ~/.iwe/hindsight.log 2>/dev/null | tail -20 || echo "❌ No log file"
+HINDSIGHT_CONFIGURED=0
+[ -f "$HOME/.iwe/hindsight.env" ] && HINDSIGHT_CONFIGURED=1
+[ "${IWE_HINDSIGHT_RETAIN:-}" = "1" ] && HINDSIGHT_CONFIGURED=1
+
+if [ "$HINDSIGHT_CONFIGURED" -eq 0 ]; then
+  echo "N/A: Hindsight не настроен (опциональное расширение)"
+elif ! command -v docker >/dev/null 2>&1; then
+  echo "⚠️ Hindsight подключён, но Docker недоступен — запускать только после решения пользователя"
+else
+  echo "=== Hindsight container ==="
+  docker ps --format "table {{.Names}}\t{{.Status}}" | grep iwe-hindsight || \
+    echo "⚠️ Container not running — запускать только после решения пользователя"
+  echo "=== Hindsight log (last 20) ==="
+  tail -20 "$HOME/.iwe/hindsight.log" 2>/dev/null || echo "⚠️ No log file"
+  if docker ps --format "{{.Names}}" | grep -qx iwe-hindsight; then
+    docker exec iwe-hindsight ls -lh /data/hindsight.db
+  fi
+fi
 ```
 
-**Проверки:**
-- Container `iwe-hindsight` → статус `Up` (если `Down` → `bash ~/IWE/FMT-exocortex-template/exocortex/hindsight/start.sh`)
+**Проверки при подключённом Hindsight:**
+- Container `iwe-hindsight` → статус `Up`; если не запущен — сообщить пользователю, не запускать автоматически
 - Лог без `FAIL` за неделю. Если есть FAIL → `docker logs iwe-hindsight` → диагностика (OpenAI key? network? disk?)
-- Размер БД: `docker exec iwe-hindsight ls -lh /data/hindsight.db` — если >100MB → флаг ротации
+- Размер БД: если >100MB → флаг ротации
 - **Whitelist review:** нужно ли добавить новые скиллы в `RECALL_SKILLS` (созданные за неделю)?
 
 ### 8. Запись итогов в WeekReport (split, ОПТ-5)
@@ -247,6 +277,7 @@ git push
 - [ ] Метрики посчитаны (completion rate, мультипликатор)
 - [ ] Carry-over → W+1 (или явно «нет»)
 - [ ] Pending фазы активных РП обойдены (`pending-phases-sweep.sh` или fallback grep) — решения зафиксированы
+- [ ] Каденция архивации карточек сверена (`archive-cadence-sweep.py`) — список в WeekReport
 - [ ] Backlog `docs/Backlog.md` обойдён в следующую Strategy Session (либо триггеры активированы, либо явно «B-NNN живёт без триггеров»)
 - [ ] Captures маршрутизированы, уроки записаны
 - [ ] Drift-scan недели: устаревшие факты обновлены
@@ -256,7 +287,7 @@ git push
 - [ ] ТО памяти: distinctions.md/MEMORY.md/memory/*.md проверены, флаги зафиксированы (или «норма»)
 - [ ] Итоги W{N} записаны в WeekPlan
 - [ ] Extensions `.after.md` выполнены (если есть)
-- [ ] Hindsight: container Up, лог без FAIL за неделю, размер БД <100MB
+- [ ] Hindsight: `N/A` (не настроен) или при явном подключении проверены container/log/размер БД; автозапуска не было
 - [ ] Оценка качества недели q:N задана (1-5) и включена в commit message
 - [ ] Governance-репо закоммичено
 - [ ] Peer-сессии недели: WP Gate проверен (только сессии с 2026-06-09):

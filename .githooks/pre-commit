@@ -309,8 +309,11 @@ check_pattern() {
     local exclude="${3:-}"
 
     for file in $STAGED_SH; do
-        # Skip PLATFORM-COMPAT.md references
-        [ "$(basename "$file")" = "PLATFORM-COMPAT.md" ] && continue
+        # The canonical checker necessarily carries forbidden patterns as its
+        # own rule data and already excludes itself during repository scans.
+        # Match the exact path: an unrelated same-named script must not bypass
+        # the staged guard (issue #530).
+        [ "$file" = "scripts/check-platform-compat.sh" ] && continue
 
         # Check staged content (not working tree)
         local matches

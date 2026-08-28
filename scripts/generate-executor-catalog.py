@@ -6,23 +6,23 @@ generate-executor-catalog.py — собрать executor-catalog.yaml из routi
 генерирует executor-catalog.yaml для Маршрутизатора (DP.ROLE.059, WP-350 Ф8).
 
 Запуск:
-    python3 generate-executor-catalog.py [--validate] [--output PATH]
+    python3 generate-executor-catalog.py [--validate] [--skills-dir PATH] [--output PATH]
 
 Exit: 0 = OK, 1 = error, 2 = validation failure (missing routing: sections)
 
 see DP.SC.159, DP.ROLE.059
 """
 
+import argparse
+from datetime import datetime, timezone
 import os
+from pathlib import Path
 import re
 import sys
-import yaml
-from datetime import datetime, timezone
-from pathlib import Path
+import tempfile
 from typing import Optional
 
-SKILLS_DIR = Path.home() / "IWE" / ".claude" / "skills"
-DEFAULT_OUTPUT = Path.home() / "IWE" / os.environ.get("IWE_GOVERNANCE_REPO", "DS-strategy") / "scripts" / "executor-catalog.yaml"
+import yaml
 
 # issue #222: таксономия де-факто — нормативного источника в docs/ нет,
 # список описывает реально используемые режимы исполнения скиллов.
@@ -107,6 +107,10 @@ def validate_entry(entry: dict) -> list[str]:
         errors.append(f"{entry['name']}: invalid executor '{executor}', expected {VALID_EXECUTORS}")
     if "deterministic" not in r:
         errors.append(f"{entry['name']}: routing.deterministic missing")
+    if executor == "agent" and r.get("model") not in {"haiku", "sonnet", "opus"}:
+        errors.append(
+            f"{entry['name']}: agent executor requires model: haiku|sonnet|opus"
+        )
     if executor == "script" and "script_path" not in r:
         # Warning, not error — script_path may be added later
         pass
@@ -151,7 +155,7 @@ def build_catalog(skills_dir: Path) -> dict:
         "schema_version": "1.0",
         "generated_at": now,
         "source": ".claude/skills/*/SKILL.md",
-        "generator": "${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/generate-executor-catalog.py",
+        "generator": "scripts/generate-executor-catalog.py",
         "wp": "WP-350",
         "total_entries": len(entries),
         "skipped_no_routing": len(skipped),
@@ -179,29 +183,95 @@ def print_summary(catalog: dict):
             print(f"      [{prio}] {c['name']} → {c['routing']['executor']}")
 
 
-def main():
-    validate_only = "--validate" in sys.argv
-    output_path = DEFAULT_OUTPUT
-    for i, arg in enumerate(sys.argv[1:]):
-        if arg == "--output" and i + 2 < len(sys.argv):
-            output_path = Path(sys.argv[i + 2])
+def _workspace_root() -> Path:
+    configured = os.environ.get("IWE_ROOT") or os.environ.get("IWE_WORKSPACE")
+    return Path(configured).expanduser() if configured else Path.home() / "IWE"
 
-    if not SKILLS_DIR.exists():
-        print(f"ERROR: {SKILLS_DIR} not found", file=sys.stderr)
+
+def _parse_args() -> argparse.Namespace:
+    workspace = _workspace_root()
+    governance_repo = os.environ.get("IWE_GOVERNANCE_REPO", "DS-strategy")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Validate routing entries without writing the catalog",
+    )
+    parser.add_argument(
+        "--skills-dir",
+        type=Path,
+        default=workspace / ".claude" / "skills",
+        help="Directory containing skill subdirectories",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=workspace / governance_repo / "scripts" / "executor-catalog.yaml",
+        help="Catalog output path",
+    )
+    return parser.parse_args()
+
+
+def _without_generation_time(catalog: dict) -> dict:
+    """Return the semantic catalog payload used for idempotency checks."""
+    return {key: value for key, value in catalog.items() if key != "generated_at"}
+
+
+def _write_catalog_if_changed(catalog: dict, output_path: Path) -> bool:
+    """Atomically replace output only when its semantic content changed."""
+    if output_path.is_file():
+        try:
+            existing = yaml.safe_load(output_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, yaml.YAMLError):
+            existing = None
+        if isinstance(existing, dict) and _without_generation_time(existing) == _without_generation_time(catalog):
+            return False
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=output_path.parent,
+            prefix=f".{output_path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as temporary:
+            yaml.safe_dump(
+                catalog,
+                temporary,
+                allow_unicode=True,
+                sort_keys=False,
+                default_flow_style=False,
+            )
+            temporary_path = Path(temporary.name)
+        temporary_path.chmod(0o644)
+        temporary_path.replace(output_path)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+    return True
+
+
+def main():
+    args = _parse_args()
+    skills_dir = args.skills_dir.expanduser()
+    output_path = args.output.expanduser()
+
+    if not skills_dir.is_dir():
+        print(f"ERROR: {skills_dir} not found", file=sys.stderr)
         sys.exit(1)
 
-    catalog = build_catalog(SKILLS_DIR)
+    catalog = build_catalog(skills_dir)
 
-    if validate_only:
+    if args.validate:
         print(f"OK: {catalog['total_entries']} entries validated")
         return
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(catalog, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
-
+    changed = _write_catalog_if_changed(catalog, output_path)
     print_summary(catalog)
-    print(f"    output        : {output_path}")
+    print(f"    output        : {output_path} ({'updated' if changed else 'unchanged'})")
 
 
 if __name__ == "__main__":

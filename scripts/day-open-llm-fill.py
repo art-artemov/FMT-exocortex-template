@@ -38,9 +38,49 @@ from wp_inbox import wp_card_paths  # noqa: E402 — lib path set above
 DEFAULT_PROXY_URL = "http://localhost:18765"
 SECTION_TIMEOUT_S = 60
 TOTAL_TIMEOUT_S = 300
-FAULT_PROFILE_SCRIPT = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "agent_fault_remind.py"
-)
+
+
+def _validated_pipeline_workspace() -> Path | None:
+    """Return a physical IWE_ROOT supplied by the installed Day Open pipeline."""
+
+    raw = os.environ.get("IWE_ROOT", "").strip()
+    if not raw or "\x00" in raw:
+        return None
+    candidate = Path(raw).expanduser()
+    if candidate.is_symlink():
+        return None
+    try:
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    return resolved if resolved.is_dir() else None
+
+
+PIPELINE_WORKSPACE = _validated_pipeline_workspace()
+
+
+def _fault_profile_workspace() -> Path:
+    configured = os.environ.get("IWE_WORKSPACE") or os.environ.get("WORKSPACE_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return PIPELINE_WORKSPACE or Path.home() / "IWE"
+
+
+def _fault_profile_script() -> str:
+    """Resolve the one agent-neutral CLI in installed and template layouts."""
+
+    script_dir = Path(__file__).resolve().parent
+    workspace = _fault_profile_workspace()
+    configured_scripts = Path(os.environ.get("IWE_SCRIPTS") or workspace / "scripts")
+    candidates = (
+        script_dir / "agent-fault" / "iwe_checklist_memory.py",
+        configured_scripts / "agent-fault" / "iwe_checklist_memory.py",
+        workspace / "FMT-exocortex-template" / "scripts" / "agent-fault" / "iwe_checklist_memory.py",
+    )
+    return str(next((candidate for candidate in candidates if candidate.is_file()), candidates[0]))
+
+
+FAULT_PROFILE_SCRIPT = _fault_profile_script()
 
 
 def read_file(path: str | None, default: str = "") -> str:
@@ -51,27 +91,53 @@ def read_file(path: str | None, default: str = "") -> str:
 
 
 def load_fault_profile() -> str:
-    """Run agent_fault_remind.py --protocol open and return top fault rules.
+    """Run the unified agent-fault CLI and return this subject's top rules.
 
     Returns empty string on failure. Logs reason to stderr so silent disable
-    (caused by interpreter mismatch, regex drift, or remind-script breakage)
+    (caused by interpreter mismatch, regex drift, or CLI breakage)
     surfaces in pipeline logs instead of vanishing.
 
     Symmetric with .claude/hooks/inject-fault-profile.sh: same data source
-    (iwe_memory.db via agent_fault_remind.py), filtered to CRITICAL/MAJOR
+    (iwe_memory.db via the unified CLI), filtered to CRITICAL/MAJOR
     with n>=3.
     """
+    subject_kind = os.environ.get("IWE_FAULT_SUBJECT_KIND", "")
+    subject_id = os.environ.get("IWE_FAULT_SUBJECT_ID", "")
+    if subject_kind not in {"personality", "runtime", "system"} or not subject_id:
+        print("[INFO] fault-profile: explicit subject is not configured — skipped", file=sys.stderr)
+        return ""
     if not os.path.isfile(FAULT_PROFILE_SCRIPT):
         print(f"[INFO] fault-profile: {FAULT_PROFILE_SCRIPT} not found — skipped",
               file=sys.stderr)
         return ""
     try:
+        child_env = os.environ.copy()
+        if (
+            not child_env.get("IWE_WORKSPACE")
+            and not child_env.get("WORKSPACE_DIR")
+            and PIPELINE_WORKSPACE is not None
+        ):
+            # The governance pipeline derives IWE_ROOT from its own physical
+            # location. Adapt that trusted runtime fact to the canonical CLI's
+            # unchanged IWE_WORKSPACE → WORKSPACE_DIR → HOME/IWE contract.
+            child_env["IWE_WORKSPACE"] = str(PIPELINE_WORKSPACE)
         result = subprocess.run(
-            [sys.executable, FAULT_PROFILE_SCRIPT, "--protocol", "open"],
+            [
+                sys.executable,
+                FAULT_PROFILE_SCRIPT,
+                "remind",
+                "--protocol",
+                "open",
+                "--subject-kind",
+                subject_kind,
+                "--subject-id",
+                subject_id,
+            ],
+            env=child_env,
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
-            print(f"[WARN] fault-profile: agent_fault_remind.py exit={result.returncode}, "
+            print(f"[WARN] fault-profile: unified CLI exit={result.returncode}, "
                   f"stderr={result.stderr.strip()[:200]}", file=sys.stderr)
             return ""
         lines = [
@@ -79,7 +145,7 @@ def load_fault_profile() -> str:
             if re.match(r"^🔴 \[(CRITICAL|MAJOR) \| n=\d+\]", line)
         ]
         if not lines:
-            print("[WARN] fault-profile: agent_fault_remind.py output had 0 lines "
+            print("[WARN] fault-profile: unified CLI output had 0 lines "
                   "matching CRITICAL/MAJOR n>=3 regex — possible format drift",
                   file=sys.stderr)
             return ""

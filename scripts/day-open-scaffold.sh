@@ -826,7 +826,7 @@ auto_generated: true
 
 1. Проверить $unit_hint
 2. Переустановить роли: \`bash setup.sh\` (секция [5/6]) — либо вручную по \`roles/ROLE-CONTRACT.md\`
-3. Запустить руками: \`bash \${IWE_SCRIPTS:-$IWE/FMT-exocortex-template/scripts}/../roles/synchronizer/scripts/scheduler.sh --dry-run\` (legacy-скрипт, актуален только если ваша инсталляция ещё не мигрировала на per-role юниты)
+3. Проверить ручной запуск центрального диспетчера: \`bash \${IWE_SCRIPTS:-$IWE/FMT-exocortex-template/scripts}/../roles/synchronizer/scripts/scheduler.sh dispatch\`
 
 ## Auto-generation note
 

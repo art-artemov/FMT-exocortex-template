@@ -26,7 +26,23 @@
 set -euo pipefail
 
 INPUT=$(cat)
-SKILL_NAME=$(jq -r '.tool_input.skill // empty' <<<"$INPUT" 2>/dev/null || true)
+if ! command -v jq >/dev/null 2>&1; then
+  echo "BLOCKED: ResidencyGate [dependency_error] — jq is required to validate the Skill hook payload." >&2
+  exit 2
+fi
+if ! SKILL_NAME=$(jq -r '
+  if type != "object" then error("hook payload must be an object")
+  elif (.tool_name? | type) != "string" then error("hook payload has no tool_name string")
+  elif .tool_name != "Skill" then ""
+  elif (.tool_input? | type) != "object" then error("Skill payload has no tool_input object")
+  elif (.tool_input.skill? | type) != "string" or (.tool_input.skill | length) == 0
+    then error("Skill payload has no non-empty skill name")
+  else .tool_input.skill
+  end
+' <<<"$INPUT" 2>/dev/null); then
+  echo "BLOCKED: ResidencyGate [runtime_error] — Skill hook payload is malformed and cannot be checked safely." >&2
+  exit 2
+fi
 [ -z "$SKILL_NAME" ] && exit 0
 
 HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
@@ -42,21 +58,42 @@ MANIFEST="$PROJECT_ROOT/.claude/skills/$SKILL_NAME/SKILL.md"
 [ -f "$MANIFEST" ] || exit 0
 
 RESIDENCY_GATE_PY="$PROJECT_ROOT/.claude/skills/residency-gate/residency-gate.py"
-[ -f "$RESIDENCY_GATE_PY" ] || exit 0
-
-RESULT=$(python3 "$RESIDENCY_GATE_PY" check-activation "$SKILL_NAME" "$MANIFEST" 2>&1) && RC=0 || RC=$?
-
-if [ "$RC" -eq 0 ]; then
-  exit 0
+if [ ! -f "$RESIDENCY_GATE_PY" ]; then
+  echo "BLOCKED: ResidencyGate [dependency_error] — gate implementation is missing: $RESIDENCY_GATE_PY" >&2
+  exit 2
+fi
+RUNNER="$PROJECT_ROOT/.claude/lib/residency-gate-run.sh"
+if [ ! -r "$RUNNER" ]; then
+  echo "BLOCKED: ResidencyGate [dependency_error] — shared runner is missing: $RUNNER" >&2
+  exit 2
 fi
 
-# check-activation exits 1 on both "blocked" and "malformed declaration"
-# (ManifestError) — the library's own fail-closed choice (see residency-gate.py
-# check-activation: a malformed manifest blocks activation, it does not warn
-# and continue). This hook does not second-guess that: any non-zero exit here
-# blocks the skill the same way, with the library's own reason surfaced.
-BLOCKING=$(jq -r '.blocking // [] | join("; ")' <<<"$RESULT" 2>/dev/null || echo "$RESULT")
-echo "BLOCKED: ResidencyGate — skill '$SKILL_NAME' requires data consent not yet granted." >&2
-echo "  $BLOCKING" >&2
-echo "  Выдать согласие: python3 $RESIDENCY_GATE_PY grant $SKILL_NAME <type> <flow> <name>" >&2
+# shellcheck source=/dev/null
+source "$RUNNER"
+residency_gate_run "$PROJECT_ROOT" "$RESIDENCY_GATE_PY" \
+  check-activation "$SKILL_NAME" "$MANIFEST"
+
+DETAIL=$(residency_gate_human_detail)
+case "$RESIDENCY_GATE_OUTCOME" in
+  allowed)
+    exit 0
+    ;;
+  policy_denied)
+    echo "BLOCKED: ResidencyGate [policy_denied] — skill '$SKILL_NAME' requires data consent not yet granted." >&2
+    echo "  $DETAIL" >&2
+    echo "  Выдать согласие: $RESIDENCY_GATE_PYTHON3 $RESIDENCY_GATE_PY grant $SKILL_NAME <type> <flow> <name>" >&2
+    ;;
+  manifest_invalid)
+    echo "BLOCKED: ResidencyGate [manifest_invalid] — skill '$SKILL_NAME' has an invalid data-needs declaration." >&2
+    echo "  $DETAIL" >&2
+    ;;
+  dependency_error)
+    echo "BLOCKED: ResidencyGate [dependency_error] — PyYAML-capable Python is unavailable." >&2
+    echo "  $DETAIL" >&2
+    ;;
+  *)
+    echo "BLOCKED: ResidencyGate [runtime_error] — consent could not be checked safely for skill '$SKILL_NAME'." >&2
+    echo "  $DETAIL" >&2
+    ;;
+esac
 exit 2

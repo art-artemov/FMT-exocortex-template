@@ -17,13 +17,43 @@ import argparse
 import datetime
 import json
 import logging
+import os
 import pathlib
 import subprocess
 import sys
+from typing import Optional
 
-IWE_ROOT = pathlib.Path.home() / "IWE"
-GOVERNANCE = IWE_ROOT / "${IWE_GOVERNANCE_REPO:-DS-strategy}"
-SNAPSHOT_PATH = GOVERNANCE / "inbox/WP-425/cache/derived_snapshot.json"
+
+def _installed_governance_root() -> Optional[pathlib.Path]:
+    """Return the physical repo root when this copy is installed in governance."""
+    script_repo = pathlib.Path(__file__).resolve().parent.parent
+    repo_type_path = script_repo / "REPO-TYPE.md"
+    try:
+        repo_type = repo_type_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    if "`DS/governance`" not in repo_type:
+        return None
+    return script_repo
+
+
+def _resolve_snapshot_path() -> pathlib.Path:
+    """Resolve cache location, preferring an installed copy's physical repo."""
+    installed_root = _installed_governance_root()
+    if installed_root is not None:
+        return installed_root / "inbox/WP-425/cache/derived_snapshot.json"
+
+    configured_root = os.environ.get("IWE_ROOT") or os.environ.get("IWE_WORKSPACE")
+    iwe_root = (
+        pathlib.Path(configured_root).expanduser()
+        if configured_root
+        else pathlib.Path.home() / "IWE"
+    )
+    governance_repo = os.environ.get("IWE_GOVERNANCE_REPO", "DS-strategy")
+    return iwe_root / governance_repo / "inbox/WP-425/cache/derived_snapshot.json"
+
+
+SNAPSHOT_PATH = _resolve_snapshot_path()
 
 # Maps stage_id strings from 3_4_qualification to integer stage levels.
 # Source: render-pilot-guides.py _STAGE_ID_TO_INT (OwnerIntegrity: single mapping table).
@@ -212,6 +242,7 @@ def main() -> int:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
         return 0
 
+    SNAPSHOT_PATH.parent.mkdir(parents=True, exist_ok=True)
     SNAPSHOT_PATH.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
     logging.info("Wrote snapshot to %s", SNAPSHOT_PATH)
     return 0

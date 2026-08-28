@@ -1,6 +1,8 @@
 #!/bin/bash
 # Extensions Gate Hook
-# Event: PreToolUse (matcher: Edit, Write)
+# Event: PreToolUse (matcher: Edit, Write). Это блокирующий guardrail для двух
+# структурированных file tools, а не tool-independent security boundary:
+# произвольный Bash не разбирается (issue #528), что прямо раскрыто в CLAUDE.md.
 # Блокирует прямое редактирование .claude/skills/, memory/protocol-*.md и
 # update-manifest.json (манифест определяет, какие скиллы платформенные, —
 # правка одного файла отключала бы гейт целиком).
@@ -37,14 +39,6 @@ if [ -n "$INPUT" ] && [ -z "$FILE_PATH" ]; then
   block "не удалось извлечь путь файла из вызова (битый payload) — правка не классифицируется, блокирую."
 fi
 
-# Traversal is rejected before any classification: «..» внутри пути позволяет
-# получить имя своего скилла, а записать в платформенный.
-case "$FILE_PATH" in
-  *"/../"*|"../"*|*"/.."|"..")
-    block "путь содержит «..» — не классифицируется, блокирую. Используй прямой путь без переходов вверх."
-    ;;
-esac
-
 # Resolve symlinks: симлинк из своей папки скилла на платформенный файл обязан
 # классифицироваться по ЦЕЛИ, не по имени симлинка. Без резолвера защита молча
 # исчезает — поэтому его отказ = блок, не откат к сырому пути.
@@ -52,6 +46,28 @@ REAL_PATH=$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$
 if [ -z "$REAL_PATH" ]; then
   block "python3 недоступен или не смог нормализовать путь — без этого не проверить симлинки, блокирую."
 fi
+
+# Gate owns only the project workspace. A global ~/.claude skill, a sibling
+# workspace and any other external path are user territory that update.sh can
+# neither overwrite nor protect. Compare physical roots so symlink and prefix
+# collisions cannot smuggle an internal platform file through this boundary.
+WORKSPACE_DIR="$(cd "$(dirname "$0")/../.." && pwd -P)"
+case "$REAL_PATH" in
+  "$WORKSPACE_DIR"|"$WORKSPACE_DIR"/*) ;;
+  *)
+    echo '{}'
+    exit 0
+    ;;
+esac
+REL_PATH="${REAL_PATH#"$WORKSPACE_DIR"/}"
+
+# Traversal is rejected for in-workspace targets before ownership
+# classification: «..» could otherwise derive one skill name and write another.
+case "$FILE_PATH" in
+  *"/../"*|"../"*|*"/.."|"..")
+    block "путь содержит «..» — не классифицируется, блокирую. Используй прямой путь без переходов вверх."
+    ;;
+esac
 
 # Манифест — always-block, ДО исключения для путей шаблона: управляющая копия
 # лежит внутри клона шаблона, и правка её через Edit/Write отключала бы гейт.
@@ -62,15 +78,15 @@ case "$REAL_PATH" in
     ;;
 esac
 
-# Проверяем: это L1 файл? (по нормализованному пути — симлинки уже раскрыты)
-if printf '%s' "$REAL_PATH" | grep -qE '\.claude/skills/|memory/protocol-'; then
+# Проверяем: это L1 файл? Точные workspace-relative префиксы не захватывают
+# глобальный ~/.claude или соседний каталог с похожим именем (issue #528).
+case "$REL_PATH" in
+  .claude/skills/*|memory/protocol-*)
 
   # Исключение 1: FMT-exocortex-template — всегда разрешён
   if printf '%s' "$REAL_PATH" | grep -q 'FMT-exocortex-template'; then
     exit 0
   fi
-
-  WORKSPACE_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 
   # Исключение 2: author_mode в params.yaml
   if [ -f "$WORKSPACE_DIR/params.yaml" ] && grep -qE '^author_mode:\s*true' "$WORKSPACE_DIR/params.yaml" 2>/dev/null; then
@@ -81,10 +97,14 @@ if printf '%s' "$REAL_PATH" | grep -qE '\.claude/skills/|memory/protocol-'; then
   # в манифесте платформы, update.sh его не затронет и не затрёт.
   # Требуем ИМЕННО поддиректорию (name/...) — плоский файл прямо в .claude/skills/
   # (напр. SKILL-INDEX.yaml) НЕ подпадает и блокируется ниже.
-  if printf '%s' "$REAL_PATH" | grep -qE '\.claude/skills/[^/]+/'; then
-    SKILL_NAME=$(printf '%s' "$REAL_PATH" | sed -E 's#.*\.claude/skills/([^/]+)/.*#\1#')
+  if printf '%s' "$REL_PATH" | grep -qE '^\.claude/skills/[^/]+/'; then
+    SKILL_NAME="${REL_PATH#\.claude/skills/}"
+    SKILL_NAME="${SKILL_NAME%%/*}"
     MANIFEST="$WORKSPACE_DIR/update-manifest.json"
-    if [ -n "$SKILL_NAME" ] && [ -f "$MANIFEST" ]; then
+    if [ ! -f "$MANIFEST" ]; then
+      block "update-manifest.json отсутствует в корне workspace — принадлежность скилла не доказать, блокирую. Восстанови манифест через update.sh и повтори."
+    fi
+    if [ -n "$SKILL_NAME" ]; then
       # Разрешение только при ДОКАЗАННО прочитанном манифесте: сначала проверка,
       # что jq видит непустой .files (битый JSON / нет ключа / пустой список =
       # отказ инструмента, не «скилла нет»), и только потом поиск совпадения.
@@ -103,7 +123,8 @@ if printf '%s' "$REAL_PATH" | grep -qE '\.claude/skills/|memory/protocol-'; then
 
   # Блокировать для обычных пользователей
   block "платформенные (L1) и пользовательские (L3) файлы — разные слои. Правило (CLAUDE.md §9): Авторская кастомизация → extensions/*.md. Платформенное изменение → FMT-exocortex-template → update.sh. Смешение слоёв = хрупкость при обновлении. Создай или обнови нужный файл в extensions/."
-fi
+  ;;
+esac
 
 # Разрешить редактирование обычных файлов
 echo '{}'

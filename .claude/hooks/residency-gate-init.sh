@@ -17,18 +17,36 @@ MANIFEST_FILE="$2"
 # default ".claude" produced ".claude/.claude/skills/..." — a path that never
 # exists (issue #323).
 RESIDENCY_GATE_PY="${CLAUDE_ROOT:-.}/.claude/skills/residency-gate/residency-gate.py"
+PROJECT_ROOT="${CLAUDE_ROOT:-.}"
+RUNNER="$PROJECT_ROOT/.claude/lib/residency-gate-run.sh"
 
-# Check consent at activation
-RESULT=$(python3 "$RESIDENCY_GATE_PY" check-activation "$FUNCTION_ID" "$MANIFEST_FILE" 2>/dev/null || echo '{"allowed":false,"blocking":["error"]}')
-
-# Parse JSON response
-ALLOWED=$(echo "$RESULT" | grep -o '"allowed":[^,}]*' | head -1 | grep -o 'true\|false')
-BLOCKING=$(echo "$RESULT" | grep -o '"blocking":\[\([^]]*\)' | sed 's/.*:\[//')
-
-if [ "$ALLOWED" != "true" ]; then
-  echo "[ResidencyGate] Function '$FUNCTION_ID' blocked at activation time" >&2
-  echo "[ResidencyGate] Blocking reasons: $BLOCKING" >&2
+if [ ! -r "$RUNNER" ]; then
+  echo "[ResidencyGate:dependency_error] Shared runner is missing: $RUNNER" >&2
   return 1
 fi
 
-return 0
+# shellcheck source=/dev/null
+source "$RUNNER"
+residency_gate_run "$PROJECT_ROOT" "$RESIDENCY_GATE_PY" \
+  check-activation "$FUNCTION_ID" "$MANIFEST_FILE"
+
+DETAIL=$(residency_gate_human_detail)
+case "$RESIDENCY_GATE_OUTCOME" in
+  allowed)
+    return 0
+    ;;
+  policy_denied)
+    echo "[ResidencyGate:policy_denied] Function '$FUNCTION_ID' blocked at activation time" >&2
+    echo "[ResidencyGate] Blocking reasons: $DETAIL" >&2
+    ;;
+  manifest_invalid)
+    echo "[ResidencyGate:manifest_invalid] Invalid data-needs declaration for '$FUNCTION_ID': $DETAIL" >&2
+    ;;
+  dependency_error)
+    echo "[ResidencyGate:dependency_error] PyYAML-capable Python is unavailable: $DETAIL" >&2
+    ;;
+  *)
+    echo "[ResidencyGate:runtime_error] Consent could not be checked safely for '$FUNCTION_ID': $DETAIL" >&2
+    ;;
+esac
+return 1

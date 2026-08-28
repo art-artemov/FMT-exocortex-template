@@ -120,6 +120,30 @@ SETUP_EXPLICIT_INCLUDE=(
     "setup/optional/setup-cloud-scheduler.sh"   # install-time, but requires one-time delivery — issue #325
     "setup/optional/setup-local-gateway.sh"     # referenced by delivered docs/AGENT-VENDOR-SETUP.md (WP-499 Ф16), same class as #325
 )
+# issue #502/#508.2: seed/ is user-owned by default, but these files are
+# platform delivery infrastructure. Existing installations need their target
+# release bytes before update.sh can migrate hooks and the derived-snapshot
+# updater into the governance repo.
+PLATFORM_HOOKS_EXPLICIT_INCLUDE=(
+    "seed/strategy/.githooks/pre-commit"
+    "seed/strategy/.githooks/pre-push"
+    "seed/strategy/scripts/install-hooks.sh"
+    # #533: existing installations need the subject-scoped Day Open reader.
+    "seed/strategy/scripts/day-open-llm-fill.py"
+    "seed/strategy/scripts/update-derived-snapshot.py"
+)
+# #533: unlike ordinary seed content, these are platform-owned delivery and
+# upgrade infrastructure.  Keep each path explicit so the blanket seed/
+# exclusion cannot silently remove the canonical privacy boundary or its four
+# compatibility entrypoints from an update payload.
+AGENT_FAULT_EXPLICIT_INCLUDE=(
+    "scripts/agent-fault/iwe_checklist_memory.py"
+    "seed/strategy/exocortex/agent-fault-profile/.gitignore"
+    "seed/strategy/scripts/iwe_checklist_memory.py"
+    "seed/strategy/scripts/sync_feedback_to_memory.py"
+    "seed/strategy/scripts/agent_fault_remind.py"
+    "seed/strategy/scripts/agent_fault_remind.sh"
+)
 # WP-7 Ф-script-contract-gate: EXCLUDED_PATTERNS below still blanket-excludes
 # scripts/tests/ (correct default — it's mostly the author's own pytest suite,
 # dev-only, same reasoning as issue #246/#247 above but scoped to this one
@@ -131,6 +155,10 @@ SETUP_EXPLICIT_INCLUDE=(
 # real release would have shipped a template without its own test gate and
 # nobody would have noticed until a user hit the bug the gate exists to catch.
 SCRIPT_CONTRACT_EXPLICIT_INCLUDE=(
+    # 2026-08-23 (v0.38.7 матрица, находка 4): check-python-resolver-contract.sh
+    # доставляется, а его обязательный baseline сидел в excluded — на установке
+    # строго из манифеста сторож падал rc=2. Ratchet-снимок — часть поставки.
+    "scripts/tests/fixtures/python-resolver-baseline.txt"
     "scripts/tests/test_create_wp_registry_coherence.sh"
     "scripts/tests/test_check_orphan_hooks.sh"
     "scripts/tests/test_capture_bus_detector_timeout.sh"
@@ -148,8 +176,11 @@ SCRIPT_CONTRACT_EXPLICIT_INCLUDE=(
     "scripts/tests/test_create_wp_hypothesis_relation.sh"
     "scripts/tests/test_day_close_lock_timezone.sh"
     "scripts/tests/test_fresh_seed_reproduction.sh"
+    "scripts/tests/test_generate_manifest_registers_setup_exclusions.sh"
     "scripts/tests/test_hook_classification.sh"
+    "scripts/tests/test_install_hooks.py"
     "scripts/tests/test_update_install_path_guard.sh"
+    "scripts/tests/test_update_install_path_guard_provenance.sh"
     "scripts/tests/test_update_deprecated_mirror_guard.sh"
     "scripts/tests/test_update_settings_merge_drift.sh"
     "scripts/tests/test_update_delivery_ref.sh"
@@ -171,6 +202,10 @@ SCRIPT_CONTRACT_EXPLICIT_INCLUDE=(
     "scripts/tests/test_issue_471_drift_scan_status_boundary.py"
     "scripts/tests/test_issue_473_build_active_wp_columns.py"
     "scripts/tests/test_issue_473_wp_sync_bundle_status.sh"
+    "scripts/tests/test_issue_511_day_close_commit_guard.sh"
+    # #533/#536: ship the installed-delivery and crash-recovery regressions.
+    "scripts/tests/test_issue_533_agent_fault_delivery.py"
+    "scripts/tests/test_issue_536_day_close_backup.sh"
     "scripts/tests/test_issue_calendar_api_error_named.sh"
     "scripts/tests/test_update_build_runtime_fail_closed.sh"
     "scripts/tests/test_update_delivers_python_resolver_before_roles.sh"
@@ -193,7 +228,9 @@ while IFS= read -r rel; do
     # Пропускаем мусор/инструментарий
     if is_explicit_include "$rel" \
         "${GITHUB_EXPLICIT_INCLUDE[@]}" \
-        "${SCRIPT_CONTRACT_EXPLICIT_INCLUDE[@]}"; then
+        "${SCRIPT_CONTRACT_EXPLICIT_INCLUDE[@]}" \
+        "${PLATFORM_HOOKS_EXPLICIT_INCLUDE[@]}" \
+        "${AGENT_FAULT_EXPLICIT_INCLUDE[@]}"; then
         FILES+=("$rel")
         continue
     fi
@@ -300,6 +337,34 @@ data = {
     'excluded_paths': excluded,
     'deprecated_files': json.loads('''$DEPRECATED_JSON'''),
 }
+
+# 2026-08-22 (external report): deprecated_files is hand-managed and carried
+# over from the previous manifest — a path that came BACK into the delivered
+# tree stayed listed as deprecated, and update.sh deleted 10 files HEAD still
+# ships. A path cannot be delivered and deprecated at once: delivery wins,
+# the stale deprecation entry is dropped with a warning.
+import subprocess
+import sys
+delivered_now = {e['path'] for e in data['files']}
+# Same class, wider net (the live 10-file incident): a path still TRACKED in
+# git HEAD ships with every fresh clone — deprecating it makes update.sh
+# delete what the canon still distributes, leaving clones with tracked
+# deletions. Deprecated may only list paths git no longer carries.
+# 2026-08-22 (Codex peer-review): git ls-files без проверки кода возврата —
+# при сбое git tracked_now молча становился пустым, и фильтр «deprecated ∩
+# дерево» деградировал fail-open. Сбой git = отказ генерации (fail-closed).
+_ls = subprocess.run(
+    ['git', 'ls-files'], capture_output=True, text=True, cwd='$SCRIPT_DIR'
+)
+if _ls.returncode != 0:
+    sys.exit('generate-manifest: git ls-files failed: ' + _ls.stderr.strip())
+tracked_now = set(_ls.stdout.splitlines())
+kept, dropped = [], []
+for entry in data['deprecated_files']:
+    (dropped if entry.get('path') in delivered_now or entry.get('path') in tracked_now else kept).append(entry)
+for entry in dropped:
+    print('  ⚠ deprecated_files: %s снова в поставке — запись удалена из deprecated' % entry.get('path'), file=sys.stderr)
+data['deprecated_files'] = kept
 
 # Убираем пустые массивы
 if not data['excluded_paths']:

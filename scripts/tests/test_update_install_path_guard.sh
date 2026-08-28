@@ -15,8 +15,14 @@ declare -F validate_no_install_values_in_applied_additions >/dev/null
 
 SCRIPT_DIR="$TMP/template"
 WORKSPACE_DIR="$TMP/workspace"
+TMPDIR_UPDATE="$TMP/update-payload"
+INTEGRITY_TAINTED=false
+MANIFEST="$TMP/target-manifest.json"
+PY_BIN=""
+py_available() { return 1; }
 UPSTREAM="$TMP/upstream.git"
-mkdir -p "$SCRIPT_DIR" "$WORKSPACE_DIR"
+mkdir -p "$SCRIPT_DIR" "$WORKSPACE_DIR" "$TMPDIR_UPDATE/files"
+printf '%s\n' '{"files":[]}' > "$MANIFEST"
 git init -q --bare "$UPSTREAM"
 git -C "$SCRIPT_DIR" init -q
 git -C "$SCRIPT_DIR" config user.email test@example.invalid
@@ -32,14 +38,9 @@ IWE_TEMPLATE=$SCRIPT_DIR
 IWE_RUNTIME=$WORKSPACE_DIR/.iwe-runtime
 EOF
 
-# Existing tracked install-like values are outside the updater's responsibility.
-# An unrelated working-tree addition must not be blocked by historical container docs.
-# Pushed to upstream (not just committed locally): the guard now derives
-# legitimacy from upstream provenance (historical_lines), not from the local
-# working-tree-vs-HEAD diff — a real installation always has an upstream
-# remote (setup.sh configures it), so this fixture must too (issue #459
-# provenance rewrite; a real committed-only-locally leak is covered by the
-# "leak.md" scenario below, which never appears in upstream history).
+# A target-release line that equals an install path is canonical and must not
+# be blocked. The verified downloaded payload, not local branch history, is
+# the provenance source (issue #524).
 cat >"$SCRIPT_DIR/existing.md" <<'EOF'
 The container user has HOME=/root and stores Claude config in /root/.claude.
 EOF
@@ -49,6 +50,7 @@ git -C "$SCRIPT_DIR" push -q origin HEAD:main
 git -C "$SCRIPT_DIR" branch -q --set-upstream-to=origin/main 2>/dev/null ||
     git -C "$SCRIPT_DIR" branch -q -u origin/main
 printf 'Safe update line.\n' >>"$SCRIPT_DIR/existing.md"
+cp "$SCRIPT_DIR/existing.md" "$TMPDIR_UPDATE/files/existing.md"
 APPLIED_PATHS=(existing.md)
 validate_no_install_values_in_applied_additions
 
@@ -124,4 +126,4 @@ printf 'See scripts/claude-peer-adapter.sh for the Claude peer contract.\n' >"$S
 APPLIED_PATHS=(bare-claude.md)
 validate_no_install_values_in_applied_additions
 
-echo 'PASS: install-path guard checks only updater-applied working-tree additions'
+echo 'PASS: install-path guard accepts only exact lines from verified update targets'

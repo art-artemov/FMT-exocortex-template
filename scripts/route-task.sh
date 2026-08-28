@@ -20,7 +20,7 @@ set -euo pipefail
 IWE_DIR="${IWE_DIR:-$HOME/IWE}"
 GOV_REPO="${IWE_GOVERNANCE_REPO:-DS-strategy}"
 CATALOG="${IWE_EXECUTOR_CATALOG:-${IWE_DIR}/${GOV_REPO}/scripts/executor-catalog.yaml}"
-VALID_EXECUTORS=("script" "haiku" "sonnet" "opus" "mcp-direct")
+VALID_EXECUTORS=("script" "haiku" "sonnet" "opus" "mcp-direct" "agent" "script+judgment")
 AUDIT_LOG="${IWE_ROUTER_AUDIT:-${IWE_DIR}/${GOV_REPO}/logs/routing-path-distribution.tsv}"
 ERROR_LOG="${IWE_ROUTER_ERRORS:-${IWE_DIR}/${GOV_REPO}/logs/routing-errors.log}"
 JSON_MODE="false"
@@ -124,6 +124,8 @@ for entry in cat.get("entries", []):
             print(f"script_path={r['script_path']}")
         if "optimization_priority" in r:
             print(f"optimization_priority={r['optimization_priority']}")
+        if "model" in r:
+            print(f"model={r['model']}")
         sys.exit(0)
 
 sys.exit(3)  # not found
@@ -181,9 +183,22 @@ run_script() {
     local allow_fallback="${4:-true}"
     local routing_path="${5:-$skill_name → script}"
 
-    # Resolve relative path from IWE_DIR
+    # Resolve relative path from IWE_DIR. Agent-fault is a platform CLI: on a
+    # fully installed workspace it lives under $IWE_DIR/scripts, while a fresh
+    # checkout can execute the same release bytes directly from the template.
+    # Keep the fallback narrow so an unrelated missing catalog entry never
+    # searches or executes a second location implicitly.
     if [[ "$script_path" != /* ]]; then
-        script_path="$IWE_DIR/$script_path"
+        local relative_path="$script_path"
+        local workspace_path="$IWE_DIR/$relative_path"
+        script_path="$workspace_path"
+        if [[ ! -f "$script_path" && "$relative_path" == scripts/agent-fault/* ]]; then
+            local platform_scripts="${IWE_SCRIPTS:-$IWE_DIR/FMT-exocortex-template/scripts}"
+            local platform_path="$platform_scripts/${relative_path#scripts/}"
+            if [[ -f "$platform_path" ]]; then
+                script_path="$platform_path"
+            fi
+        fi
     fi
 
     if [[ ! -f "$script_path" ]]; then
@@ -254,6 +269,29 @@ run_mcp_direct() {
     fi
 }
 
+run_agent() {
+    local skill_name="$1"
+    local model="$2"
+    local args="${3:-}"
+    case "$model" in
+        haiku|sonnet|opus) ;;
+        *) die "agent executor for '$skill_name' requires model: haiku|sonnet|opus" 4 ;;
+    esac
+    if [[ "$JSON_MODE" != "true" ]]; then
+        echo "[router] skill=$skill_name executor=agent model=$model"
+        echo "ROUTE_TO_AGENT skill=$skill_name model=$model args=$args"
+    fi
+}
+
+run_script_judgment() {
+    local skill_name="$1"
+    local args="${2:-}"
+    if [[ "$JSON_MODE" != "true" ]]; then
+        echo "[router] skill=$skill_name executor=script+judgment model=sonnet"
+        echo "ROUTE_TO_LLM skill=$skill_name model=claude-sonnet-4-6 mode=script+judgment args=$args"
+    fi
+}
+
 # ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
@@ -285,9 +323,10 @@ dispatch_skill() {
         die "catalog lookup failed (exit=$lookup_exit)"
     fi
 
-    local executor script_path=""
+    local executor script_path="" model=""
     executor=$(echo "$lookup_result" | grep "^executor=" | cut -d= -f2)
     script_path=$(echo "$lookup_result" | grep "^script_path=" | cut -d= -f2- || true)
+    model=$(echo "$lookup_result" | grep "^model=" | cut -d= -f2- || true)
     routing_path="${routing_path}${executor}"
 
     case "$executor" in
@@ -316,6 +355,18 @@ dispatch_skill() {
             run_mcp_direct "$skill_name" "$args"
             log_audit "$ts" "$skill_name" "mcp-direct" "OK"
             emit_result "$skill_name" "mcp-direct" "OK" "$routing_path"
+            return 0
+            ;;
+        agent)
+            run_agent "$skill_name" "$model" "$args"
+            log_audit "$ts" "$skill_name" "agent" "OK"
+            emit_result "$skill_name" "agent" "OK" "$routing_path"
+            return 0
+            ;;
+        script+judgment)
+            run_script_judgment "$skill_name" "$args"
+            log_audit "$ts" "$skill_name" "script+judgment" "OK"
+            emit_result "$skill_name" "script+judgment" "OK" "$routing_path"
             return 0
             ;;
         *)
@@ -353,7 +404,7 @@ for e in cat["entries"]:
     ex = e["routing"]["executor"]
     by_exec.setdefault(ex, []).append(e)
 
-for ex in ["script", "haiku", "sonnet", "opus", "mcp-direct"]:
+for ex in ["script", "haiku", "sonnet", "opus", "mcp-direct", "agent", "script+judgment"]:
     for e in by_exec.get(ex, []):
         r = e["routing"]
         sp = r.get("script_path", "—")
@@ -369,7 +420,7 @@ validate_catalog() {
     "$RESOLVED_PYTHON3" - "$CATALOG" << 'PYEOF'
 import sys, yaml
 
-VALID = {"script", "haiku", "sonnet", "opus", "mcp-direct"}
+VALID = {"script", "haiku", "sonnet", "opus", "mcp-direct", "agent", "script+judgment"}
 errors = []
 
 with open(sys.argv[1]) as f:
@@ -382,6 +433,8 @@ for e in cat["entries"]:
         errors.append(f"{name}: invalid executor '{r.get('executor')}'")
     if "deterministic" not in r:
         errors.append(f"{name}: missing deterministic")
+    if r.get("executor") == "agent" and r.get("model") not in {"haiku", "sonnet", "opus"}:
+        errors.append(f"{name}: agent executor requires model haiku|sonnet|opus")
     if r.get("executor") == "script" and "script_path" not in r:
         errors.append(f"{name}: script executor missing script_path")
 

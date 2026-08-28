@@ -10,7 +10,7 @@
 
 ## State-Transition Gate — CRITICAL
 
-**Перед любым нетривиальным действием или РП назвать целевой переход состояния пользователя** `{тип состояния, из→в}` (WP-457) — **применимо, если в `{{GOVERNANCE_REPO}}/docs/state-axes-registry.yaml` описаны оси состояний** (авторский артефакт, не шипится в шаблон по умолчанию). Если файл есть — типы только из него, допустимы только `gate_ready: true`; ссылка на declared FSM-owner обязательна, свободный текст не принимается; нет ссылки или тип не `gate_ready` → действие = inventory → СТОП/отложить. **Файла нет (типовая установка)** → гейт неактивен, действовать по остальным Pre-action Gates без остановки. Модель осей (авторский пример) → `archive/wp-contexts/WP-457/CONCEPT-user-states.md §5`; cross-axis → `memory/reference/agent-core.md`.
+**Есть `{{GOVERNANCE_REPO}}/docs/state-axes-registry.yaml` → до любого нетривиального действия или РП полностью прочитать и выполнить `.claude/rules-lazy/state-transition-gate.md`; lazy-файл отсутствует или нечитаем → только inventory, СТОП. Реестра нет → гейт неактивен.**
 
 ## Git Staging — CRITICAL
 

@@ -26,11 +26,23 @@ else
     fail "resolver missing from update-manifest.json — update-only installs will not receive it"
 fi
 
-# 2. Resolver is executable in the tree
+# 2. Resolver is executable in both delivery topologies. The `.claude/lib`
+# copy is what fresh-installed hooks can actually reach; exact equality keeps
+# the two entrypoints from becoming different dependency policies.
 if [ -x "$ROOT/scripts/lib/find-python3.sh" ]; then
-    pass "resolver is executable"
+    pass "template resolver is executable"
 else
-    fail "resolver is not executable"
+    fail "template resolver is not executable"
+fi
+if [ -x "$ROOT/.claude/lib/find-python3.sh" ]; then
+    pass "installed-hook resolver is executable"
+else
+    fail "installed-hook resolver is not executable"
+fi
+if cmp -s "$ROOT/scripts/lib/find-python3.sh" "$ROOT/.claude/lib/find-python3.sh"; then
+    pass "template and installed-hook resolvers are byte-identical"
+else
+    fail "template and installed-hook resolvers drifted"
 fi
 
 # 3. Every consumer references the shared resolver and keeps no local copy

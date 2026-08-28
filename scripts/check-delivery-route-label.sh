@@ -43,7 +43,8 @@ fi
 # scope by design (same boundary Codex proposed: threshold on curated
 # membership changes, not on any edit of an already-included file).
 CURATED_ARRAYS=(GITHUB_EXPLICIT_INCLUDE GITHUB_CI_ONLY_EXCLUDE SETUP_EXPLICIT_INCLUDE
-    SCRIPT_CONTRACT_EXPLICIT_INCLUDE EXCLUDED_EXACT EXCLUDED_SCRIPTS FILES_EXCLUDE_EXACT)
+    PLATFORM_HOOKS_EXPLICIT_INCLUDE SCRIPT_CONTRACT_EXPLICIT_INCLUDE
+    EXCLUDED_EXACT EXCLUDED_SCRIPTS FILES_EXCLUDE_EXACT)
 
 dump_arrays() {
     # $1 = path to a generate-manifest.sh revision. Runs full-script sourcing
