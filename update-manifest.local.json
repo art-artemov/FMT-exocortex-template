@@ -1,0 +1,6 @@
+{
+  "_comment": "Личные исключения форка. update.sh перезаписывает update-manifest.json целиком (шаг 6e), этот файл переживает обновление — см. issue #247.",
+  "excluded_paths": [
+    "scripts/iwe-audit-20260714-224201.log"
+  ]
+}
