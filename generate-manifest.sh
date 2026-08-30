@@ -210,6 +210,10 @@ SCRIPT_CONTRACT_EXPLICIT_INCLUDE=(
     "scripts/tests/test_update_build_runtime_fail_closed.sh"
     "scripts/tests/test_update_delivers_python_resolver_before_roles.sh"
     "scripts/tests/test_role_runner_update_marker_guard.sh"
+    # issue #557 (30.08): zsh regression for the day-close commit guard —
+    # runs in CI via run-issue-tests.sh, must ship with the template like its
+    # bash sibling above.
+    "scripts/tests/test_issue_557_zsh_special_vars.sh"
 )
 
 is_explicit_include() {
@@ -359,9 +363,19 @@ _ls = subprocess.run(
 if _ls.returncode != 0:
     sys.exit('generate-manifest: git ls-files failed: ' + _ls.stderr.strip())
 tracked_now = set(_ls.stdout.splitlines())
+# WP-7 Ф92: a files[] to excluded_paths[] move needs a deprecated_files entry
+# too (already-installed pilots got the file while it was still delivered),
+# but bare tracked_now above would auto-purge that entry right back out.
+# excluded_confirmed=true on the entry itself (not a code-side list) marks
+# a deliberate transition, keeping the 22.08 protection for every other
+# tracked-but-unmarked path.
+excluded_now = set(excluded)
 kept, dropped = [], []
 for entry in data['deprecated_files']:
-    (dropped if entry.get('path') in delivered_now or entry.get('path') in tracked_now else kept).append(entry)
+    path = entry.get('path')
+    confirmed_excluded_transition = entry.get('excluded_confirmed') and path in excluded_now
+    (kept if confirmed_excluded_transition or (path not in delivered_now and path not in tracked_now)
+     else dropped).append(entry)
 for entry in dropped:
     print('  ⚠ deprecated_files: %s снова в поставке — запись удалена из deprecated' % entry.get('path'), file=sys.stderr)
 data['deprecated_files'] = kept

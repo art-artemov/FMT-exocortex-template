@@ -73,6 +73,13 @@ _EXCLUDED_EXACT_PATHS = frozenset({
     ".github/workflows/translate-sync.yml",
     ".github/workflows/validate-template.yml",
     ".github/workflows/weekly-release.yml",
+    # WP-529 Ф21: this repo's own red-team attestation pipeline (compute
+    # digest + sign via GitHub Attestations API) — references THIS repo's
+    # specific red-team-auditors environment and policy file, same
+    # maintainer-only category as release.yml/weekly-release.yml above, not
+    # something a fork should get delivered via update.sh.
+    ".github/workflows/attestation-compute.yml",
+    ".github/workflows/attestation-sign.yml",
     "setup/detector-regex.sh",
     "setup/integration-contract-validator.sh",
     "setup/optional/COVER-IMAGES.md",

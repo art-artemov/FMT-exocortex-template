@@ -11,6 +11,16 @@
 #   CODEX_BIN     — override codex binary path
 #   IWE_TEMPLATE  — path to FMT-exocortex-template (default: $HOME/IWE/FMT-exocortex-template)
 #   IWE_PEER_LOCK_DIR, IWE_HINDSIGHT_RETAIN — same as kimi-peer-adapter.sh
+#   CODEX_PEER_REASONING_EFFORT — model_reasoning_effort passed to `codex exec`
+#     via -c (default: medium). Overrides whatever ~/.codex/config.toml sets
+#     globally (found live 2026-08-20: a host-wide "ultra" default made every
+#     peer-turn slow enough to outrun the caller's own tool-level timeout,
+#     misread as "codex returned empty output" — it was still thinking).
+#   CODEX_PEER_TIMEOUT_SEC — internal watchdog deadline in seconds (default:
+#     270). Deliberately shorter than the peer-conversation contract's
+#     documented "5 minutes" (SKILL.md §3.1) so the adapter's own timeout
+#     fires first and leaves time to write diagnostics before any outer
+#     caller-side deadline would kill the whole tree less gracefully.
 #
 # Exit codes (same contract as kimi-peer-adapter.sh):
 #   0 — OK
@@ -201,13 +211,20 @@ _IWE_ARS="$HOME/IWE/scripts/agent-status-report.sh"
 
 cleanup_peer() {
   rm -f "$LOCK_FILE"
-  [ -x "$_IWE_ARS" ] && bash "$_IWE_ARS" --session-id "$CODEX_SESSION_ID" codex idle 2>/dev/null &
+  # Redirect BOTH stdout and stdin, not just stderr: a background job that
+  # inherits the parent's stdout keeps a caller-side `OUT=$(...)` command
+  # substitution open until this job's fd closes, even after the parent has
+  # exited — found live 2026-08-20 (WP-530 watchdog work made the parent's
+  # own lifetime long enough for this pre-existing gap to actually bite:
+  # `OUT=$(... | bash codex-peer-adapter.sh)` hung ~15s per call instead of
+  # ~2s once this status-report fire-and-forget started outliving its parent).
+  [ -x "$_IWE_ARS" ] && bash "$_IWE_ARS" --session-id "$CODEX_SESSION_ID" codex idle </dev/null >/dev/null 2>&1 &
   rm -rf "$TMP_ROOT"
 }
 trap cleanup_peer EXIT INT TERM
-[ -x "$_IWE_ARS" ] && bash "$_IWE_ARS" --session-id "$CODEX_SESSION_ID" codex peer-session "$CODEX_TASK" 2>/dev/null &
+[ -x "$_IWE_ARS" ] && bash "$_IWE_ARS" --session-id "$CODEX_SESSION_ID" codex peer-session "$CODEX_TASK" </dev/null >/dev/null 2>&1 &
 
-# === Запуск Codex headless: `codex exec`, -o для чистого файла с финальным ответом + 5min timeout ===
+# === Запуск Codex headless: `codex exec`, -o для чистого файла с финальным ответом + process-group watchdog ===
 OUT_FILE="$TMP_ROOT/codex-output.txt"
 # BUGFIX (found by review, issue #296): -C is Codex's sandbox root — Codex reads
 # from and writes to whatever this points at. Using $ADD_DIRS[0] (the RAW,
@@ -241,22 +258,81 @@ done
 if [ ${#MODEL_ARG[@]} -ge 2 ]; then
   CODEX_EXEC_ARGS+=("-m" "${MODEL_ARG[1]}")
 fi
+CODEX_EXEC_ARGS+=(-c "model_reasoning_effort=${CODEX_PEER_REASONING_EFFORT:-medium}")
 CODEX_EXEC_ARGS+=("-")
 
-perl -e 'alarm 300; exec @ARGV' -- "$CODEX_BIN" "${CODEX_EXEC_ARGS[@]}" < "$PROMPT_FILE" >/dev/null 2>&1
-PERL_EXIT=$?
+# WP-530 (2026-08-20, peer-session with Codex): the old `perl -e 'alarm 300;
+# exec @ARGV'` only ever kills the perl-exec'd process itself — `codex exec`
+# spawns node, which spawns the actual codex-darwin-arm64 binary, and neither
+# grandchild is in perl's kill path. Reproduced live: on SIGALRM the sleeping
+# grandchild survives as an orphan (see test-codex-peer-adapter-orphan-smoke.sh).
+#
+# `set -m` + `kill -- -PGID` looked like the fix but isn't portable enough:
+# live testing found hosts/shells where a backgrounded job's process group id
+# does not equal its own PID even with job control on, so `-PGID` misses the
+# real descendants. `pgrep -P` walks the actual parent-child tree instead —
+# no dependency on process-group semantics, no job control requirement. Two
+# passes because a still-spawning multi-level tree (bash -> bash -> codex)
+# can have children appear between the first pgrep and the first kill.
+kill_tree() {
+  local pid="$1" child
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_tree "$child"
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+}
 
-if [ "$PERL_EXIT" -eq 142 ]; then
-  echo "ERROR: Codex peer call timed out after 5 minutes (SIGALRM)" >&2
-  echo "CODEX_TIMEOUT: peer call exceeded 5min limit — check for network problems" >&2
+CODEX_TIMEOUT_SEC="${CODEX_PEER_TIMEOUT_SEC:-270}"
+CODEX_CALL_START=$(date -u +%s)
+CODEX_TIMEOUT_MARKER="$TMP_ROOT/.watchdog-fired"
+(
+  exec "$CODEX_BIN" "${CODEX_EXEC_ARGS[@]}" < "$PROMPT_FILE" >/dev/null 2>&1
+) &
+CODEX_JOB_PID=$!
+CODEX_TIMED_OUT=false
+(
+  sleep "$CODEX_TIMEOUT_SEC"
+  kill -0 "$CODEX_JOB_PID" 2>/dev/null || exit 0
+  # Marker written BEFORE the kill, not inferred afterward from exit code +
+  # elapsed time: a real (non-timeout) CLI crash that happens to land right
+  # at the deadline would otherwise be misdiagnosed as a timeout by that
+  # heuristic (review finding, WP-530 2026-08-20).
+  touch "$CODEX_TIMEOUT_MARKER" 2>/dev/null || true
+  kill_tree "$CODEX_JOB_PID"
+  sleep 0.3
+  kill -0 "$CODEX_JOB_PID" 2>/dev/null && kill_tree "$CODEX_JOB_PID"
+) &
+CODEX_WATCHDOG_PID=$!
+wait "$CODEX_JOB_PID"
+CODEX_EXIT=$?
+# The watchdog subshell itself is a multi-command sequence (sleep, kill -0,
+# touch, kill_tree, sleep, kill -0, kill_tree) — bash does NOT collapse it
+# into a single process the way it does for a lone `( exec foo )`. `$!` only
+# names the subshell wrapper; a plain `kill` on it leaves its own
+# still-running internal `sleep` as an orphan holding stdout open (found live
+# 2026-08-20: this exact gap is what made `OUT=$(... | codex-peer-adapter.sh)`
+# hang for minutes on the success path even after the adapter itself had
+# exited).
+kill_tree "$CODEX_WATCHDOG_PID"
+wait "$CODEX_WATCHDOG_PID" 2>/dev/null
+CODEX_CALL_ELAPSED=$(( $(date -u +%s) - CODEX_CALL_START ))
+
+[ -f "$CODEX_TIMEOUT_MARKER" ] && CODEX_TIMED_OUT=true
+
+if [ "$CODEX_TIMED_OUT" = true ]; then
+  # Diagnostics without the prompt text itself (S-33 secrets discipline: this
+  # goes to stderr, which callers may log — never echo prompt content here).
+  PROMPT_BYTES=$(wc -c < "$PROMPT_FILE" 2>/dev/null | tr -d ' ')
+  echo "ERROR: Codex peer call timed out after ${CODEX_CALL_ELAPSED}s (internal watchdog, limit ${CODEX_TIMEOUT_SEC}s)" >&2
+  echo "CODEX_TIMEOUT: reasoning_effort=${CODEX_PEER_REASONING_EFFORT:-medium} prompt_bytes=$PROMPT_BYTES add_dirs=$(( ${#FILTERED_DIRS[@]} / 2 )) elapsed_s=$CODEX_CALL_ELAPSED" >&2
   exit 1
 fi
 
 # WP-516 Ф5 (§0в.1, находка Codex 12.08): non-timeout ненулевой exit CLI
 # обязан нормализоваться в 1 — иначе упавший CLI с непустым output-файлом
 # мог вернуть успешный 0 адаптера.
-if [ "$PERL_EXIT" -ne 0 ]; then
-  echo "ERROR: Codex peer call failed with exit code $PERL_EXIT (cli_exit=$PERL_EXIT)" >&2
+if [ "$CODEX_EXIT" -ne 0 ]; then
+  echo "ERROR: Codex peer call failed with exit code $CODEX_EXIT (cli_exit=$CODEX_EXIT, elapsed_s=$CODEX_CALL_ELAPSED)" >&2
   exit 1
 fi
 

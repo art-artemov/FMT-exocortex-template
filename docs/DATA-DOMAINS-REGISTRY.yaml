@@ -11,6 +11,14 @@ layer: L1
 
 schema_version: 1
 generated: "2026-08-16"
+updated: "2026-08-28"
+# 2026-08-28: homes доменов 2.5/2.6 исправлены с "governance-personal" на
+# "machine-dialogue" — отражает поправку пилота от 2026-08-18 (WP-526 Ф5),
+# не отражённую в шаблоне до этой правки. См. ADR-004 § «Поправка 2026-08-18».
+# Роль → семья репозитория (префикс): governance-personal → DS-*,
+# personal-data/personal-declarative → PD-*, promoted-knowledge → PACK-*,
+# machine-dialogue → MC-* (на старте один репозиторий MC-sessions, расширение
+# семьи требует отдельного ADR), platform-runtime → вне git.
 
 # Политика уровней чувствительности (стиль NIST SP 800-122, адаптировано под личный масштаб
 # одного носителя данных). Каждый tier определяет минимальный контроль и цикл пересмотра один
@@ -88,9 +96,10 @@ data_domains:
     owner: personal
     tempo: "warm->cold"
     allowed_flows: ["read-own", "read-KE"]
-    homes: ["governance-personal (sessions/)"]
+    homes: ["machine-dialogue (MC-sessions)"]
     enforcement: "planned (архивация в cold со временем, без удаления)"
     maturity: partial
+    notes: "homes исправлен 2026-08-28: было governance-personal (sessions/) до поправки пилота 2026-08-18 (WP-526 Ф5) — см. ADR-004"
 
   - domain: "2.6 карантин-диалоги"
     type: "2.5-subset"
@@ -99,10 +108,11 @@ data_domains:
     owner: personal
     tempo: none
     allowed_flows: []
-    homes: ["governance-personal (тот же путь физически, что у домена 2.5)"]
+    homes: ["machine-dialogue (тот же репозиторий физически, что у домена 2.5, с отдельным access-контролем)"]
     enforcement: "planned"
     residual_risk: high
     maturity: planned
+    notes: "homes исправлен 2026-08-28: было governance-personal — см. ADR-004"
 
   - domain: "runtime/state"
     type: "infra"

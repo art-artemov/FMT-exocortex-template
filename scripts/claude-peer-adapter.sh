@@ -245,6 +245,7 @@ fi
 # через IWE_PEER_PLAIN=1 (слой IWE-интеграции, §0в.1).
 if [ "${IWE_PEER_PLAIN:-0}" != "1" ]; then
   peer_adapter_check_frontmatter "$CLAUDE_OUTPUT"
+  peer_adapter_check_language "$CLAUDE_OUTPUT"
 fi
 
 printf '%s\n' "$CLAUDE_OUTPUT"

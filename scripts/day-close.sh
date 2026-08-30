@@ -33,6 +33,9 @@ EXOCORTEX_DST="$DS_STRATEGY/exocortex"
 # Переопределить путь можно через env IWE_SELECTIVE_REINDEX.
 # do_reindex() exit code for "some branches indexed, some failed" (see do_reindex).
 readonly RC_REINDEX_PARTIAL=3
+# A step that cannot run (missing script/dir/interpreter) is a SKIP, not an
+# ok: the summary and log must distinguish "done" from "not attempted" (#559).
+readonly RC_STEP_SKIPPED=90
 SELECTIVE_REINDEX="${IWE_SELECTIVE_REINDEX:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/selective-reindex.sh}"
 SOURCES_JSON="${IWE_SOURCES_JSON:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/sources.json}"
 SOURCES_PERSONAL_JSON="${IWE_SOURCES_PERSONAL_JSON:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/sources-personal.json}"
@@ -1476,12 +1479,12 @@ do_reindex() {
 
   if [ ! -x "$SELECTIVE_REINDEX" ]; then
     warn "  selective-reindex.sh не найден: $SELECTIVE_REINDEX — пропуск"
-    return 0
+    return "$RC_STEP_SKIPPED"
   fi
 
   if [ -z "$RESOLVED_PYTHON3" ]; then
     warn "  reindex: пропущено — pyyaml не найден (см. предупреждение выше)"
-    return 0
+    return "$RC_STEP_SKIPPED"
   fi
 
   # Маппинг dir→source+config из L2 (sources.json) и L4 (sources-personal.json)
@@ -1578,7 +1581,7 @@ do_linear() {
 
   if [ ! -x "$LINEAR_SYNC" ]; then
     warn "  linear-sync.sh не найден: $LINEAR_SYNC — пропуск"
-    return 0
+    return "$RC_STEP_SKIPPED"
   fi
 
   "$LINEAR_SYNC"
@@ -1590,7 +1593,7 @@ do_session_consolidation() {
 
   if [ -z "$RESOLVED_PYTHON3" ]; then
     warn "  Консолидация сессий: пропущено — pyyaml не найден (см. предупреждение выше)"
-    return 0
+    return "$RC_STEP_SKIPPED"
   fi
 
   local today
@@ -1602,7 +1605,7 @@ do_session_consolidation() {
 
   if [ ! -d "$sessions_root" ]; then
     warn "  Папка sessions/$month_dir не найдена — пропуск"
-    return 0
+    return "$RC_STEP_SKIPPED"
   fi
 
   # Сканируем meta.yaml для сессий сегодняшнего дня
@@ -1737,16 +1740,33 @@ main() {
     case "$reindex_rc" in
       0)                     reindex_status="ok" ;;
       "$RC_REINDEX_PARTIAL") reindex_status="partial" ;;
+      "$RC_STEP_SKIPPED")    reindex_status="skip" ;;
       *)                     reindex_status="fail" ;;
     esac
   fi
 
+  # skip must not read as fail: a template install legitimately lacks the
+  # optional components these steps need (#559 follow-up — cold review found
+  # the RC_STEP_SKIPPED returns landed without this mapping, turning the old
+  # false-ok into a false-FAIL with exit 1).
   if $run_linear; then
-    if do_linear; then linear_status="ok"; else linear_status="fail"; fi
+    local linear_rc=0
+    do_linear || linear_rc=$?
+    case "$linear_rc" in
+      0)                  linear_status="ok" ;;
+      "$RC_STEP_SKIPPED") linear_status="skip" ;;
+      *)                  linear_status="fail" ;;
+    esac
   fi
 
   if $run_sessions; then
-    if do_session_consolidation; then sessions_status="ok"; else sessions_status="fail"; fi
+    local sessions_rc=0
+    do_session_consolidation || sessions_rc=$?
+    case "$sessions_rc" in
+      0)                  sessions_status="ok" ;;
+      "$RC_STEP_SKIPPED") sessions_status="skip" ;;
+      *)                  sessions_status="fail" ;;
+    esac
   fi
 
   write_log "$backup_status" "$reindex_status" "$linear_status" "$sessions_status"

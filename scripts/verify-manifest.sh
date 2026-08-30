@@ -66,18 +66,31 @@ cp "$BACKUP" "$MANIFEST"
 # never intersect the delivered set OR the git-tracked tree — update.sh would
 # delete files the canon still ships with every fresh clone. generate-manifest
 # filters this at write time; this check fails closed on a bad committed one.
-DEP_CONFLICTS=$(python3 - "$MANIFEST" <<'PYCHECK'
+DEP_CONFLICTS=$(python3 - "$MANIFEST" "$SCRIPT_DIR" <<'PYCHECK'
 import json, subprocess, sys
 m = json.load(open(sys.argv[1]))
+repo_root = sys.argv[2]
 delivered = {e['path'] for e in m.get('files', [])}
+excluded = set(m.get('excluded_paths', []))
 # 2026-08-22 (Codex peer-review): git ls-files без проверки кода возврата —
 # при сбое git множество tracked молча становилось пустым, и проверка
 # «deprecated ∩ дерево» деградировала fail-open. Теперь сбой git = сбой проверки.
-r = subprocess.run(['git', 'ls-files'], capture_output=True, text=True)
+# 2026-08-28: git ls-files without cwd=repo_root ran against the invoker's
+# ambient working directory — a caller invoking this script by absolute path
+# from outside the repo silently got a wrong (often empty or foreign) tracked
+# set, turning "deprecated ∩ tree" into either a false pass or a false conflict.
+r = subprocess.run(['git', 'ls-files'], capture_output=True, text=True, cwd=repo_root)
 if r.returncode != 0:
     sys.exit('git ls-files failed: ' + r.stderr.strip())
 tracked = set(r.stdout.splitlines())
-bad = [e['path'] for e in m.get('deprecated_files', []) if e.get('path') in delivered or e.get('path') in tracked]
+# WP-7 Ф92: mirrors generate-manifest.sh — a files[] → excluded_paths[] move
+# stays deprecated (cleanup for pilots who got it while still delivered) only
+# when the entry itself is marked excluded_confirmed, not just by being tracked.
+bad = [
+    e['path'] for e in m.get('deprecated_files', [])
+    if e.get('path') in delivered
+    or (e.get('path') in tracked and not (e.get('excluded_confirmed') and e.get('path') in excluded))
+]
 print('\n'.join(bad))
 PYCHECK
 )

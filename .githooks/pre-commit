@@ -318,9 +318,9 @@ check_pattern() {
         # Check staged content (not working tree)
         local matches
         if [ -n "$exclude" ]; then
-            matches=$(git show ":$file" 2>/dev/null | grep -n "$pattern" | grep -v "$exclude" || true)
+            matches=$(git show ":$file" 2>/dev/null | grep -nE "$pattern" | grep -v "$exclude" || true)
         else
-            matches=$(git show ":$file" 2>/dev/null | grep -n "$pattern" || true)
+            matches=$(git show ":$file" 2>/dev/null | grep -nE "$pattern" || true)
         fi
 
         if [ -n "$matches" ]; then
@@ -337,7 +337,7 @@ check_pattern() {
 check_pattern "sed -i ''" "raw sed -i '' (use sed_inplace)" "sed_inplace"
 check_pattern "date -v-" "raw date -v (use portable_date_offset)" "portable_date_offset\|2>/dev/null"
 check_pattern "readlink -f" "readlink -f (not portable)"
-check_pattern "grep -P " "grep -P (GNU-only, use grep -E)"
+check_pattern "(^|[^a-zA-Z])grep -P " "grep -P (GNU-only, use grep -E)"
 
 if [ "$ISSUES" -eq 1 ]; then
     echo "Commit blocked. See docs/PLATFORM-COMPAT.md for cross-platform wrappers."

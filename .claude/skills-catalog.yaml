@@ -2,14 +2,14 @@
 # see DP.SC.153
 # НЕ редактировать вручную — перегенерировать через generate-skills-catalog.sh
 #
-generated: 2026-08-04T13:06:21Z
+generated: 2026-08-27T12:59:44Z
 skills_dir: .claude/skills
 
 skills:
   - id: agent-fault
     name: "agent-fault"
     description: "Регистрация косяка агента в системе учёта WP-316 L1. Без LLM — детерминированный скрипт без WP Gate."
-    version: 0.1.0
+    version: 0.2.0
     layer: L1
     status: active
     triggers:
@@ -45,13 +45,14 @@ skills:
     depends_on: []
     invoked_by:
     - CLAUDE.md
+    - extend
     - verify
     - bottleneck-pick
     - archgate
     - decompose
   - id: artifactor
     name: "artifactor"
-    description: "Classifies raw pilot request → structured JSON {task_type, class, artifact, budget_estimate, confidence, routing_tag, resolution_path}. Keyword-fast (<200ms) or Haiku fallback (<60s). Does NOT create WP or call executor."
+    description: "Classifies raw pilot request → structured request with routing and an explicit unresolved strategic-basis gate. Keyword-fast (<200ms) or Haiku fallback (<60s). Does NOT create WP or call executor."
     version: 1.0.0
     layer: L1
     status: active
@@ -60,11 +61,12 @@ skills:
         - /artifactor
     depends_on: []
     invoked_by:
+    - protocol-open
     - artifactor
   - id: audit-docs
     name: "audit-docs"
     description: "Audit repository documentation: detect drift between code and docs, report coverage by category. Run manually or on triggered drift critical."
-    version: 0.1.0
+    version: 0.2.0
     layer: L3
     status: active
     triggers:
@@ -114,7 +116,7 @@ skills:
     - platform-bottleneck
   - id: check-secret
     name: "check-secret"
-    description: "Check a text fragment for potential secrets (API keys, tokens, passwords) BEFORE sending to chat / committing / publishing. Third protection layer on top of pre-commit hook (B7.7a) and PostToolUse redact (B7.7b). Manual gate — user explicitly calls on potentially sensitive text."
+    description: "Check a text fragment for potential secrets (API keys, tokens, passwords) BEFORE sending to chat / committing / publishing. Second protection layer on top of the pre-commit hook — manual gate, user explicitly calls on potentially sensitive text."
     version: 1.0.0
     layer: L1
     status: active
@@ -135,6 +137,7 @@ skills:
         - /consent
     depends_on: []
     invoked_by:
+    - protocol-dt-integration
     - consent
   - id: day-close
     name: "day-close"
@@ -147,6 +150,7 @@ skills:
         - /day-close
     depends_on: []
     invoked_by:
+    - protocol-close
     - run-protocol
     - extend
     - day-close
@@ -162,6 +166,7 @@ skills:
         - /day-open
     depends_on: []
     invoked_by:
+    - protocol-open
     - CLAUDE.md
     - run-protocol
     - extend
@@ -181,6 +186,7 @@ skills:
         - /decompose
     depends_on: []
     invoked_by:
+    - protocol-open
     - bottleneck-pick
     - decompose
   - id: diagnose
@@ -259,6 +265,18 @@ skills:
     depends_on: []
     invoked_by:
     - iwe-bug-report
+  - id: iwe-platform-redteam
+    name: "iwe-platform-redteam"
+    description: "Product-only Red Team audit of the FMT/IWE platform: source, manifests, setup/update paths, CI and release provenance, agent permissions and memory, hooks, runtime, roles, schedulers, Day Open/Close, and regression claims. Use before merging or publishing a release, after changes to updater/runtime/security behavior, or when verifying a reported platform defect. Excludes real consumer workspaces and personal customizations; use repository-owned code and synthetic disposable fixtures only."
+    version: 1.0.0
+    layer: L1
+    status: experimental
+    triggers:
+      slash:
+        - /iwe-platform-redteam
+    depends_on: []
+    invoked_by:
+    - iwe-platform-redteam
   - id: iwe-restore
     name: "iwe-restore"
     description: "Восстановление памяти агента из exocortex-бэкапа при переезде на новое устройство. Находит DS-strategy/exocortex/, показывает что будет восстановлено, спрашивает подтверждение, копирует memory/ + CLAUDE.md + AGENTS.md, финализирует /audit-installation."
@@ -291,6 +309,7 @@ skills:
       slash: []
     depends_on: []
     invoked_by:
+    - extend
     - iwe-update
   - id: ke
     name: "ke"
@@ -352,7 +371,10 @@ skills:
         - /month-close
     depends_on: []
     invoked_by:
+    - protocol-month-close
+    - protocol-close
     - CLAUDE.md
+    - extend
     - month-close
   - id: org-dev
     name: "org-dev"
@@ -467,6 +489,7 @@ skills:
       slash: []
     depends_on: []
     invoked_by:
+    - protocol-month-close
     - CLAUDE.md
     - day-close
     - day-close
@@ -497,7 +520,7 @@ skills:
     - skill-creator
   - id: strategy-session
     name: "strategy-session"
-    description: "Стратегическая сессия — диспетчер. День-0 (нет Strategy.md/WeekPlan) → initial flow (цели, неудовлетворённости, первый WeekPlan). День-1+ → weekly flow (требует черновик от session-prep). Триггеры — «проведём стратегическую сессию», «первая стратегическая сессия», «strategy session», «давай стратегировать»."
+    description: "Стратегическая сессия — диспетчер. День-0 (нет Strategy.md/WeekPlan) → initial flow (цели, неудовлетворённости, первый WeekPlan). Первая сессия календарного месяца → полный monthly flow (стратегическая сверка + линза калибра). Остальные дни → короткий weekly flow (требует черновик от session-prep). Триггеры — «проведём стратегическую сессию», «первая стратегическая сессия», «strategy session», «давай стратегировать»."
     version: 1.0.0
     layer: L1
     status: active
@@ -506,6 +529,7 @@ skills:
         - /strategy-session
     depends_on: []
     invoked_by:
+    - extend
     - discovery-session
     - strategy-session
   - id: think
@@ -529,6 +553,7 @@ skills:
         - /transcribe
     depends_on: []
     invoked_by:
+    - protocol-work
     - transcribe
   - id: vdv
     name: "vdv"
@@ -568,9 +593,12 @@ skills:
         - /verify
     depends_on: []
     invoked_by:
+    - protocol-work
+    - protocol-close
     - CLAUDE.md
     - run-protocol
     - verify-hypotheses
+    - extend
     - peer-conversation
     - day-close
     - verify
@@ -614,6 +642,7 @@ skills:
         - /week-close
     depends_on: []
     invoked_by:
+    - protocol-close
     - run-protocol
     - verify-hypotheses
     - extend

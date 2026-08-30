@@ -79,7 +79,7 @@ else
         cat > "$TEMPLATE_HOOK" <<'HOOK'
 #!/bin/bash
 # post-commit hook — WP-247 Ф-TRIGGER-BASED
-# При изменении inbox/captures.md или fleeting-notes.md → запускает extractor inbox-check
+# При изменении inbox/captures.md (или его помесячных чанков inbox/captures/YYYY-MM.md) либо fleeting-notes.md → запускает extractor inbox-check
 set -uo pipefail
 
 # Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
@@ -90,7 +90,7 @@ REPO_DIR=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
 REPO_NAME=$(basename "$REPO_DIR")
 GOVERNANCE_REPO="${IWE_GOVERNANCE_REPO:-DS-strategy}"
 if [ "$REPO_NAME" = "$GOVERNANCE_REPO" ]; then
-    CHANGED=$(git diff-tree --no-commit-id -r --name-only HEAD 2>/dev/null | grep -E '^inbox/(captures|fleeting-notes)\.md$' || true)
+    CHANGED=$(git diff-tree --no-commit-id -r --name-only HEAD 2>/dev/null | grep -E '^inbox/(captures(/[0-9]{4}-[0-9]{2})?|fleeting-notes)\.md$' || true)
     if [ -n "$CHANGED" ]; then
         EXTRACTOR_SH="$IWE_ROOT/.iwe-runtime/roles/extractor/scripts/extractor.sh"
         [ -x "$EXTRACTOR_SH" ] && (nohup "$EXTRACTOR_SH" inbox-check >/dev/null 2>&1 &) 2>/dev/null

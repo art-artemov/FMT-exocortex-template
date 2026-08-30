@@ -231,7 +231,7 @@ else
 fi
 HYBRID_MODE_OUT=$(IWE_EXECUTOR_CATALOG="$TMP_MODE_CATALOG" \
     bash "$SCRIPT" --skill hybrid-mode 2>&1 || true)
-if echo "$HYBRID_MODE_OUT" | grep -q 'mode=script+judgment'; then
+if echo "$HYBRID_MODE_OUT" | grep -q 'ROUTE_TO_JUDGMENT skill=hybrid-mode mode=script+judgment'; then
     echo "PASS: script+judgment executor routes to the judgment layer"
     ((PASS++)) || true
 else
