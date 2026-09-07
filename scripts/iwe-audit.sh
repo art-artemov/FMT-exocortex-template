@@ -332,38 +332,99 @@ fi
 
 echo ""
 
-# ---------- Раздел 3b: Promoted-copy drift (issue #347) ----------
+# ---------- Раздел 3b: Promoted-copy drift (issue #347, раскладка — issue #582) ----------
 #
 # CI's check-seed-drift.sh holds scripts/ ↔ seed/strategy/scripts/ INSIDE the
-# template, but the installed governance copy (created once by setup.sh from
-# seed/strategy/) lives on the user machine where CI cannot see it. The audit
-# runs exactly where both sides physically exist — compare them here.
-# All three files must be checked, absence included: a missing lib/common.sh
-# breaks the scaffold just as silently as a stale one.
+# template, but the EXECUTED copy lives on the user machine where CI cannot see
+# it. The audit runs exactly where both sides physically exist — compare here.
+# Which copy counts as "installed" depends on the layout: Day Open skills invoke
+# the pipeline through $IWE_SCRIPTS (iwe-env-bootstrap.sh default: template
+# scripts/). Installations that promoted copies into the governance repo point
+# IWE_SCRIPTS at $GOV_REPO/scripts instead. So the drift check compares seed
+# against the copy that actually runs ($IWE_SCRIPTS) — requiring a governance
+# copy on a template-layout install was a false "incomplete pipeline" (issue
+# #582). All three files must be checked, absence included: a missing
+# lib/common.sh breaks the scaffold just as silently as a stale one (the
+# scaffold sources it with FATAL on absence).
+# The seed copies carry a "# SNAPSHOT — …" marker line (see
+# check-seed-drift.sh): byte-identity holds only after stripping that one
+# line, so the comparison below strips it too — plain cmp would report the
+# marker itself as drift on every healthy install.
 
-echo "## 3b. Промотированные копии Day Open (seed шаблона ↔ установленный governance)"
+echo "## 3b. Промотированные копии Day Open (seed шаблона ↔ исполняемая копия)"
 echo ""
 SEED_SCRIPTS="$IWE_ROOT/FMT-exocortex-template/seed/strategy/scripts"
+SEED_SNAPSHOT_MARKER="# SNAPSHOT — synced manually via script-promote.sh from FMT-exocortex-template/scripts/. Do not edit here directly."
+# Физические пути (симлинки разрешены), чтобы алиас одного каталога не
+# читался как «другая копия».
+EXEC_SCRIPTS="$(cd "${IWE_SCRIPTS:-/nonexistent}" 2>/dev/null && pwd -P || true)"
+SEED_SCRIPTS_PHYSICAL="$(cd "$SEED_SCRIPTS" 2>/dev/null && pwd -P || true)"
+IWE_SCRIPTS_DISPLAY="${IWE_SCRIPTS:-<не задан>}"
 if [ ! -d "$SEED_SCRIPTS" ]; then
     echo "_N/A — шаблон с seed/strategy/scripts/ не найден._"
-elif [ -z "${DS_DIR:-}" ] || [ ! -d "$DS_DIR/scripts" ]; then
-    echo "_N/A — governance-репо без scripts/ (конвейер Day Open не разворачивался)._"
+elif [ -z "$EXEC_SCRIPTS" ]; then
+    echo "- ❌ каталог \`IWE_SCRIPTS=$IWE_SCRIPTS_DISPLAY\` не существует — конвейер Day Open не запустится"
+    CRITICAL_MISSING=$((CRITICAL_MISSING + 1))
+elif [ "$EXEC_SCRIPTS" = "$SEED_SCRIPTS_PHYSICAL" ]; then
+    echo "_N/A — конвейер исполняется прямо из seed (\`$IWE_SCRIPTS_DISPLAY\`), отдельной копии нет._"
 else
     PROMOTED_DRIFT=0
     for rel in day-open-scaffold.sh day-open-pipeline.sh lib/common.sh; do
         seed_f="$SEED_SCRIPTS/$rel"
-        inst_f="$DS_DIR/scripts/$rel"
+        inst_f="$EXEC_SCRIPTS/$rel"
+        canon_f="$IWE_ROOT/FMT-exocortex-template/scripts/$rel"
+        # Три стороны: канон (scripts/ шаблона), снимок (seed, с маркером
+        # SNAPSHOT — конвенция check-seed-drift.sh), исполняемая копия
+        # ($IWE_SCRIPTS). Оценка сторон независимая: отсутствие одной не
+        # подавляет диагностику остальных (ревью #582, раунд 3). Классификация
+        # дрейфа — по канону: сравнение только seed↔исполняемая ошибочно
+        # объявляет исполняемую копию устаревшей, когда на деле отстал снимок,
+        # и наоборот (раунд 2). `cp` из seed как совет запрещён: он перенёс бы
+        # маркерную строку в исполняемую копию, и предупреждение вернулось бы
+        # на следующем аудите (раунд 1).
+        present=0
         if [ ! -f "$seed_f" ]; then
             echo "- ⚠️ \`seed/strategy/scripts/$rel\` отсутствует в шаблоне — регрессия доставки seed"
             PROMOTED_DRIFT=$((PROMOTED_DRIFT + 1))
-        elif [ ! -f "$inst_f" ]; then
-            echo "- ⚠️ \`scripts/$rel\` не установлен в governance-репо — конвейер Day Open неполный"
-            PROMOTED_DRIFT=$((PROMOTED_DRIFT + 1))
-        elif ! cmp -s "$seed_f" "$inst_f"; then
-            echo "- ⚠️ \`scripts/$rel\` разошёлся с seed шаблона — обновить: \`cp \"$seed_f\" \"$inst_f\"\` (свои правки в копии сначала сохранить)"
+        else
+            present=$((present + 1))
+        fi
+        if [ ! -f "$inst_f" ]; then
+            echo "- ⚠️ \`$rel\` отсутствует в исполняемой копии (\`$IWE_SCRIPTS_DISPLAY\`) — конвейер Day Open неполный"
             PROMOTED_DRIFT=$((PROMOTED_DRIFT + 1))
         else
-            echo "- ✅ \`scripts/$rel\` совпадает с seed"
+            present=$((present + 2))
+        fi
+        if [ -f "$canon_f" ]; then
+            inst_ok=0; seed_ok=0
+            [ $((present & 2)) -eq 2 ] && diff -q "$canon_f" "$inst_f" >/dev/null 2>&1 && inst_ok=1
+            [ $((present & 1)) -eq 1 ] && diff -q <(grep -vF "$SEED_SNAPSHOT_MARKER" "$seed_f") "$canon_f" >/dev/null 2>&1 && seed_ok=1
+            if [ $((present & 2)) -eq 2 ] && [ "$inst_ok" = 0 ]; then
+                echo "- ⚠️ \`$rel\` в исполняемой копии отстал от канона шаблона — обновить: \`cp \"$canon_f\" \"$inst_f\"\` (свои правки в копии сначала сохранить)"
+                PROMOTED_DRIFT=$((PROMOTED_DRIFT + 1))
+            fi
+            if [ $((present & 1)) -eq 1 ] && [ "$seed_ok" = 0 ]; then
+                echo "- ⚠️ \`seed/strategy/scripts/$rel\` отстал от \`scripts/$rel\` — обновить снимок: \`bash \"$IWE_ROOT/FMT-exocortex-template/scripts/check-seed-drift.sh\" --fix\`"
+                PROMOTED_DRIFT=$((PROMOTED_DRIFT + 1))
+            fi
+            if [ "$present" = 3 ] && [ "$inst_ok" = 1 ] && [ "$seed_ok" = 1 ]; then
+                echo "- ✅ \`$rel\` совпадает с каноном шаблона (seed-снимок синхронен)"
+            fi
+        else
+            # Отсутствие канона — само по себе регрессия доставки шаблона,
+            # даже если оставшиеся копии совпадают (ревью #582, раунд 4).
+            echo "- ⚠️ канонический \`scripts/$rel\` отсутствует в шаблоне — регрессия доставки"
+            PROMOTED_DRIFT=$((PROMOTED_DRIFT + 1))
+            if [ "$present" = 3 ]; then
+                # Единственное оставшееся осмысленное сравнение: снимок
+                # (без маркера) ↔ исполняемая копия.
+                if diff -q <(grep -vF "$SEED_SNAPSHOT_MARKER" "$seed_f") "$inst_f" >/dev/null 2>&1; then
+                    echo "- ✅ \`$rel\` совпадает с seed (канон scripts/ недоступен)"
+                else
+                    echo "- ⚠️ \`$rel\` в исполняемой копии разошёлся с seed шаблона, канонический \`scripts/$rel\` не найден — сверить вручную"
+                    PROMOTED_DRIFT=$((PROMOTED_DRIFT + 1))
+                fi
+            fi
         fi
     done
     if [ "$PROMOTED_DRIFT" -gt 0 ]; then

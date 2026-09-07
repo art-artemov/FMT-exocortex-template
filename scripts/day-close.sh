@@ -22,6 +22,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/../.claude/lib/iwe-env-bootstrap.sh" || exit 1
+# issue #545: iwe_sessions_dir (резолвер корня журналов по контракту писателя)
+source "$SCRIPT_DIR/lib/common.sh" || {
+  echo "FATAL: lib/common.sh not found next to $0 — промотированная копия устарела, обновите её вместе с шаблоном" >&2
+  exit 1
+}
 GOVERNANCE_REPO="${GOVERNANCE_REPO:-${IWE_GOVERNANCE_REPO:-DS-strategy}}"
 DS_STRATEGY="$WORKSPACE_DIR/$GOVERNANCE_REPO"
 # Slug derived from WORKSPACE_DIR (not $HOME) so it matches Claude's project key
@@ -1600,11 +1605,18 @@ do_session_consolidation() {
   today=$(date +%Y-%m-%d)
   local month_dir
   month_dir=$(date +%Y-%m)
-  local sessions_root="$DS_STRATEGY/sessions/$month_dir"
+  # issue #545: корень журналов — тем же контрактом, что писатель
+  # (session-guard.sh): MC-sessions после миграции, legacy иначе.
+  local sessions_base
+  if ! sessions_base=$(iwe_sessions_dir); then
+    warn "  IWE_SESSIONS_ROOT=${IWE_SESSIONS_ROOT:-} недоступен — консолидация читает legacy-путь"
+    sessions_base="$DS_STRATEGY/sessions"
+  fi
+  local sessions_root="$sessions_base/$month_dir"
   local output_file="$DS_STRATEGY/current/sessions-today.md"
 
   if [ ! -d "$sessions_root" ]; then
-    warn "  Папка sessions/$month_dir не найдена — пропуск"
+    warn "  Папка $sessions_root не найдена — пропуск"
     return "$RC_STEP_SKIPPED"
   fi
 

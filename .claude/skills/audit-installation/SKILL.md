@@ -5,6 +5,7 @@ argument-hint: "[--skip-mcp] [--critical]"
 version: 1.0.0
 layer: L1
 status: active
+browser_safe: false
 triggers:
   slash: [/audit-installation]
   phrases: []
@@ -105,24 +106,11 @@ Coverage: N/4
 
 ### Алгоритм
 
-1. **Создать sentinel** (единое имя для gate + capability владельца, issue #369):
+1. **Создать репетицию через begin-helper** (issue #549 stage 2 — эксклюзивное создание под транзакционным замком; token печатается один раз в stdout):
    ```bash
-   # issue #549 stage 1: never fall back to a shared "noid" — the Stop-hook
-   # cleans owner files by session id, and a mismatched id left the owner
-   # orphaned, permanently fail-closing every write tool. A self-generated
-   # gate id is unique per run; CLAUDE_SESSION_ID is used when present so the
-   # Stop-hook match still works in environments that do export it.
-   DRY_SID="${CLAUDE_SESSION_ID:-dry-$(date +%s)-$$}"
-   DRY_SAFE_SID=$(printf '%s' "$DRY_SID" | tr -cd 'A-Za-z0-9._-')
-   DRY_TOKEN=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
-   DRY_OWNER="/tmp/iwe-dry-run-owner-${DRY_SAFE_SID:-noid}.token"
-   umask 077
-   printf '%s' "$DRY_TOKEN" > "$DRY_OWNER"
-   jq -nc --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sid "$DRY_SID" \
-     --arg token "$DRY_TOKEN" --arg owner "$DRY_OWNER" \
-     '{created_at:$created,session_id:$sid,initiator:"audit-installation",owner_token:$token,owner_file:$owner}' \
-     > /tmp/iwe-dry-run.flag
+   bash "$IWE_SCRIPTS/dry-run-begin.sh" audit-installation "${CLAUDE_SESSION_ID:-}"
    ```
+   Helper печатает `gate_id=`, `owner_token=`, `owner_session_id=`. **Запомни все три значения из вывода tool-call'а** — shell-переменные между твоими Bash-вызовами не живут (Codex r2), а token хранить в файле нельзя (его прочитает репетиция). Активная чужая репетиция → helper завершится ошибкой с её gate_id.
 2. **Запустить subagent** через Agent tool (subagent_type=general-purpose, модель Sonnet) с промптом:
 
    ```
@@ -141,9 +129,9 @@ Coverage: N/4
    ```
 
 3. **Дождаться завершения subagent'а.**
-4. **Очистить sentinel:**
+4. **Завершить репетицию** (атомарный переход active→completed с capability token; sentinel снимается самим helper'ом после completed — Stop-хук теперь только идемпотентный fallback). Подставь значения, запомненные на шаге 1:
    ```bash
-   rm -f /tmp/iwe-dry-run.flag
+   bash "$IWE_SCRIPTS/dry-run-complete.sh" "<gate_id из шага 1>" rehearsal-finished "<owner_session_id из шага 1>" "<owner_token из шага 1>"
    ```
 5. **Сформировать секцию 6 отчёта:**
    ```markdown

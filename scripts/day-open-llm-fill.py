@@ -235,15 +235,19 @@ def rebuild_compact_dashboard(text: str) -> str:
     return "\n".join(out)
 
 
-def _panel_yesterday_iso() -> str:
-    """Вчера по московскому календарю — та же конвенция, что у ночного воркера (Ф3.3)."""
-    from datetime import datetime, timedelta, timezone
+def _dashboard_today_iso() -> str:
+    """Сегодня по московскому календарю -- дата, под которой dashboard_worker.py
+    пишет ночной снимок (запуск 07:30 MSK, WP-417 Ф-cutover-switch 2026-09-02).
+    Заменяет _panel_yesterday_iso() -- старая панель считала за ВЧЕРА (target_date
+    в panel_worker.py), PD-dashboard пишет файл под датой самого запуска."""
+    from datetime import datetime, timezone
     try:
         from zoneinfo import ZoneInfo
         now = datetime.now(ZoneInfo("Europe/Moscow"))
     except Exception:  # noqa: BLE001 — zoneinfo нет → Москва = UTC+3 (без DST с 2014)
+        from datetime import timedelta
         now = datetime.now(timezone.utc) + timedelta(hours=3)
-    return (now.date() - timedelta(days=1)).isoformat()
+    return now.date().isoformat()
 
 
 def _strip_panel_block(text: str, begin: str, end: str) -> str:
@@ -311,33 +315,38 @@ def inject_gate_metrics(text: str) -> str:
 
 
 def inject_panel_tile(text: str) -> str:
-    """Врезать тайл табло (WP-417 Ф3.4) в Compact Dashboard перед END-маркером.
+    """Врезать тайл табло (WP-417 Ф-cutover-switch, 2026-09-02) в Compact Dashboard
+    перед END-маркером.
 
-    Локальный режим: читает самую свежую панель из panel.db (вариант A data-ready
-    gate) и рендерит блок. Идемпотентно — старый блок <!-- panel-tile --> вырезается
-    и заменяется свежим (повторный Day Open не дублирует). Деградирует мягко: нет БД
-    или ошибка чтения → тайл пропускается, открытие дня не падает (P4: причина в лог).
-    Общий scaffold не трогаем — врезка только в локальном пайплайне ${IWE_GOVERNANCE_REPO:-DS-strategy}.
+    Источник -- PD-dashboard (git, ночной писатель dashboard_worker.py), не
+    panel.db/Neon (старый WP-417 Ф3.4 источник superseded архитектурным пивотом
+    18.08-01.09, см. inbox/WP-417/WP-417.md "Актуализация и решение пилота о
+    составе табло"). Идемпотентно -- старый блок <!-- panel-tile --> вырезается
+    и заменяется свежим (повторный Day Open не дублирует). Деградирует мягко:
+    нет PD-dashboard/файла на сегодня -> тайл пропускается, открытие дня не
+    падает (P4: причина в лог). Общий scaffold не трогаем -- врезка только в
+    локальном пайплайне ${IWE_GOVERNANCE_REPO:-DS-strategy}.
     """
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lib"))
     try:
-        from panel_render import PANEL_BEGIN, PANEL_END, read_panel, render_panel_block
-    except Exception:  # noqa: BLE001 — panel-модулей нет → тайл просто не показываем
-        print("[inject_panel_tile] panel-модули недоступны — тайл пропущен", file=sys.stderr)
+        from dashboard_render import (
+            PANEL_BEGIN, PANEL_END, read_dashboard_snapshot, render_dashboard_panel_block,
+        )
+    except Exception:  # noqa: BLE001 — dashboard-модули недоступны → тайл просто не показываем
+        print("[inject_panel_tile] dashboard-модули недоступны — тайл пропущен", file=sys.stderr)
         return text
 
     marker = "---END-COMPACT-DASHBOARD---"
     if marker not in text:
         return text  # нет дашборда (необычный scaffold) — некуда врезать
 
-    account_id = os.environ.get("PANEL_ACCOUNT_ID", "local")
     try:
-        panel = read_panel(account_id)
-    except Exception:  # noqa: BLE001 — БД недоступна → тайл пропускаем, день не валим
-        print("[inject_panel_tile] чтение panel.db не удалось — тайл пропущен", file=sys.stderr)
+        snapshot = read_dashboard_snapshot(_fault_profile_workspace())
+    except Exception:  # noqa: BLE001 — PD-dashboard недоступен → тайл пропускаем, день не валим
+        print("[inject_panel_tile] чтение PD-dashboard не удалось — тайл пропущен", file=sys.stderr)
         return text
 
-    block = render_panel_block(panel, _panel_yesterday_iso())
+    block = render_dashboard_panel_block(snapshot, _dashboard_today_iso())
     text = _strip_panel_block(text, PANEL_BEGIN, PANEL_END)
     idx = text.find(marker)
     return text[:idx] + block + "\n" + text[idx:]
@@ -617,8 +626,26 @@ def fill_chunk(chunk: dict, weekplan: str, active_wps: str, calendar: str,
     header = chunk["header"]
     content = "".join(chunk["lines"][1:])  # без заголовка
 
-    # Consolidated prompt with JSON facts for today_plan
-    is_today_plan = "План на сегодня" in header or "today_plan" in header.lower()
+    # Consolidated prompt with JSON facts for today_plan.
+    # `header` is usually the bare "<details>"/"<details open>" tag (chunking
+    # stores the <summary> title in `content`, not `header`) — checking
+    # `header` alone means this branch never fires for that shape, and the
+    # plan table falls through to the generic per-section prompt, which
+    # leaves the scaffold's example placeholders (N/NNN/X) unreplaced instead
+    # of computing a real seq/hours value per WP. Checking `content` alone
+    # would instead miss a plain "## План на сегодня" heading (chunk header
+    # can carry the title directly there) if the body never repeats the
+    # phrase — Codex review, WP-484 backfill-regression-fix session, 31.08.
+    # Checking both covers each chunking shape without betting on which one
+    # is live. Regressed and re-fixed three times in a consumer's installed
+    # copy (2026-07-09, then 26.08, then 31.08) — each time only that copy
+    # was patched, so this canonical source kept re-seeding the bug on the
+    # next backfill; fixed here too (WP-484, peer-session with Codex, same
+    # day) to close that loop.
+    is_today_plan = (
+        "План на сегодня" in content or "today_plan" in content.lower()
+        or "План на сегодня" in header or "today_plan" in header.lower()
+    )
     if is_today_plan and wp_facts:
         prompt = build_today_plan_prompt(header, content, weekplan, wp_facts,
                                          calendar, cp_profile, fault_profile)

@@ -1233,6 +1233,56 @@ def test_update_consumer_scan_refuses_symlinked_directory_without_reading_target
     assert index.read_bytes() == index_before
 
 
+def test_update_consumer_scan_allows_symlink_resolving_inside_workspace(
+    tmp_path: Path,
+):
+    # issue #661: a .py symlink whose target resolves INSIDE the workspace
+    # (e.g. a script shared between two sibling governance repos) must not
+    # abort the whole scan — only a symlink escaping the workspace should.
+    # The target genuinely imports the legacy module (cold-context review
+    # finding on the first version of this test: a content-free target file
+    # only proved the scan didn't error, not that it actually READ through
+    # the symlink — this would not have caught a regression that silently
+    # skipped an in-workspace symlink's content instead of scanning it).
+    workspace, governance_dir = _install_seed(tmp_path)
+    sibling_repo = workspace / "DS-sibling"
+    sibling_scripts = sibling_repo / "scripts"
+    sibling_scripts.mkdir(parents=True)
+    shared_target = sibling_scripts / "shared.py"
+    shared_target.write_text("import iwe_checklist_memory\n", encoding="utf-8")
+    linked_consumer = governance_dir / "scripts" / "shared.py"
+    linked_consumer.symlink_to(shared_target)
+    _init_git_repo(governance_dir)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(governance_dir),
+            "add",
+            "--",
+            linked_consumer.relative_to(governance_dir),
+        ],
+        check=True,
+        timeout=10,
+    )
+    subprocess.run(
+        ["git", "-C", str(governance_dir), "commit", "-qm", "in-workspace linked consumer"],
+        check=True,
+        timeout=10,
+    )
+
+    result = _run_update_legacy_shim_backfill(workspace, governance_dir.name)
+
+    # The scan must have actually read the symlinked file's content and
+    # found the legacy import — proven by the backfill refusing to proceed
+    # with that specific finding, not merely by a clean exit.
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "consumer scan refused" not in result.stderr
+    assert "still require init_db/DB_PATH-style facade removal" in result.stderr
+    assert "shared.py" in result.stderr
+    assert linked_consumer.is_symlink()
+
+
 @pytest.mark.parametrize(
     "state",
     ("clean", "dirty", "staged", "untracked", "symlink", "non-git"),
@@ -1429,12 +1479,12 @@ def test_real_route_records_multi_token_russian_fault_exactly(tmp_path: Path):
     workspace, governance_dir = _install_seed(tmp_path, "DS-custom")
     catalog = governance_dir / "scripts" / "executor-catalog.yaml"
     _write_catalog(catalog, _skill_script_path())
-    # route-task.sh resolves a relative script_path against IWE_DIR (the
-    # synthetic workspace here), not IWE_SCRIPTS — mirror that layout by
-    # installing the real skill script where a genuine deployment would have
-    # it, same pattern as _install_workspace_cli() below.
+    # route-task.sh resolves a relative script_path against IWE_TEMPLATE
+    # (defaults to $IWE_DIR/FMT-exocortex-template, issue #634 fix) - mirror
+    # that nested layout, same pattern used by
+    # test_protocol_extensions_execute_cli_from_template_runtime above.
     real_skill_script = ROOT / _skill_script_path()
-    installed_skill_script = workspace / _skill_script_path()
+    installed_skill_script = workspace / "FMT-exocortex-template" / _skill_script_path()
     installed_skill_script.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(real_skill_script, installed_skill_script)
     fault = "агент потерял многословное русское описание ошибки"

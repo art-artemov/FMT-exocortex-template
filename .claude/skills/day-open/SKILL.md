@@ -5,6 +5,7 @@ argument-hint: ""
 version: 1.1.0
 layer: L1
 status: active
+browser_safe: false
 triggers:
   slash: [/day-open]
   phrases: [открывай]
@@ -63,8 +64,9 @@ Day Open = протокол. Блокирующее требование — н�
 Из `day-rhythm-config.yaml → pomodoro`.
 
 ### 4c. Календарь
-`bash $IWE_SCRIPTS/server-calendar.sh YYYY-MM-DD` → секция «Календарь» для DayPlan (Встречи + Напоминания).
-Если `strategy_day`: `bash $IWE_SCRIPTS/server-calendar.sh --week YYYY-MM-DD` → секция «Календарь недели» в WeekPlan.
+Единый источник — подключённый календарный коннектор (MCP-инструменты календаря; имена зависят от установки, имя содержит «calendar» без учёта регистра, напр. `mcp__claude_ai_Google_Calendar__*`): список календарей → события каждого за день → секция «Календарь» для DayPlan (Встречи + Напоминания).
+Если коннектора нет — фоллбэк: `bash $IWE_SCRIPTS/server-calendar.sh YYYY-MM-DD`. NB: его ответ «Google credentials не настроены» — факт о скрипте (он ходит за собственным файлом ключей `~/.secrets/google-calendar`), не о календаре; при работающем коннекторе скрипт не нужен (issue #581).
+Если `strategy_day`: та же логика для недели (у фоллбэка — `--week YYYY-MM-DD`) → секция «Календарь недели» в WeekPlan.
 <!-- Детали (алгоритм классификации, формат): day-open-details.md § Шаг 4c -->
 
 ### 5. IWE за ночь (светофор)

@@ -265,7 +265,7 @@ INPUT_HASH=$(
     } | (command -v shasum >/dev/null && shasum -a 256 || sha256sum) | cut -d' ' -f1
 )
 
-FMT_VERSION=$(grep -m1 '^## \[' "$TEMPLATE_DIR/CHANGELOG.md" | sed 's/.*\[\(.*\)\].*/\1/')
+FMT_VERSION=$(grep '^## \[' "$TEMPLATE_DIR/CHANGELOG.md" | grep -v '^## \[Unreleased\]' | head -1 | sed 's/.*\[\(.*\)\].*/\1/')
 
 # === Apply substitutions ===
 build_substituted_file() {
@@ -408,8 +408,20 @@ fi
 
 mv "$BUILD_DIR/runtime" "$RUNTIME_DIR"
 
-# Cleanup old runtime
-[ -d "$RUNTIME_OLD" ] && rm -rf "$RUNTIME_OLD"
+# bug-2026-09-02-build-runtime-wipes-live-session-state: .iwe-runtime/ is
+# documented above as build-only (.build-hash, .build-version, roles/), but
+# session-guard.sh and friends also keep LIVE, non-regenerable state directly
+# under it (sessions/, isolate-push-attempts/, close-obligation/ — observed
+# live, not an exhaustive list). A plain "swap + rm -rf the old tree" silently
+# destroyed other agents' open-session markers on 2026-09-02. Carry forward
+# any top-level entry the fresh build did not itself produce, instead of
+# assuming the whole old tree is disposable.
+if [ -d "$RUNTIME_OLD" ]; then
+    while IFS= read -r entry; do
+        [ -e "$RUNTIME_DIR/$entry" ] || mv "$RUNTIME_OLD/$entry" "$RUNTIME_DIR/$entry"
+    done < <(find "$RUNTIME_OLD" -mindepth 1 -maxdepth 1 -exec basename {} \;)
+    rm -rf "$RUNTIME_OLD"
+fi
 
 # Lock освобождается автоматически при exit (FD 9 закрывается)
 

@@ -78,32 +78,28 @@ done
 DATE="${DATE:-$(date +%Y-%m-%d)}"
 PROBE_START_S=$SECONDS
 
-# --- Helper: send TG notification (safe JSON via jq) ---
-# MUST be defined before first call (regression fix 2026-06-29).
+# --- Helper: send TG notification, transport unified onto lib/telegram.sh ---
+# MUST be defined before first call (regression fix 2026-06-29). WP-538 Ф3:
+# was a raw curl POST duplicating http_code/ok:true checking that
+# scripts/lib/telegram.sh already does, with 3x retry instead of one shot.
+# Template note: the admission-gate rate limiter (telegram_send_gated) lives
+# only in the author's personal governance repo so far, not this template's
+# notification-render.sh — this promotion carries the transport fix only, not
+# a gated call site.
+# shellcheck source=lib/telegram.sh
+. "$DS_STRATEGY/scripts/lib/telegram.sh"
+
 tg_notify() {
   local msg="$1"
   if [ "$PROBE" = "true" ]; then
     echo "  [probe: TG suppressed] $msg" | head -1
     return 0
   fi
-  if [ -n "${TG_TOKEN:-}" ] && [ -n "${TG_CHAT:-}" ]; then
-    local payload resp http_code
-    # No parse_mode: Markdown 400s on any unpaired _/*/` in dynamic text (DIAG,
-    # LLM warns) — same failure class month-open-night-run.sh hit live on 27.07.
-    payload=$(jq -n --arg chat "$TG_CHAT" --arg text "$msg" '{chat_id: $chat, text: $text}')
-    resp=$(curl -s -w '\n%{http_code}' -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-      -H "Content-Type: application/json" \
-      -d "$payload")
-    http_code=$(printf '%s' "$resp" | tail -n1)
-    # WP-484 F64: a fired curl is not a delivered message — verify and say so.
-    if [ "$http_code" != "200" ] || ! printf '%s' "$resp" | grep -q '"ok":true'; then
-      echo "  [tg delivery FAILED http=$http_code] $msg" | head -2
-      return 1
-    fi
-  else
+  if [ -z "${TG_TOKEN:-}" ] || [ -z "${TG_CHAT:-}" ]; then
     echo "  [no tg credentials] $msg" | head -1
     return 1
   fi
+  telegram_send "$msg" || { echo "  [tg delivery FAILED] $msg" | head -2; return 1; }
 }
 
 # --- Helper: portable single-field read from a Y-m-d date string ---
@@ -505,23 +501,30 @@ fi
 # ============================================
 # 1.1b. Week Close race guard (WP-484 Ф46, found 2026-08-02/03: 3x "LLM Proxy
 # authorized probe failed" Telegram alerts near midnight on a Sunday). Late
-# Sunday night, week-open-orchestrator.sh (meant to run ~23:50) is closing the
-# outgoing week and opening the next one; if this pipeline also runs for that
-# same Sunday's date while that cycle is mid-flight (or hasn't started at all
-# yet), it can burn an attempt on an LLM Proxy call that's about to become
-# moot, or produce a plan for a day whose week context is still in flux.
+# Sunday night, an author-only night-cycle orchestrator (week-open-orchestrator.sh,
+# ~23:50, not delivered by this template -- it depends on the author's shared-
+# checkout publish gateway and a private LLM proxy, same class of author-only
+# infra as issue #595) closes the outgoing week and opens the next one on the
+# author's own install; if this pipeline also runs for that same Sunday's date
+# while that cycle is mid-flight, it can burn an attempt on an LLM Proxy call
+# that's about to become moot, or produce a plan for a day whose week context
+# is still in flux. On a template install without that orchestrator, WeekReport
+# is produced earlier and by a different, delivered path: week-review.md, Пн
+# 00:00 (issue #596) -- so this guard only matters in practice for that
+# orchestrator's ~23:50 Sunday window; it's a no-op wait otherwise.
 #
 # Signal choice (2026-08-03, peer session with Codex+Hermes, corrected during
-# implementation): week-open-orchestrator.sh commits an EMPTY "week-close-start:
-# $WEEK" lock at its own STEP 0, before any real closing work happens
-# (week-open-orchestrator.sh:95,123) -- that marker means "cycle started", not
-# "week closed"; using it here would pass almost immediately after the cycle
-# begins, defeating the guard. The real completion signal is STEP 5's commit
-# ("week-close: $WEEK -> $NEXT_WEEK", week-open-orchestrator.sh:401), which
-# lands together with current/WeekReport {WEEK}.md. Checking for that file's
-# presence (not commit message text) follows this same file's own §1.1 lesson
-# (WP-5, 2026-07-22): a commit-message regex silently breaks on wording drift;
-# a concrete artifact doesn't.
+# implementation): a start-of-cycle marker would pass almost immediately after
+# the cycle begins, defeating the guard -- the real completion signal is the
+# WeekReport file's presence itself (not a commit message, which silently
+# breaks on wording drift per this same file's own §1.1 lesson, WP-5 2026-07-22).
+#
+# issue #596: the exact filename here (`WeekReport {ISO-year}-W{ISO-week}.md`,
+# e.g. "WeekReport 2026-W35.md") never matched the real naming convention used
+# everywhere else (`WeekReport W{N} YYYY-MM-DD.md`, N = ISO week number, date =
+# that week's Monday, e.g. "WeekReport W35 2026-08-24.md") -- this guard could
+# never find the file it was checking for and always deferred. Fixed to build
+# the real filename.
 #
 # exit 7 = confirmed not closed yet -> defer, same contract as §1.1 above
 #          (scheduler retries next tick, this run doesn't burn the daily marker).
@@ -531,7 +534,10 @@ fi
 TARGET_DOW=$(portable_date_field "$DATE" "+%u")
 CURRENT_HOUR=$(TZ=Asia/Nicosia date +%H)
 if [ "$FORCE" != "true" ] && [ "${TARGET_DOW:-0}" = "7" ] && [ "$((10#$CURRENT_HOUR))" -ge 23 ]; then
-  TARGET_WEEK=$(portable_date_field "$DATE" "+%Y-W%V")
+  TARGET_WEEK_NUM=$((10#$(portable_date_field "$DATE" "+%V")))
+  TARGET_WEEK_MONDAY=$(date -j -v-6d -f "%Y-%m-%d" "$DATE" "+%Y-%m-%d" 2>/dev/null \
+    || date -d "$DATE - 6 day" "+%Y-%m-%d" 2>/dev/null)
+  TARGET_WEEK="W${TARGET_WEEK_NUM} ${TARGET_WEEK_MONDAY}"
   if ! (cd "$DS_STRATEGY" && git fetch origin main --quiet 2>/dev/null); then
     echo "  Week Close guard: cannot refresh origin/main for week $TARGET_WEEK -- failing closed"
     tg_notify "🚨 Day Open $DATE заблокирован: не смог обновить origin/main, чтобы проверить закрытие недели $TARGET_WEEK. Нужна ручная проверка сети/репозитория."
@@ -914,6 +920,21 @@ if git -C "$DS_STRATEGY" remote get-url origin >/dev/null 2>&1 \
 else
   echo "version-check: no origin/main to compare against — skipped (comparison context unavailable, normal for template/offline installs)" >&2
 fi
+
+# ============================================
+# 4.59. Multiplier backfill patch (deterministic — WP-484 Ф117, pilot decision
+# 18.08 + peer-session 2026-09-01-18-wp484-backlog-continue: wakatime-cli only
+# supports --today, so a Close that ran late or on a host without the CLI
+# leaves yesterday's multiplier honestly PENDING. This backfills it from the
+# WakaTime HTTP API once synced. Same non-blocking-finding pattern as the
+# patches above — never blocks Open, never fabricates a value.
+# ============================================
+echo "=== 4.59. Multiplier backfill patch ==="
+"$_PATCH_PY" "$DS_STRATEGY/scripts/day-open-multiplier-backfill-patch.py" \
+  --dayplan "$DAYPLAN_PATH" \
+  --ledger-root "$DS_STRATEGY/machine/ledger/day" \
+  --date "$DATE" \
+  --ledger-append "$DS_STRATEGY/scripts/ledger-append.sh" 2>&1 || true
 
 # ============================================
 # 4.6. Sync + archive stale DayPlans (moved ahead of Checks — WP-484 Ф2)
