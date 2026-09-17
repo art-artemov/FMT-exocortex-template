@@ -53,7 +53,7 @@ bash $IWE_SCRIPTS/fmt-critical-alert.sh --no-telegram
 - `<governance-repo>/inbox/captures.md` — знаниевые кандидаты (если есть)
 - `<governance-repo>/inbox/extraction-reports/*.md` со `status: pending-review` — отчёты Экстрактора (если есть)
 
-**Категоризация заметок** по PD.FORM.083 (7 категорий): НЭП / Задача / Знание доменное / Знание реализационное / Черновик / Личные данные / Шум. Полная справка → `memory/feedback_note_review_routing.md`. НЕ удалять.
+**Категоризация заметок** по PD.FORM.083 (8 категорий): НЭП / Задача / Гипотеза / Знание доменное / Знание реализационное / Черновик / Личные данные / Шум. Полная справка → `memory/feedback_note_review_routing.md`. НЕ удалять.
 
 **Carry-over заметок из вчерашнего DayPlan:** проверить по git log (`note-review`), были ли обработаны. Если да → секция «Разбор заметок» = «все обработаны» (с ссылкой на коммит). Не переносить обработанные заметки как carry-over.
 
@@ -149,7 +149,7 @@ done
 
 ## Шаг 5c: Редактор контента (DP.ROLE.033 / DP.SC.127)
 
-`config: content_editor.enabled` (day-rhythm-config.yaml) — `false` → пропустить.
+`config: content_editor.enabled` (day-rhythm-config.yaml) — `true` → выполнить, иначе (включая отсутствие секции, issue #804) → пропустить.
 1. Читать все `<governance-repo>/drafts/D-NNN-*.md` — frontmatter (`created`, `ttl`, `updated`) + текст.
 2. Читать WeekPlan активной недели — R-таблица (инициативы) + S-таблица (неудовлетворённости).
 3. Оценить каждый черновик: (a) сильная идея — тезис в 1-2 предл.; (b) актуальность — совпадает с ≥1 R или S по тексту; (c) свежесть — `updated`/`created` ≤14 дней и TTL не истёк; (d) полнота — есть вступление + основная часть.

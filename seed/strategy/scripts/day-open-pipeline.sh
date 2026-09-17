@@ -7,15 +7,47 @@
 # dependencies (day-open-checks-runner.sh, day-open-llm-fill.py,
 # day-open-budget-patch.py, update-derived-snapshot.py, llm-proxy-launcher.sh)
 # and day-open-scaffold.sh are all promoted here and seeded into
-# seed/strategy/scripts/ for new DS-strategy repos. Not yet wired: no launchd
+# seed/strategy/scripts/ for new ${IWE_GOVERNANCE_REPO:-DS-strategy} repos. Not yet wired: no launchd
 # role registers this pipeline for a new user (see roles/ — none reference
 # day-open); that remains a separate follow-up (day-open role, IntegrationGate
 # required before implementation).
 
 set -uo pipefail
 
-IWE="${IWE_ROOT:-$HOME/IWE}"
-CONFIG="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/exocortex/day-rhythm-config.yaml"
+DS_STRATEGY="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+IWE="$(cd "$DS_STRATEGY/.." && pwd)"
+# Child patch steps (4.2/4.3) fall back to ~/IWE when IWE_ROOT is unset —
+# a launchd/cron env typically has no IWE_ROOT, so pass the resolved root down.
+export IWE_ROOT="$IWE"
+# issue #756: session-guard.sh, day-open-scaffold.sh and the other helpers
+# called below live inside the template (FMT-exocortex-template/scripts/),
+# not directly under $IWE/scripts -- that directory does not exist on any
+# install where the template sits as a subdirectory of the workspace (the
+# layout setup.sh itself produces). $IWE_SCRIPTS is written once at
+# install/update time (install-iwe-paths.sh's .iwe-paths, sourced via
+# ~/.zshenv; the systemd unit templates bake it into Environment=) rather
+# than re-derived on every invocation the way $IWE/$DS_STRATEGY are above --
+# an inherited value from a DIFFERENT checkout (e.g. running this exact
+# script from an isolated worktree with the main workspace's env still
+# exported) would silently win over the correct co-located $IWE/scripts
+# fallback. $IWE/scripts stays as that fallback for an install where scripts
+# really were flattened into the workspace root.
+IWE_SCRIPTS="${IWE_SCRIPTS:-$IWE/scripts}"
+export IWE_SCRIPTS
+# Every child process, including the background snapshot refresh below, must
+# resolve the same governance repository as this pipeline. launchd/cron do not
+# inherit the interactive shell setting, so derive it from the script location
+# before the first child process starts.
+export IWE_GOVERNANCE_REPO="$(basename "$DS_STRATEGY")"
+CONFIG="$DS_STRATEGY/exocortex/day-rhythm-config.yaml"
+# shellcheck source=lib/ledger-path.sh
+. "$DS_STRATEGY/scripts/lib/ledger-path.sh"
+
+# Quarantine only provably orphaned semaphores (dead recorded pid). Old
+# semaphores without pid proof are reported and kept for manual review.
+mkdir -p "$IWE/.iwe-runtime"
+bash "$IWE_SCRIPTS/session-guard.sh" audit --cleanup-orphans \
+  >> "$IWE/.iwe-runtime/session-orphan-sweep.log" 2>&1 || true
 
 # ============================================
 # 1.5. Opportunistic derived_snapshot refresh (WP-425 Level 2a)
@@ -32,102 +64,176 @@ CONFIG="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/exocortex/day-rhythm-config.yam
 # before this block instead of moving the block back down.
 # ============================================
 echo "=== 1.5. Snapshot refresh (opportunistic) ==="
-(python3 "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/update-derived-snapshot.py" --if-stale-days 10 \
-  >> "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/logs/personal-guide-update.log" 2>&1 || true) &
+(python3 "$DS_STRATEGY/scripts/update-derived-snapshot.py" --if-stale-days 10 \
+  >> "$DS_STRATEGY/logs/personal-guide-update.log" 2>&1 || true) &
 SNAPSHOT_PID=$!
 echo "  snapshot refresh pid=$SNAPSHOT_PID (background, non-blocking)"
 
 # --- CLI args ---
 FORCE=false
-SELF_TEST=false
+PROBE=false
+SCAFFOLD_ONLY=false
 DATE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --force|-f)      FORCE=true; shift ;;
-    --self-test)     SELF_TEST=true; shift ;;
+    # --probe (WP-484, test stand): dry-run — real preflight+scaffold+LLM-fill+checks,
+    # writes to a "(probe)" suffixed file (never the real DayPlan), skips commit/push/
+    # archive-move/TG. Implies --force (guards are about real-file state, irrelevant here).
+    --probe)         PROBE=true; FORCE=true; shift ;;
+    # --scaffold-only (issue #434): the deterministic skeleton (step 3) needs
+    # no LLM Proxy at all — only step 4 (LLM Fill) does. Before this flag,
+    # an unreachable/unprovisioned proxy made step 2's healthcheck abort the
+    # whole run, so an install without a proxy could never get even the
+    # skeleton. Skips steps 2 and 4; still runs 1, 3, 4.2-4.6, 5, 6.
+    --scaffold-only) SCAFFOLD_ONLY=true; shift ;;
     --date|-d)       DATE="$2"; shift 2 ;;
     *)               DATE="$1"; shift ;;
   esac
 done
 DATE="${DATE:-$(date +%Y-%m-%d)}"
+PROBE_START_S=$SECONDS
 
-# --- Self-test: regression guard for the Day-Close-race grep (bug 2026-07-02) ---
-# The grep used to detect "yesterday's Day Close is committed" broke on its own first
-# day (2026-07-01) because it assumed an exact message format ("day-close: DATE" /
-# "Day Close DATE") that the close protocol never actually produces
-# ("day-close(DATE): text"). Result: the guard always saw "not committed" and Day Open
-# deferred forever. This replays the real grep against real day-close commits — no
-# throwaway commits, no side effects — so a future format drift is caught before it
-# reaches prod. Window is 5 days, not further back: the close-commit message format has
-# drifted repeatedly over the repo's history (dates as "13 мая", "Вт 12 мая", "W19",
-# plain weekday names with no digits at all) — a wider window flags that historical
-# entropy as a false failure instead of validating the guard against the convention
-# actually in force today.
-if [ "$SELF_TEST" = "true" ]; then
-  cd "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}" || { echo "SELF-TEST FAIL: cannot cd to ${IWE_GOVERNANCE_REPO:-DS-strategy}"; exit 1; }
-  FAIL=0
-  DAYS_CHECKED=0
-  for d in $(git log --since="5 days ago" -i --grep="day-close" --format=%ad --date=format:%Y-%m-%d | sort -u); do
-    DAYS_CHECKED=$((DAYS_CHECKED + 1))
-    match=$(git log --since="$d 00:00:00" -i --grep="day-close.*$d" --format=%H | head -1)
-    if [ -z "$match" ]; then
-      echo "SELF-TEST FAIL: guard's grep does not detect the day-close commit for $d"
-      FAIL=1
-    fi
-  done
-  if [ "$DAYS_CHECKED" -eq 0 ]; then
-    echo "SELF-TEST FAIL: no day-close commits found in the last 5 days — cannot validate the guard"
-    exit 1
-  fi
-  [ "$FAIL" -eq 0 ] && echo "SELF-TEST PASS: guard detects all $DAYS_CHECKED known day-close day(s) from the last 5 days"
-  exit $FAIL
-fi
+# --- Helper: send TG notification, transport unified onto lib/telegram.sh ---
+# MUST be defined before first call (regression fix 2026-06-29). WP-538 Ф3:
+# was a raw curl POST duplicating http_code/ok:true checking that
+# scripts/lib/telegram.sh already does, with 3x retry instead of one shot.
+# Template note: the admission-gate rate limiter (telegram_send_gated) lives
+# only in the author's personal governance repo so far, not this template's
+# notification-render.sh — this promotion carries the transport fix only, not
+# a gated call site.
+# shellcheck source=lib/telegram.sh
+. "$DS_STRATEGY/scripts/lib/telegram.sh"
 
-# --- Helper: send TG notification (safe JSON via jq) ---
-# MUST be defined before first call (regression fix 2026-06-29).
 tg_notify() {
   local msg="$1"
-  if [ -n "${TG_TOKEN:-}" ] && [ -n "${TG_CHAT:-}" ]; then
-    local payload
-    payload=$(jq -n --arg chat "$TG_CHAT" --arg text "$msg" '{chat_id: $chat, text: $text, parse_mode: "Markdown"}')
-    curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-      -H "Content-Type: application/json" \
-      -d "$payload" > /dev/null
+  if [ "$PROBE" = "true" ]; then
+    echo "  [probe: TG suppressed] $msg" | head -1
+    return 0
   fi
+  if [ -z "${TG_TOKEN:-}" ] || [ -z "${TG_CHAT:-}" ]; then
+    echo "  [no tg credentials] $msg" | head -1
+    return 1
+  fi
+  telegram_send "$msg" || { echo "  [tg delivery FAILED] $msg" | head -2; return 1; }
 }
+
+# --- Helper: portable single-field read from a Y-m-d date string ---
+# BSD `date -j` (macOS) vs GNU `date -d` (Linux/tsekh-1) -- third use of this
+# exact shape (P2: YDAY_DOW below was the second, inlined before this existed).
+portable_date_field() {
+  local input="$1" fmt="$2"
+  date -j -f "%Y-%m-%d" "$input" "$fmt" 2>/dev/null || date -d "$input" "$fmt" 2>/dev/null
+}
+
+# Correlate kind and for_date inside one parsed event. Grepping the two fields
+# independently can combine different events from a mixed legacy ledger and report a
+# close that never happened for the requested date.
+ledger_ref_has_digest_for_date() {
+  local ledger_rel="$1"
+  local target="$2"
+  local allow_legacy="$3"
+  local ref content
+  # WP-529 (continuation, 19.08): resolved once per function call, not at
+  # script top-level — this function only runs on the checks-runner path, and
+  # a script-wide resolve would run PyYAML detection even for invocations
+  # that never reach it. No bare-python3 fallback: the resolver's own first
+  # candidate is already bare `python3` from PATH.
+  local _resolved_python3
+  _resolved_python3=$("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh" 2>/dev/null) || _resolved_python3=""
+  [ -n "$_resolved_python3" ] || return 1
+
+  for ref in HEAD origin/main; do
+    content=$(cd "$DS_STRATEGY" && git show "$ref:$ledger_rel" 2>/dev/null) || content=""
+    [ -n "$content" ] || continue
+    if printf '%s' "$content" | "$_resolved_python3" -c '
+import sys
+
+import yaml
+
+target, allow_legacy = sys.argv[1], sys.argv[2] == "true"
+try:
+    doc = yaml.safe_load(sys.stdin.read()) or {}
+except Exception:
+    raise SystemExit(1)
+events = doc.get("events") if isinstance(doc, dict) else []
+for event in events if isinstance(events, list) else []:
+    if not isinstance(event, dict) or event.get("kind") != "facts_digest":
+        continue
+    data = event.get("data")
+    if not isinstance(data, dict):
+        continue
+    if data.get("for_date") == target or (allow_legacy and "for_date" not in data):
+        raise SystemExit(0)
+raise SystemExit(1)
+' "$target" "$allow_legacy"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# --- Secrets (must load before the first tg_notify call below — WP-5 Ubuntu-audit
+# П2, 2026-07-22: TG_TOKEN/TG_CHAT used to be assigned after both the D2-dedup and
+# pipeline-started notifications, so those two silently no-op'd every run) ---
+source_env_if_present() {
+  [ -f "$1" ] || return 0
+  set -a
+  source "$1"
+  set +a
+}
+source_env_if_present "$HOME/.config/aist/env"
+source_env_if_present "$HOME/IWE/.secrets/anthropic_key.env"  # Anthropic API key for llm-proxy (WP-356)
+# WP-484 Ф50b named this file as the readable ANTHROPIC_API_KEY source for the
+# remote-gateway fallback below (line ~534) but never sourced it -- the fallback
+# chain silently resolved to empty and the authorized probe 401'd (found live
+# 2026-08-05 running --probe ahead of a scheduled test run).
+source_env_if_present "$HOME/.iwe/.proxy-env"
+# WP-484 F64 (06.08): TELEGRAM_* live in ~/.secrets/tg-bots (canonical source per
+# lib/telegram.sh) — none of the three files above carry them on tsekh-1, so every
+# tg_notify on the server (incl. the "День открыт" digest and all aborts) was a
+# silent no-op since the migration. Same fix as day-open-pipeline-watchdog.sh.
+source_env_if_present "$HOME/.secrets/tg-bots"
+
+TG_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
+TG_CHAT="${TELEGRAM_CHAT_ID:-}"
 
 # --- Guard: already committed today (D2 dedup) ---
 # Checks by file presence in git history, not commit message prefix —
 # so both automated ("feat(dayplan):") and manual ("day-open:") commits are detected.
+# WP-484 (2026-07-14): fetch origin first. Day Open now runs independently from
+# both the pilot's Mac (01:00) and the always-on tsekh-1 server (scheduler
+# catch-up, 04:00-22:00) as a deliberate primary+backup pair — a local-only git
+# log missed a same-day commit the other side had already pushed, so whichever
+# ran second redid the whole scaffold+LLM-fill for nothing.
 if [ "$FORCE" != "true" ]; then
-  cd "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}" 2>/dev/null || true
+  cd "$DS_STRATEGY" 2>/dev/null || true
+  git fetch origin main --quiet 2>/dev/null || true
   DAYPLAN_FILE="current/DayPlan $DATE.md"
-  ALREADY_COMMITTED=$(git log --since="$DATE 00:00:00" --until="$DATE 23:59:59" --name-only --format="" -- "$DAYPLAN_FILE" 2>/dev/null | grep -c "DayPlan $DATE" || true)
+  ALREADY_COMMITTED=$(git log HEAD origin/main --since="$DATE 00:00:00" --until="$DATE 23:59:59" --name-only --format="" -- "$DAYPLAN_FILE" 2>/dev/null | grep -c "DayPlan $DATE" || true)
   if [ "${ALREADY_COMMITTED:-0}" -gt 0 ]; then
-    echo "  DayPlan already committed today ($DATE). Use --force to regenerate."
+    echo "  DayPlan already committed today ($DATE, this machine or the other) — nothing to do."
     tg_notify "📋 DayPlan $DATE already committed today. Use --force to regenerate."
+    # Record success heartbeat here too: the other machine did the work, but
+    # day-open-pipeline-watchdog.sh only checks THIS machine's heartbeat file.
+    # Without this, every day the two machines settle this D2 race the "losing"
+    # side never writes success — its watchdog fires a false dead-man's-switch
+    # alert even though a DayPlan genuinely exists for today.
+    OTHER_COMMIT=$(git log -1 --format=%H HEAD origin/main -- "$DAYPLAN_FILE" 2>/dev/null | head -1)
+    OTHER_COMMIT="${OTHER_COMMIT:-unknown}"
+    mkdir -p "$HOME/.claude/state"
+    jq -n \
+      --arg date "$DATE" \
+      --arg commit "$OTHER_COMMIT" \
+      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{date: $date, commit_hash: $commit, timestamp: $ts, status: "success", note: "done by the other machine"}' \
+      > "$HOME/.claude/state/day-open-pipeline-last-success.json"
     exit 0
   fi
 fi
 
 # Notify pilot that pipeline has started (helps diagnose silent hangs)
 tg_notify "🌅 Day Open pipeline started for $DATE"
-
-# --- Secrets ---
-AIST_ENV="$HOME/.config/aist/env"
-if [ -f "$AIST_ENV" ]; then
-  set -a
-  source "$AIST_ENV"
-  set +a
-fi
-
-# Anthropic API key for llm-proxy (WP-356)
-ANTHROPIC_ENV="$HOME/IWE/.secrets/anthropic_key.env"
-if [ -f "$ANTHROPIC_ENV" ]; then
-  set -a
-  source "$ANTHROPIC_ENV"
-  set +a
-fi
 
 # --- Lock file (prevent concurrent runs) ---
 LOCK_FILE="/tmp/day-open-pipeline.lock"
@@ -141,10 +247,8 @@ if [ -f "$LOCK_FILE" ]; then
   fi
 fi
 echo $$ > "$LOCK_FILE"
-trap 'rm -f "$LOCK_FILE"' EXIT
-
-TG_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
-TG_CHAT="${TELEGRAM_CHAT_ID:-}"
+# Trap set later (cleanup(), near PROXY_PID) already does `rm -f "$LOCK_FILE"` —
+# a duplicate trap here would just get overwritten by that later `trap ... EXIT`.
 
 # --- State store (pipeline heartbeat) ---
 STATE_DIR="$HOME/.claude/state"
@@ -152,22 +256,80 @@ HEARTBEAT_FILE="$STATE_DIR/day-open-pipeline-last-success.json"
 mkdir -p "$STATE_DIR"
 
 # --- Paths ---
-CURRENT_DIR="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/current"
+CURRENT_DIR="$DS_STRATEGY/current"
 DAYPLAN_NAME="DayPlan $DATE.md"
+if [ "$PROBE" = "true" ]; then
+  DAYPLAN_NAME="DayPlan $DATE (probe).md"
+fi
 DAYPLAN_PATH="$CURRENT_DIR/$DAYPLAN_NAME"
-WEEKPLAN_PATH=$(ls "$CURRENT_DIR"/WeekPlan\ W*.md 2>/dev/null | head -1 || true)
-WP_REGISTRY="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/docs/WP-REGISTRY.md"
-CP_PROFILE="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/memory/cp-profile.json"
+# WP-484 27.07: старый формат "WeekPlan W{N} {дата}.md" сменился на
+# "WeekPlan {год}-W{N} {дата} (night-cycle).md" (week-open-orchestrator.sh) — жёсткий
+# glob "WeekPlan W*.md" переставал матчить ЛЮБОЙ реальный файл сразу как только старый
+# формат исчез из current/ (обнаружено 27.07 при сборке --probe: пайплайн абортил бы на
+# каждом прогоне, включая strategy_day, ещё ДО собственной проверки этого случая —
+# тот же класс регрессии, что WP-149 уже поймал у build-strategic-context.py). Принимает
+# оба формата, берёт самый свежий по mtime (не первый по алфавиту — конвенции WeekPlan
+# W* и WeekPlan {год}-W* сортируются по-разному, mtime однозначен).
+# Excludes "(probe)" files defensively (WP-484 27.07, independent review): a
+# week-open-orchestrator.sh --probe run writes a "(probe)"-suffixed WeekPlan into
+# this same directory — if it were ever left behind (crash before its own cleanup),
+# this glob picking "newest by mtime" would otherwise silently feed test content
+# into the pilot's real DayPlan. Belt-and-suspenders alongside that script's own
+# end-of-run cleanup.
+WEEKPLAN_PATH=$(ls -t "$CURRENT_DIR"/WeekPlan\ *.md 2>/dev/null | grep -v '(probe)' | head -1 || true)
+WP_REGISTRY="$DS_STRATEGY/docs/WP-REGISTRY.md"
+# WP-7 Ф-DRIFT-DATA-PIPELINES D1 (13.07): было memory/cp-profile.json, который не
+# писал ни один механизм. update-derived-snapshot.py (шаг 1.5 выше) уже пишет сюда.
+CP_PROFILE="$DS_STRATEGY/inbox/WP-425/cache/derived_snapshot.json"
 CALENDAR_OUT="$IWE/.tmp/calendar-$DATE.txt"
-LLM_PROXY_URL="${LLM_PROXY_URL:-http://localhost:18765}"
+LLM_PROXY_URL="${LLM_PROXY_URL:-https://iwe-llm-proxy-production.up.railway.app}"
 PROXY_PORT="${PROXY_PORT:-18765}"
 PROXY_PID=""
+# WP-484 Ф48b (04.08): default flipped from the Mac-only localhost:18765 (the
+# WP-149/504 "dead file" llm-proxy.py, superseded by auth-gateway.py at the
+# WP-400 cutover 09.06) to the properly-maintained Railway gateway. This
+# pipeline runs on either machine of the dual-machine pair (see note below) --
+# a Mac-local address is simply wrong on tsekh-1, and was the root cause of
+# the 30.07/02.08/04.08 stale-credential recurrences on the Mac. Local-only
+# branches below (spawn-if-missing, kill-on-port self-heal) only make sense
+# for an actual localhost target, so they're gated on PROXY_IS_LOCAL.
+case "$LLM_PROXY_URL" in
+  http://localhost:*|http://127.0.0.1:*) PROXY_IS_LOCAL=true ;;
+  *) PROXY_IS_LOCAL=false ;;
+esac
+
+# --- Helper: reap a stale .git/HEAD.lock left by a crashed prior git process ---
+# WP-484 Ф95 (15.08): a run that dies mid-commit (any abort() after `git add`)
+# leaves this lock behind — nothing swept it, so it blocked every commit until
+# a human found it manually. Only ever removes a lock whose holder is provably
+# dead (no live git process at all); a live git process (this run's own, or a
+# genuinely concurrent one) is left untouched, matching the same PID-liveness
+# principle session-guard.sh already uses for semaphores.
+reap_stale_git_lock() {
+  local lock="$DS_STRATEGY/.git/HEAD.lock"
+  [ -f "$lock" ] || return 0
+  # Match on this repo's own path, not a bare `git` process name — the server
+  # runs unrelated git activity for other repos/users constantly, and a
+  # name-only match would find those and never reap anything.
+  if pgrep -f "git.*$DS_STRATEGY" >/dev/null 2>&1; then
+    echo "  git lock present but a git process for this repo is running — leaving it (may be legitimate)"
+    return 0
+  fi
+  echo "  stale git lock found, no live git process for this repo — removing: $lock"
+  rm -f "$lock"
+}
 
 # --- Helper: abort with notification + proxy cleanup ---
 abort() {
   local reason="$1"
   echo "❌ $reason"
   tg_notify "🚨 Day Open pipeline aborted: ${reason}"
+  if [ "$PROBE" = "true" ]; then
+    local wall_min=$(( (SECONDS - PROBE_START_S) / 60 ))
+    echo ""
+    echo "=== PROBE SUMMARY ==="
+    echo "  date=$DATE verdict=🔴 red (abort) reason=\"$reason\" wall_min=$wall_min attention_min=0"
+  fi
   exit 1
 }
 
@@ -179,14 +341,42 @@ cleanup() {
     PROXY_PID=""
   fi
   rm -f "$LOCK_FILE" 2>/dev/null || true
+  # Same class of leak as week-open-orchestrator.sh/month-open-orchestrator.sh
+  # (WP-484 27.07 independent review): a "(probe)"-suffixed DayPlan left behind
+  # after this exits (crash, or --probe run not rerun) sits in current/ where the
+  # WeekPlan glob above already defends against — but nothing was cleaning up
+  # THIS script's own probe file. Found running night-cycle-day.sh --probe.
+  if [ "$PROBE" = "true" ]; then
+    rm -f "$DAYPLAN_PATH" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
+
+# ============================================
+# 0. Extension graph — "before" hooks (WP-529 Ф11)
+# ============================================
+# extensions/day-open.before*.md — same bash-block-in-Markdown mechanism as
+# the existing "checks" hook (day-open-checks-runner.sh), so it runs
+# correctly unattended under launchd/cron with no LLM in the loop. No files
+# present → day-open-hooks-runner.sh no-ops silently (most installs won't
+# have one). A failing "before" hook blocks Day Open the same way a failing
+# "checks" block does — a before-hook can run ahead of and mutate
+# DS_STRATEGY state, so letting its failure through as a soft warning risks
+# committing whatever it left behind (Codex review, 2026-08-28).
+echo "=== 0. Extension graph: before ==="
+BEFORE_HOOK_OUT=$(bash "$DS_STRATEGY/scripts/day-open-hooks-runner.sh" before 2>&1)
+BEFORE_HOOK_EXIT=$?
+echo "$BEFORE_HOOK_OUT"
+if [ $BEFORE_HOOK_EXIT -ne 0 ]; then
+  tg_notify "❌ Day Open aborted: a 'before' extension hook failed for $DATE. See output above."
+  abort "before-hook failed — see output above"
+fi
 
 # ============================================
 # 1. Pre-flight healthcheck
 # ============================================
 echo "=== 1. Pre-flight ==="
-PREFLIGHT_JSON=$(bash "$IWE/scripts/day-open-preflight.sh" "$DATE" "$CONFIG" 2>/dev/null || echo '{"calendar":"unknown"}')
+PREFLIGHT_JSON=$(bash "$IWE_SCRIPTS/day-open-preflight.sh" "$DATE" "$CONFIG" 2>/dev/null || echo '{"calendar":"unknown"}')
 CALENDAR_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.calendar // "unknown"')
 SCOUT_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.scout // "unknown"')
 TRIAGE_PF=$(echo "$PREFLIGHT_JSON" | jq -r '.triage // "unknown"')
@@ -196,60 +386,351 @@ echo "  calendar=$CALENDAR_PF scout=$SCOUT_PF triage=$TRIAGE_PF memory=$MEMORY_P
 
 if [ "$CALENDAR_PF" = "fail" ]; then abort "Calendar preflight failed"; fi
 if [ "$SCOUT_PF" = "fail" ]; then abort "Scout preflight failed"; fi
-if [ "$TRIAGE_PF" = "fail" ]; then abort "Triage preflight failed"; fi
+
+# Triage is input to the plan, not an advisory signal.  Before its 06:30 grace
+# deadline, its producer may still be publishing the current report: defer with
+# the same exit-7 contract that the scheduler already retries for Day Close and
+# Week Close.  A missing report after the deadline is a genuine failure, while
+# an intentionally absent subsystem remains an allowed degraded configuration.
+if [ "$TRIAGE_PF" = "pending" ]; then
+  echo "  Triage report for $DATE is pending — deferring Day Open for the next scheduler tick."
+  tg_notify "⏸ Day Open $DATE отложен: отчёт feedback-triage ещё готовится. Повторится автоматически до 06:30."
+  exit 7
+fi
+if [ "$TRIAGE_PF" != "ok" ] && [ "$TRIAGE_PF" != "disabled" ]; then
+  abort "Triage preflight failed"
+fi
 
 # ============================================
 # 1.1. Day Close race guard (root cause of 2026-07-01 stale plan)
 # launchd fires Day Open at 01:04, but the pilot often does yesterday's Day Close
 # in the morning (~05:30). If Day Open runs first it reads stale WeekPlan/frontmatter
 # and the LLM hallucinates "closed WP" counts. Defer (exit 0, not abort) when
-# yesterday's Day Close isn't committed yet — the day-close.after trigger will
+# yesterday's Day Close isn't done yet — the day-close.after trigger will
 # re-run this pipeline with --force once the close lands. --force bypasses the guard.
+#
+# WP-5 Ubuntu-portability audit (2026-07-22, П1): replaced the commit-message regex
+# guard (matched literal "day-close.*$YDAY" text — broke silently whenever the close
+# commit's wording drifted, most recently detecting only the close's *start* lock
+# marker instead of its completion) with a deterministic signal: presence of
+# yesterday's archived DayPlan. day-close step 10c (SKILL.md) writes it as the last
+# thing before/with the commit, so its existence in HEAD or origin/main means the
+# close genuinely landed — no dependency on any particular wording.
+#
+# WP-484 peer session with Kimi (2026-07-28): the archived-DayPlan signal is blind
+# to strategy_day. On strategy_day, day-open-scaffold.sh skips DayPlan generation
+# entirely by design (§3. Scaffold below, exit-2 branch) — so an archived DayPlan
+# for that date can never exist, whether or not Day Close actually ran. Found live:
+# every day right after a strategy_day (e.g. every Tuesday, given strategy_day:
+# monday) deferred Day Open indefinitely on this guard, even though the prior
+# day's Day Close had genuinely landed. Branch on whether YDAY was strategy_day and
+# use a different deterministic signal for that case: the `facts_digest` ledger
+# event day-close-prepare.sh appends at the end of every real Day Close (not just
+# strategy_day) — same "concrete artifact, not wording" spirit as the DayPlan check.
 # ============================================
 if [ "$FORCE" != "true" ]; then
   YDAY=$(date -j -v-1d -f "%Y-%m-%d" "$DATE" "+%Y-%m-%d" 2>/dev/null \
     || date -d "$DATE - 1 day" "+%Y-%m-%d" 2>/dev/null)
   if [ -n "$YDAY" ]; then
-    DC_COMMIT=$(cd "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}" && git log --since="$YDAY 00:00:00" -i \
-      --grep="day-close.*$YDAY" --format=%H 2>/dev/null | head -1)
+    (cd "$DS_STRATEGY" && git fetch origin main --quiet 2>/dev/null || true)
+
+    YDAY_DOW=$(portable_date_field "$YDAY" "+%u")
+    # Scoped to the day_open: block (not a flat grep) so a same-named key
+    # elsewhere in the file can't silently hijack this lookup (review finding,
+    # WP-484 peer session 2026-07-28).
+    STRATEGY_DAY_NAME=$(awk '/^day_open:/{f=1} f && /strategy_day:/{print $2; exit}' "$CONFIG" 2>/dev/null)
+    case "${STRATEGY_DAY_NAME:-monday}" in
+      monday) STRATEGY_DOW=1 ;; tuesday) STRATEGY_DOW=2 ;; wednesday) STRATEGY_DOW=3 ;;
+      thursday) STRATEGY_DOW=4 ;; friday) STRATEGY_DOW=5 ;; saturday) STRATEGY_DOW=6 ;;
+      # Fail-open on an unrecognized value, matching day-open-scaffold.sh's own
+      # default (STRATEGY_DOW=0 there) — an unparsed config must not accidentally
+      # match a real day-of-week and route into the wrong signal below.
+      sunday) STRATEGY_DOW=7 ;; *) STRATEGY_DOW=0 ;;
+    esac
+
     # Only defer when there was actually work to close: if yesterday had zero commits
     # in the governance repo, there is nothing to close and deferring would stall the
     # plan forever on a genuinely quiet day.
-    YDAY_COMMITS=$(cd "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}" && git log --since="$YDAY 00:00:00" --until="$YDAY 23:59:59" --format=%H 2>/dev/null | head -1)
-    if [ -z "$DC_COMMIT" ] && [ -n "$YDAY_COMMITS" ]; then
-      echo "  Day Close for $YDAY not committed yet — deferring Day Open (will regenerate after close)."
-      tg_notify "⏸ Day Open $DATE отложен: Day Close за $YDAY ещё не сделан. Пересоберётся после закрытия (или запусти с --force)."
-      exit 0
-    fi
-    if [ -n "$DC_COMMIT" ]; then
-      echo "  Day Close for $YDAY found ($DC_COMMIT) — proceeding."
+    YDAY_COMMITS=$(cd "$DS_STRATEGY" && git log HEAD origin/main --since="$YDAY 00:00:00" --until="$YDAY 23:59:59" --format=%H 2>/dev/null | head -1)
+
+    if [ "${YDAY_DOW:-0}" = "$STRATEGY_DOW" ]; then
+      YDAY_LEDGER="machine/ledger/$(ledger_path_rel day "$YDAY")"  # git-relative, see comment below
+      # Two steps, not one `git show ... | grep` pipe (review finding, WP-484
+      # peer session 2026-07-28): with `pipefail` (set at the top of this file),
+      # a pipeline's exit status is that of its last-failing command — if the
+      # ledger exists on HEAD (already committed) but not yet on origin/main
+      # (not yet pushed — the exact window between day-close-prepare.sh and the
+      # close's final push), the second `git show` fails and pipefail reports
+      # the whole pipe as failed even though grep already matched, silently
+      # dropping DC_DONE back to empty and reproducing the very bug this fixes.
+      DC_DONE=""
+      if ledger_ref_has_digest_for_date "$YDAY_LEDGER" "$YDAY" true; then
+        DC_DONE=yes
+      fi
+      # WP-484 (2026-07-28, independent review caught a first version of this fix
+      # that trusted ANY facts_digest found in TODAY's file — wrong, because that
+      # file can legitimately hold a digest for a different day (e.g. today's own
+      # ordinary close), which would then be misread as "yesterday's close is done".
+      # Older day-close-prepare.sh versions stamped a late catch-up into the run day's
+      # ledger and kept the target only in data.for_date. New writes use the target
+      # file, but retain this fallback for already committed mixed legacy ledgers.
+      if [ -z "$DC_DONE" ]; then
+        # git-relative string, not a filesystem write -- ledger_path() also
+        # mkdir's, which would land in the wrong place here (this runs before
+        # the script's own `cd "$DS_STRATEGY"` below) -- ledger_path_rel()
+        # is the mkdir-free twin for exactly this case.
+        TODAY_LEDGER="machine/ledger/$(ledger_path_rel day "$DATE")"
+        if ledger_ref_has_digest_for_date "$TODAY_LEDGER" "$YDAY" false; then
+          DC_DONE=yes
+        fi
+      fi
+      if [ -z "$DC_DONE" ] && [ -n "$YDAY_COMMITS" ]; then
+        echo "  Day Close for $YDAY (strategy_day) not done yet (no facts_digest in ledger) — deferring Day Open (will regenerate after close)."
+        tg_notify "⏸ Day Open $DATE отложен: Day Close за $YDAY (день стратегирования) ещё не сделан. Пересоберётся после закрытия (или запусти с --force)."
+        # Ф32 п.11 (WP-484, 31.07): deferred ≠ done — exit 7 tells the scheduler to
+        # retry on the next window tick instead of burning the daily marker.
+        exit 7
+      fi
+      if [ -n "$DC_DONE" ]; then
+        echo "  Day Close for $YDAY found (strategy_day, ledger facts_digest present) — proceeding."
+      else
+        echo "  No commits for $YDAY (quiet day, nothing to close) — proceeding."
+      fi
     else
-      echo "  No commits for $YDAY (quiet day, nothing to close) — proceeding."
+      YDAY_DAYPLAN="archive/day-plans/DayPlan $YDAY.md"
+      DC_DONE=$(cd "$DS_STRATEGY" && git log HEAD origin/main --format="" --name-only -- "$YDAY_DAYPLAN" 2>/dev/null | head -1)
+      if [ -z "$DC_DONE" ] && [ -n "$YDAY_COMMITS" ]; then
+        echo "  Day Close for $YDAY not done yet (no archived DayPlan) — deferring Day Open (will regenerate after close)."
+        tg_notify "⏸ Day Open $DATE отложен: закрытие $YDAY ещё не долетело до сервера (гонка расписаний, не поломка). Пересоберётся автоматически после закрытия (или запусти с --force)."
+        # Ф32 п.11 (WP-484, 31.07): deferred ≠ done — exit 7, scheduler retries next tick.
+        exit 7
+      fi
+      if [ -n "$DC_DONE" ]; then
+        echo "  Day Close for $YDAY found (archived DayPlan present) — proceeding."
+      else
+        echo "  No commits for $YDAY (quiet day, nothing to close) — proceeding."
+      fi
     fi
   fi
 fi
 
 # ============================================
+# 1.1b. Week Close race guard (WP-484 Ф46, found 2026-08-02/03: 3x "LLM Proxy
+# authorized probe failed" Telegram alerts near midnight on a Sunday). Late
+# Sunday night, an author-only night-cycle orchestrator (week-open-orchestrator.sh,
+# ~23:50, not delivered by this template -- it depends on the author's shared-
+# checkout publish gateway and a private LLM proxy, same class of author-only
+# infra as issue #595) closes the outgoing week and opens the next one on the
+# author's own install; if this pipeline also runs for that same Sunday's date
+# while that cycle is mid-flight, it can burn an attempt on an LLM Proxy call
+# that's about to become moot, or produce a plan for a day whose week context
+# is still in flux. On a template install without that orchestrator, WeekReport
+# is produced earlier and by a different, delivered path: week-review.md, Пн
+# 00:00 (issue #596) -- so this guard only matters in practice for that
+# orchestrator's ~23:50 Sunday window; it's a no-op wait otherwise.
+#
+# Signal choice (2026-08-03, peer session with Codex+Hermes, corrected during
+# implementation): a start-of-cycle marker would pass almost immediately after
+# the cycle begins, defeating the guard -- the real completion signal is the
+# WeekReport file's presence itself (not a commit message, which silently
+# breaks on wording drift per this same file's own §1.1 lesson, WP-5 2026-07-22).
+#
+# issue #596: the exact filename here (`WeekReport {ISO-year}-W{ISO-week}.md`,
+# e.g. "WeekReport 2026-W35.md") never matched the real naming convention used
+# everywhere else (`WeekReport W{N} YYYY-MM-DD.md`, N = ISO week number, date =
+# that week's Monday, e.g. "WeekReport W35 2026-08-24.md") -- this guard could
+# never find the file it was checking for and always deferred. Fixed to build
+# the real filename.
+#
+# exit 7 = confirmed not closed yet -> defer, same contract as §1.1 above
+#          (scheduler retries next tick, this run doesn't burn the daily marker).
+# exit 8 = couldn't even check (origin unreachable) -> fail closed on a distinct
+#          code, never silently treated as "not closed" from stale/absent data.
+# ============================================
+TARGET_DOW=$(portable_date_field "$DATE" "+%u")
+CURRENT_HOUR=$(TZ=Asia/Nicosia date +%H)
+if [ "$FORCE" != "true" ] && [ "${TARGET_DOW:-0}" = "7" ] && [ "$((10#$CURRENT_HOUR))" -ge 23 ]; then
+  TARGET_WEEK_NUM=$((10#$(portable_date_field "$DATE" "+%V")))
+  TARGET_WEEK_MONDAY=$(date -j -v-6d -f "%Y-%m-%d" "$DATE" "+%Y-%m-%d" 2>/dev/null \
+    || date -d "$DATE - 6 day" "+%Y-%m-%d" 2>/dev/null)
+  TARGET_WEEK="W${TARGET_WEEK_NUM} ${TARGET_WEEK_MONDAY}"
+  if ! (cd "$DS_STRATEGY" && git fetch origin main --quiet 2>/dev/null); then
+    echo "  Week Close guard: cannot refresh origin/main for week $TARGET_WEEK -- failing closed"
+    tg_notify "🚨 Day Open $DATE заблокирован: не смог обновить origin/main, чтобы проверить закрытие недели $TARGET_WEEK. Нужна ручная проверка сети/репозитория."
+    exit 8
+  fi
+  WEEK_REPORT_REL="current/WeekReport ${TARGET_WEEK}.md"
+  WEEK_CLOSED=$(cd "$DS_STRATEGY" && git log HEAD origin/main --format="" --name-only -- "$WEEK_REPORT_REL" 2>/dev/null | head -1)
+  if [ -z "$WEEK_CLOSED" ]; then
+    echo "  Week $TARGET_WEEK not closed yet (no '$WEEK_REPORT_REL' in HEAD/origin) -- deferring Day Open"
+    tg_notify "⏸ Day Open $DATE отложен: неделя $TARGET_WEEK ещё закрывается (после 23:00 вс). Пересоберётся автоматически после завершения цикла."
+    # Same contract as §1.1: deferred ≠ done -- exit 7 tells the scheduler to
+    # retry on the next window tick instead of burning the daily marker.
+    exit 7
+  fi
+  echo "  Week $TARGET_WEEK already closed ('$WEEK_REPORT_REL' found) -- proceeding."
+fi
+
+# ============================================
+# 1.2. Git hooks provisioning self-heal (found 2026-07-23: force-push incident)
+# core.hooksPath is per-checkout, not versioned — a fresh/reprovisioned clone
+# silently falls back to the empty default .git/hooks, disabling the whole
+# .githooks/ stack (including the pre-push force-push guard, WP-436) with no
+# visible signal until something actually force-pushes over shared history.
+# Self-heal here rather than just warn: this check runs on every Day Open on
+# every machine that has this pipeline (server + Mac), so fixing it in place
+# also covers checkouts this session has no direct access to.
+# ============================================
+if [ -d "$DS_STRATEGY/.githooks" ] && [ -n "$(ls -A "$DS_STRATEGY/.githooks" 2>/dev/null)" ]; then
+  CURRENT_HOOKS_PATH=$(git -C "$DS_STRATEGY" config core.hooksPath 2>/dev/null || echo "")
+  if [ "$CURRENT_HOOKS_PATH" != ".githooks" ]; then
+    echo "=== 1.2. Git hooks: core.hooksPath='$CURRENT_HOOKS_PATH' (expected .githooks) — self-healing ==="
+    if bash "$DS_STRATEGY/scripts/install-hooks.sh" "$DS_STRATEGY" >/dev/null 2>&1; then
+      echo "  Fixed: core.hooksPath=.githooks (force-push guard now active)"
+      tg_notify "⚠️ Day Open: core.hooksPath на $DS_STRATEGY был не .githooks — pre-push force-push guard молчал. Автоматически починил (install-hooks.sh)."
+    else
+      echo "  WARN: install-hooks.sh failed — hooks still inactive, needs manual attention"
+      tg_notify "🚨 Day Open: core.hooksPath на $DS_STRATEGY сломан, автопочинка (install-hooks.sh) тоже упала — force-push guard не активен, нужна ручная проверка."
+    fi
+  fi
+fi
+
+# ============================================
+# 1.3. Input freshness self-heal (WP-484 Ф90, 2026-08-12): priorities.yaml and
+# WP-REGISTRY.md are read straight off local disk by LLM Fill below. On a
+# shared checkout (tsekh-1) a live agent session can hold the tree's sync
+# semaphore for hours after finishing its own work (found live: 11h46m past
+# report.md completion) — the periodic sync timer correctly refuses to touch
+# the tree while that semaphore stands, so these two files silently go stale
+# for however long the semaphore lasts, and Day Open builds tonight's plan
+# from yesterday's data. `git show <ref>:<path>` reads a blob straight from
+# the object database without touching the working tree or index at all — no
+# lock, no semaphore, safe regardless of what any other session is doing.
+# Scoped to exactly these two inputs (not a general pull): a full sync still
+# needs the semaphore respected, this only unblocks what Day Open itself
+# reads. `git fetch` above (D2 dedup guard) already refreshed origin/main's
+# ref; if that fetch failed offline, this diff is silently a no-op against a
+# stale ref, which is the same degradation the rest of this pipeline already
+# accepts everywhere else fetch can fail.
+# ============================================
+echo "=== 1.3. Input freshness self-heal ==="
+for _f_rel in current/priorities.yaml docs/WP-REGISTRY.md; do
+  _f_abs="$DS_STRATEGY/$_f_rel"
+  _f_origin=$(cd "$DS_STRATEGY" && git show "origin/main:$_f_rel" 2>/dev/null || true)
+  if [ -z "$_f_origin" ]; then
+    echo "  skipped (origin/main unreadable, e.g. offline): $_f_rel"
+  elif diff -q <(printf '%s' "$_f_origin") "$_f_abs" >/dev/null 2>&1; then
+    echo "  already fresh: $_f_rel"
+  else
+    printf '%s' "$_f_origin" > "$_f_abs"
+    echo "  refreshed from origin/main (local was stale): $_f_rel"
+  fi
+done
+
+# ============================================
 # 2. Ensure LLM Proxy available
 # ============================================
+# issue #434: skipped entirely under --scaffold-only — only step 4 (LLM Fill)
+# below actually needs the proxy; the deterministic scaffold (step 3) does not.
+if [ "$SCAFFOLD_ONLY" != "true" ]; then
 echo "=== 2. LLM Proxy healthcheck ==="
 PROXY_HEALTH=$(curl -s "${LLM_PROXY_URL}/v1/health" 2>/dev/null | grep -q "ok" && echo "ok" || echo "fail")
 if [ "$PROXY_HEALTH" != "ok" ]; then
-  echo "  Proxy not running. Starting via launcher (loads OPENROUTER_API_KEY from secrets)..."
-  bash "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/llm-proxy-launcher.sh" "$PROXY_PORT" &
-  PROXY_PID=$!
+  if $PROXY_IS_LOCAL; then
+    # lsof (Mac) with ss fallback (NixOS server lacks lsof) — verified live: this
+    # machine has lsof but not ss, so a bare ss-only version (as copied without
+    # testing into month-open-night-run.sh:78) would silently break the Mac side
+    # of the exact dual-machine pair this pipeline is designed to run on. Only
+    # checking port occupancy either way, PID unused below.
+    if lsof -ti :"$PROXY_PORT" >/dev/null 2>&1 || ss -tln 2>/dev/null | grep -q ":$PROXY_PORT "; then
+      # Port already held by another process — likely a live proxy the check above
+      # missed on a transient blip. Spawning here would just crash into "Address
+      # already in use" and spam the error log without helping (found 2026-07-11).
+      echo "  Health check failed but port $PROXY_PORT is already held — not spawning a second proxy, just waiting."
+    else
+      echo "  Proxy not running. Starting via launcher (loads OPENROUTER_API_KEY from secrets)..."
+      bash "$DS_STRATEGY/scripts/llm-proxy-launcher.sh" "$PROXY_PORT" &
+      PROXY_PID=$!
+    fi
+  else
+    echo "  Remote proxy ($LLM_PROXY_URL) failed health check — nothing local to spawn, just waiting/retrying."
+  fi
   # Retry up to 10 times (20s total) — launcher needs extra time to source secrets + import
   for _i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 2
     PROXY_HEALTH=$(curl -s "${LLM_PROXY_URL}/v1/health" 2>/dev/null | grep -q "ok" && echo "ok" || echo "fail")
     [ "$PROXY_HEALTH" = "ok" ] && break
-    echo "  Waiting for proxy (attempt $_i/5)..."
+    echo "  Waiting for proxy (attempt $_i/10)..."
   done
   if [ "$PROXY_HEALTH" != "ok" ]; then
     abort "LLM Proxy unavailable (tried to start, failed)"
   fi
 fi
 echo "  Proxy OK"
+
+# Alive != authorized: /v1/health never touches upstream credentials, so a proxy
+# orphan that outlived a key rotation keeps answering "ok" while 401-ing every
+# real call (2026-07-30 04:30 — 7/7 fill chunks failed with HTTP 401, day not
+# opened). Same request contract as day-open-llm-fill.py: no "model" field, the
+# proxy routes by verification_class.
+# WP-484 Ф50b (04.08): LLM_PROXY_SECRET was never actually provisioned anywhere
+# this pipeline runs -- confirmed live from tsekh-1. What IS already provisioned
+# and already authenticates against this same gateway: PROXY_SHARED_SECRET
+# (root-only /etc/iwe/env, used by iwe-llm-health/iwe-overnight-auditor) and
+# ANTHROPIC_API_KEY (~/.iwe/.proxy-env, tseren-readable -- the one this pipeline's
+# actual execution context can see). Falls back through what's really there
+# instead of requiring a secret nobody would ever provision under this exact name.
+LLM_PROXY_SECRET="${LLM_PROXY_SECRET:-${PROXY_SHARED_SECRET:-${ANTHROPIC_API_KEY:-}}}"
+AUTH_PROBE_ARGS=(-H 'content-type: application/json')
+[ -n "${LLM_PROXY_SECRET:-}" ] && AUTH_PROBE_ARGS+=(-H "X-IWE-Internal-Secret: ${LLM_PROXY_SECRET}")
+AUTH_PROBE_BODY='{"messages":[{"role":"user","content":"ping"}],"max_tokens":1,"verification_class":"trivial"}'
+AUTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST "${LLM_PROXY_URL}/v1/messages" \
+  "${AUTH_PROBE_ARGS[@]}" -d "$AUTH_PROBE_BODY" 2>/dev/null) || AUTH_CODE="000"
+if [ "$AUTH_CODE" != "200" ]; then
+  if $PROXY_IS_LOCAL; then
+    # Self-heal (WP-484, found 2026-08-04): this probe first caught this failure mode
+    # on 2026-07-30 and has correctly fired on every recurrence since (2026-08-02 x3,
+    # 2026-08-04) -- but detection never had matching remediation, so the same
+    # process (confirmed 2026-08-04: same pid, 9 days uptime across all of the above)
+    # kept serving the stale credential until a human happened to restart it by hand.
+    # Kill the process holding the port and let launchd's KeepAlive respawn it fresh
+    # (re-sources the secrets file) -- same fix two independent peer-session
+    # diagnoses (2026-07-03, 2026-08-02) already landed on; retry the probe once
+    # before falling back to abort.
+    echo "  Authorized probe failed (HTTP $AUTH_CODE) — restarting local proxy and retrying once"
+    STALE_PIDS=$(lsof -ti :"$PROXY_PORT" 2>/dev/null || true)
+    for _pid in $STALE_PIDS; do kill "$_pid" 2>/dev/null || true; done
+    for _i in 1 2 3 4 5 6 7 8 9 10; do
+      sleep 2
+      curl -s "${LLM_PROXY_URL}/v1/health" 2>/dev/null | grep -q "ok" && break
+      echo "  Waiting for proxy respawn (attempt $_i/10)..."
+    done
+  else
+    # Remote gateway (WP-484 Ф48b, 04.08): no local process to kill -- Railway
+    # supervises its own restarts (railway.toml restartPolicyType=ON_FAILURE).
+    # A 401 here almost always means LLM_PROXY_SECRET is unset/wrong on this
+    # host (confirmed missing on tsekh-1 at cutover time), not a crashed
+    # process -- one short wait only covers a mid-deploy blip on Railway's side.
+    echo "  Authorized probe failed (HTTP $AUTH_CODE) on remote gateway — short wait and retry once"
+    sleep 5
+  fi
+  AUTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST "${LLM_PROXY_URL}/v1/messages" \
+    "${AUTH_PROBE_ARGS[@]}" -d "$AUTH_PROBE_BODY" 2>/dev/null) || AUTH_CODE="000"
+  if [ "$AUTH_CODE" != "200" ]; then
+    if $PROXY_IS_LOCAL; then
+      tg_notify "🚨 Day Open aborted: LLM proxy on port $PROXY_PORT still fails after restart (HTTP $AUTH_CODE) — credential itself is likely dead at the provider, needs manual rotation (WP-399), not just a process restart."
+    else
+      tg_notify "🚨 Day Open aborted: remote LLM proxy ($LLM_PROXY_URL) still fails (HTTP $AUTH_CODE) — check LLM_PROXY_SECRET on this host matches Railway's PROXY_SHARED_SECRET, or WP-399 key rotation."
+    fi
+    abort "LLM Proxy authorized probe failed after restart (HTTP $AUTH_CODE)"
+  fi
+  echo "  Proxy authorized probe OK after restart"
+else
+  echo "  Proxy authorized probe OK"
+fi
+else
+  echo "=== 2. LLM Proxy healthcheck — SKIPPED (--scaffold-only) ==="
+fi
 
 # ============================================
 # 3. Scaffold
@@ -260,15 +741,12 @@ if [ -z "$WEEKPLAN_PATH" ] || [ ! -f "$WEEKPLAN_PATH" ]; then
 fi
 
 mkdir -p "$IWE/.tmp"
-bash "$IWE/scripts/server-calendar.sh" "$DATE" "$CONFIG" > "$CALENDAR_OUT" 2>/dev/null || true
-
-# Export so that day-open-scaffold.sh uses correct repo when run from launchd
-# (launchd doesn't inherit shell env where IWE_GOVERNANCE_REPO is set via .zshrc)
-export IWE_GOVERNANCE_REPO="${IWE_GOVERNANCE_REPO:-${IWE_GOVERNANCE_REPO:-DS-strategy}}"
+bash "$IWE_SCRIPTS/server-calendar.sh" "$DATE" "$CONFIG" > "$CALENDAR_OUT" 2>/dev/null || true
 
 # Generate scaffold to temp file first (for hash guard)
 SCAFFOLD_TEMP="$DAYPLAN_PATH.scaffold.tmp"
-bash "$IWE/scripts/day-open-scaffold.sh" "$DATE" > "$SCAFFOLD_TEMP" || {
+SCAFFOLD_SCRIPT="$IWE_SCRIPTS/day-open-scaffold.sh"
+bash "$SCAFFOLD_SCRIPT" "$DATE" > "$SCAFFOLD_TEMP" || {
   SC=$?
   if [ $SC -eq 2 ]; then
     echo "  Strategy day — no DayPlan generated."
@@ -276,15 +754,23 @@ bash "$IWE/scripts/day-open-scaffold.sh" "$DATE" > "$SCAFFOLD_TEMP" || {
     tg_notify "📋 Strategy day — Day Open skipped."
     exit 0
   fi
-  abort "Scaffold failed (exit $SC)"
+  # Diagnostics for bug-2026-07-10 repro (день, когда scaffold "не найден" без явной причины)
+  DIAG="pwd=$(pwd) PATH=$PATH scaffold_exists=$([ -e "$SCAFFOLD_SCRIPT" ] && echo yes || echo no) scaffold_x=$([ -x "$SCAFFOLD_SCRIPT" ] && echo yes || echo no) ls=$(ls -la "$SCAFFOLD_SCRIPT" 2>&1)"
+  echo "  DIAG: $DIAG"
+  tg_notify "🚨 Day Open pipeline aborted: Scaffold failed (exit $SC)
+$DIAG"
+  exit 1
 }
 
 # --- Input hash guard (D2: dedup manual retriggers) ---
 # Include git HEAD so that any new commits in repo invalidate the hash
-HEAD_HASH=$(cd "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}" && git rev-parse HEAD 2>/dev/null || echo "no-git")
+HEAD_HASH=$(cd "$DS_STRATEGY" && git rev-parse HEAD 2>/dev/null || echo "no-git")
 INPUT_HASH_FILE="$IWE/.tmp/day-open-input-hash-$DATE.txt"
 INPUT_HASH=$( (cat "$SCAFFOLD_TEMP" "$WEEKPLAN_PATH" "$CALENDAR_OUT" 2>/dev/null; echo "$HEAD_HASH") | shasum -a 256 | awk '{print $1}' )
-if [ -f "$INPUT_HASH_FILE" ]; then
+# --force must beat BOTH guards: the D2 guard above already honors it, and its
+# own user-facing message ("Use --force to regenerate") promises a regenerate —
+# without this bypass the promise died here on unchanged inputs (review F64).
+if [ "$FORCE" != "true" ] && [ -f "$INPUT_HASH_FILE" ]; then
   PREV_HASH=$(cat "$INPUT_HASH_FILE")
   if [ "$PREV_HASH" = "$INPUT_HASH" ]; then
     echo "  Input hash unchanged — DayPlan already generated for this data set. Skipping."
@@ -293,7 +779,11 @@ if [ -f "$INPUT_HASH_FILE" ]; then
     exit 0
   fi
 fi
-echo "$INPUT_HASH" > "$INPUT_HASH_FILE"
+# WP-484 F64 (06.08): the hash write itself moved AFTER a successful push (step 6).
+# Writing it here poisoned every retry when a run died between scaffold and push
+# (live case 06.08 03:03: runner timeout kill after LLM fill, before commit —
+# each rerun then skipped with "already generated" while nothing was published).
+# Same bug class as the probe-hash leak fixed 28.07.
 
 # Move scaffold to target
 mv "$SCAFFOLD_TEMP" "$DAYPLAN_PATH"
@@ -302,68 +792,251 @@ echo "  Scaffold OK: $DAYPLAN_PATH"
 # ============================================
 # 4. LLM Fill (per-section)
 # ============================================
+if [ "$SCAFFOLD_ONLY" != "true" ]; then
 echo "=== 4. LLM Fill ==="
-python3 "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/day-open-llm-fill.py" \
-  --scaffold "$DAYPLAN_PATH" \
-  --weekplan "$WEEKPLAN_PATH" \
-  --wp-registry "$WP_REGISTRY" \
-  --wp-dir "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox" \
-  --cp-profile "$CP_PROFILE" \
-  --calendar "$CALENDAR_OUT" \
-  --fleeting-notes "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/inbox/fleeting-notes.md" \
-  --out "$DAYPLAN_PATH" \
-  --proxy-url "$LLM_PROXY_URL" || {
-  FILL_EXIT=$?
-  if [ "$FILL_EXIT" -eq 2 ]; then
-    echo "  Partial fill — some sections remain PENDING."
-    tg_notify "⚠️ DayPlan $DATE partially filled — some PENDING sections remain. Checks will block commit until fixed."
-    # Continue to checks (they will fail, but user gets full diagnostics)
-  else
-    echo "  LLM fill failed — leaving scaffold for manual completion."
-    tg_notify "❌ LLM fill failed for $DATE — scaffold saved, needs manual completion."
-    exit 0
+# Fill stderr is duplicated into a per-day file next to the night-cycle logs: on
+# the morning path (scheduler → strategist → this script) the per-chunk failure
+# reasons otherwise land only in ~/logs/strategist/*.log, where nobody looked
+# during the 2026-07-30 04:30 incident.
+DAY_OPEN_LOG="$DS_STRATEGY/machine/logs/day-open-$DATE.log"
+if [ "$PROBE" = "true" ]; then
+  DAY_OPEN_LOG=$(mktemp)  # probe runs must not write real artifacts
+fi
+mkdir -p "$(dirname "$DAY_OPEN_LOG")"
+
+# PD-dashboard sync (WP-417 tile source). read_dashboard_snapshot()
+# (dashboard_render.py) reads the latest local daily/*.yaml and already
+# degrades softly if the repo/file is missing or stale (falls back to the
+# latest available snapshot, or skips the tile entirely) -- a failed sync
+# here must not block the DayPlan, same principle as the ${IWE_GOVERNANCE_REPO:-DS-strategy} git
+# pull below. Found live 04.09 (WP-417 peer-session
+# 2026-09-04-09-wp417-panel-verify-close): the repo was never cloned on
+# tsekh-1 at all, so the tile silently showed "not calculated" every day.
+# PD_DASHBOARD_CLONE_URL is per-installation (e.g. a read-only deploy-key SSH
+# alias) -- unset means this reader wasn't provisioned, skip quietly, same as
+# any other unconfigured optional integration in this pipeline.
+PD_DASHBOARD_DIR="$IWE/${DASHBOARD_REPO_NAME:-PD-dashboard}"
+if [ -d "$PD_DASHBOARD_DIR/.git" ]; then
+  if ! git -C "$PD_DASHBOARD_DIR" pull --ff-only >>"$DAY_OPEN_LOG" 2>&1; then
+    echo "  [pd-dashboard-sync] git pull failed -- панель покажет последний доступный снимок" | tee -a "$DAY_OPEN_LOG"
   fi
-}
+elif [ -n "${PD_DASHBOARD_CLONE_URL:-}" ]; then
+  if ! git clone "$PD_DASHBOARD_CLONE_URL" "$PD_DASHBOARD_DIR" >>"$DAY_OPEN_LOG" 2>&1; then
+    echo "  [pd-dashboard-sync] git clone failed -- тайл табло будет пропущен" | tee -a "$DAY_OPEN_LOG"
+  fi
+fi
+
+FILL_ERR_TMP=$(mktemp)
+FILL_EXIT=0
+# WP-529 (continuation, 19.08): day-open-llm-fill.py imports yaml — resolved
+# here via the F6 shared resolver instead of bare `python3`, same class of
+# defect as route-task.sh (Evgenii's finding #5): bare python3 can be a
+# different, yaml-less interpreter than the resolver would find. Unlike the
+# earlier best-effort skip sites in this migration, this call IS the pipeline
+# stage's core work — a missing interpreter has to surface through the
+# existing FILL_EXIT!=0 error path below (Telegram + log diagnostics), not a
+# silent skip.
+_RESOLVED_PYTHON3=$("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh" 2>/dev/null) || _RESOLVED_PYTHON3=""
+if [ -z "$_RESOLVED_PYTHON3" ]; then
+  echo "[ERROR] no python3 with PyYAML found (checked PATH and the resolver's standard candidate list, see scripts/lib/find-python3.sh)" > "$FILL_ERR_TMP"
+  FILL_EXIT=1
+else
+  "$_RESOLVED_PYTHON3" "$DS_STRATEGY/scripts/day-open-llm-fill.py" \
+    --scaffold "$DAYPLAN_PATH" \
+    --weekplan "$WEEKPLAN_PATH" \
+    --wp-registry "$WP_REGISTRY" \
+    --wp-dir "$DS_STRATEGY/inbox" \
+    --cp-profile "$CP_PROFILE" \
+    --calendar "$CALENDAR_OUT" \
+    --fleeting-notes "$DS_STRATEGY/inbox/fleeting-notes.md" \
+    --priorities "$DS_STRATEGY/current/priorities.yaml" \
+    --out "$DAYPLAN_PATH" \
+    --proxy-url "$LLM_PROXY_URL" \
+    --proxy-secret "$LLM_PROXY_SECRET" 2> "$FILL_ERR_TMP" || FILL_EXIT=$?
+fi
+cat "$FILL_ERR_TMP" >&2
+{ echo "=== LLM Fill $(date '+%H:%M:%S') exit=$FILL_EXIT ==="; cat "$FILL_ERR_TMP"; } >> "$DAY_OPEN_LOG"
+if [ "$FILL_EXIT" -eq 2 ]; then
+  echo "  Partial fill — some sections remain PENDING."
+  FILL_WARNS=$(grep '\[WARN\]' "$FILL_ERR_TMP" | head -5 || true)
+  tg_notify "⚠️ DayPlan $DATE partially filled — some PENDING sections remain. Checks will block commit until fixed.
+$FILL_WARNS"
+  # Continue to checks (they will fail, but user gets full diagnostics)
+elif [ "$FILL_EXIT" -ne 0 ]; then
+  echo "  LLM fill failed — leaving scaffold for manual completion."
+  FILL_ERRS=$(grep -E '\[WARN\]|\[ERROR\]' "$FILL_ERR_TMP" | head -5 || true)
+  tg_notify "❌ LLM fill failed for $DATE (exit $FILL_EXIT) — scaffold saved, needs manual completion.
+$FILL_ERRS"
+  rm -f "$FILL_ERR_TMP"
+  exit 0
+fi
+rm -f "$FILL_ERR_TMP"
 echo "  LLM Fill OK"
+else
+  echo "=== 4. LLM Fill — SKIPPED (--scaffold-only) ==="
+fi
+
+# ============================================
+# 4.2. Bottleneck patch (deterministic, AFTER LLM Fill — WP-484, moved 2026-07-14)
+# llm-fill.py's has_pending check is whole-chunk: a second marker (week_context) in the
+# same <details> block as "Горлышко недели" made it regenerate that whole chunk even
+# when this script had already run first, overwriting its BOTTLENECK-PENDING/BY-SCRIPT
+# marker with unmarked prose. Running last makes this script the authoritative source.
+# ============================================
+echo "=== 4.2. Bottleneck patch ==="
+bash "$DS_STRATEGY/scripts/day-open-bottleneck-patch.sh" "$DAYPLAN_PATH" 2>&1 || true
+
+
+# Shared resolver for the deterministic patch steps below (4.3, 4.55-4.57).
+# WP-529 F7 port (peer session 2026-08-21-17): ledger-render imports yaml, so a
+# bare `python3` can be a yaml-less interpreter (same defect class as F6/F9);
+# the stdlib-only patches get the same binary with a soft fallback — a missing
+# resolver must not break steps that never needed PyYAML in the first place.
+_PATCH_PY=$("$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/find-python3.sh" 2>/dev/null) || _PATCH_PY=""
+[ -n "$_PATCH_PY" ] || _PATCH_PY=python3
+# ============================================
+# 4.3. Ledger render (deterministic, AFTER LLM Fill — same reason as 4.2 above:
+# WP-484 Ф16.2 2b). Appends render-open.py's ledger sections (Итоги вчера/Очередь
+# решений/Предлагаемые действия, Ф16.2 2c) as an ADDITIONAL block near the end of
+# the DayPlan — never touches day-open-scaffold.sh's own legacy "Итоги вчера" block
+# (CONCEPT-night-cycle.md §16: parallel run during migration, not a replacement).
+# True no-op (file byte-identical) until scripts/day-close-prepare.sh (Ф16.2 2a,
+# WP-485) starts landing facts_digest ledger events most nights — see the script's
+# own docstring for the graceful-degradation design.
+# ============================================
+echo "=== 4.3. Ledger render ==="
+"$_PATCH_PY" "$DS_STRATEGY/scripts/day-open-ledger-render-patch.py" \
+  --dayplan "$DAYPLAN_PATH" \
+  --date "$DATE" 2>&1 || true
 
 # ============================================
 # 4.5. Budget patch (deterministic: sum h column, no LLM hallucination)
 # ============================================
 echo "=== 4.5. Budget patch ==="
-python3 "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/day-open-budget-patch.py" \
+python3 "$DS_STRATEGY/scripts/day-open-budget-patch.py" \
   --dayplan "$DAYPLAN_PATH" \
-  --priorities "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/current/priorities.yaml" 2>&1 || true
+  --priorities "$DS_STRATEGY/current/priorities.yaml" 2>&1 || true
 
 # ============================================
-# 5. Checks
+# 4.55. Priorities patch (deterministic — WP-484, pilot instruction 16.08: Day
+# Open must never fail to run because of a priorities discrepancy; the finding
+# belongs in the DayPlan itself, not as a commit-blocking exit 1). Writes into
+# «Требует внимания» while the section header is still guaranteed to exist
+# (before archive/sync can touch the file) — same slot pattern as 4.5 above.
+# Ported from the author pipeline (WP-529 F7): resolver-based interpreter, not
+# bare python3 — see _PATCH_PY above.
 # ============================================
-echo "=== 5. Checks ==="
-CHECKS_OUT=$(bash "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/scripts/day-open-checks-runner.sh" "$DAYPLAN_PATH" 2>&1)
-CHECKS_EXIT=$?
-echo "$CHECKS_OUT"
+echo "=== 4.55. Priorities patch ==="
+"$_PATCH_PY" "$DS_STRATEGY/scripts/day-open-priorities-patch.py" \
+  --dayplan "$DAYPLAN_PATH" \
+  --priorities "$DS_STRATEGY/current/priorities.yaml" 2>&1 || true
 
-if [ $CHECKS_EXIT -ne 0 ]; then
-  tg_notify "❌ DayPlan checks failed for $DATE. Commit blocked. Fix and retry."
-  abort "Checks failed — see output above"
+# ============================================
+# 4.56. Close-error patch (deterministic — WP-484 F113: the night runner exports
+# IWE_CLOSE_ERROR instead of stopping before this pipeline when the Close half
+# fails. Empty/unset in every other invocation (manual runs, probes, installs
+# without a night cycle) — no-op then. Same non-blocking pattern as 4.55.
+# ============================================
+echo "=== 4.56. Close-error patch ==="
+"$_PATCH_PY" "$DS_STRATEGY/scripts/day-open-close-error-patch.py" \
+  --dayplan "$DAYPLAN_PATH" \
+  --error "${IWE_CLOSE_ERROR:-}" 2>&1 || true
+
+# ============================================
+# 4.57. Version-check patch (deterministic — WP-484 stage-0 wiring: a stale
+# checkout is a visible finding, not a silent commit block). Template port
+# guard (WP-529 F7, peer consensus 2026-08-21-17): comparing HEAD..origin/main
+# only makes sense when such a remote ref exists. A template/offline install
+# without it is a NORMAL mode, not a pipeline error — diagnose to stderr and
+# move on, never non-zero, never a DayPlan «Требует внимания» entry.
+# ============================================
+echo "=== 4.57. Version-check patch ==="
+if git -C "$DS_STRATEGY" remote get-url origin >/dev/null 2>&1 \
+   && git -C "$DS_STRATEGY" rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+  "$_PATCH_PY" "$DS_STRATEGY/scripts/day-open-version-check-patch.py" \
+    --dayplan "$DAYPLAN_PATH" \
+    --repo "$DS_STRATEGY" 2>&1 || true
+else
+  echo "version-check: no origin/main to compare against — skipped (comparison context unavailable, normal for template/offline installs)" >&2
 fi
 
 # ============================================
-# 6. Commit + Push
+# 4.59. Multiplier backfill patch (deterministic — WP-484 Ф117, pilot decision
+# 18.08 + peer-session 2026-09-01-18-wp484-backlog-continue: wakatime-cli only
+# supports --today, so a Close that ran late or on a host without the CLI
+# leaves yesterday's multiplier honestly PENDING. This backfills it from the
+# WakaTime HTTP API once synced. Same non-blocking-finding pattern as the
+# patches above — never blocks Open, never fabricates a value.
 # ============================================
-echo "=== 6. Commit + Push ==="
-cd "$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}" || abort "Cannot cd to repo"
+echo "=== 4.59. Multiplier backfill patch ==="
+"$_PATCH_PY" "$DS_STRATEGY/scripts/day-open-multiplier-backfill-patch.py" \
+  --dayplan "$DAYPLAN_PATH" \
+  --ledger-root "$DS_STRATEGY/machine/ledger/day" \
+  --date "$DATE" \
+  --ledger-append "$DS_STRATEGY/scripts/ledger-append.sh" 2>&1 || true
 
+# ============================================
+# 4.6. Sync + archive stale DayPlans (moved ahead of Checks — WP-484 Ф2)
+# BUGFIX (2026-07-13): this used to run in step 6, AFTER Checks (step 5) — but one of
+# the checks (day-open.checks.md «current/ без зависших DayPlan») hard-blocks commit
+# if any non-today DayPlan sits in current/. Archiving only after that check had
+# already failed meant the pipeline could never self-heal a leftover from a Day Close
+# that ran late or incompletely: the one mechanism able to fix the condition always
+# ran too late to prevent the block it was fixing.
+# ============================================
+echo "=== 4.6. Sync + archive ==="
+cd "$DS_STRATEGY" || abort "Cannot cd to repo"
+
+TODAY=$(date +%Y-%m-%d)
+ARCHIVE_DIR="$DS_STRATEGY/archive/day-plans"
+ARCHIVED_PATHS=()
+# Archive destination paths for THIS run only (WP-484, found 13.08): the commit
+# used to stage/pathspec the whole $ARCHIVE_DIR/, which pulled foreign dirty or
+# staged files (leftovers of other agents' sessions) into the DayPlan commit, and
+# the session-guard scope gate then correctly blocked the open.
+ARCHIVE_TARGETS=()
+
+if [ "$PROBE" = "true" ]; then
+  # WP-484 27.07 (found by independent review of the --probe stand itself): this whole
+  # block used to run unconditionally BEFORE the PROBE check below, which only wrapped
+  # the archive-move loop. git-dirty-guard.sh can self-heal a stale mirror via
+  # `git reset --hard origin/<branch>` — a real, destructive operation on the production
+  # checkout — and the plain `git pull --rebase` below it is a real mutation too. A
+  # "dry run" that can silently `reset --hard` or rebase the real repo isn't a dry run.
+  echo "  [probe] git-dirty-guard/pull/archive-move all skipped — no git state touched"
+else
 # Sync with remote to avoid non-fast-forward push (race with other agents)
-git pull --rebase || abort "Git pull --rebase failed"
+# WP-484 (2026-07-19): route through git-dirty-guard.sh first — a bare pull --rebase
+# aborts the whole pipeline on the routine dirty tree sync-strategy-files.sh leaves on
+# tsekh-1 (see git-dirty-guard.sh header). The guard either self-heals a stale mirror
+# or confirms real uncommitted work is present; a plain pull is only safe after that.
+#
+# NON-FATAL as of 2026-07-26 (WP-484, root-caused the 04:35 26.07 ledger-render
+# incident): this used to `abort` the whole pipeline on real uncommitted work, which
+# discarded everything steps 1-4.5 had already correctly rendered (including an honest
+# ledger section) and forced strategist.sh's free-form LLM fallback, which has no
+# awareness of the LEDGER-RENDER block and silently overwrote it with fabricated
+# numbers — exactly the "no fabrication" invariant §5 CONCEPT-night-cycle.md exists to
+# prevent, just via a path this guard didn't cover. Sync/archive is housekeeping, not
+# required for today's DayPlan content, so a failure here degrades gracefully (skip
+# pull, keep the already-written file) instead of discarding a good render.
+if ! bash "$IWE_SCRIPTS/git-dirty-guard.sh" "$DS_STRATEGY"; then
+  tg_notify "⚠️ Day Open: git-dirty-guard нашёл незакоммиченную работу — pull пропущен, но уже отрендеренный DayPlan сохраняется (не абортим pipeline, WP-484 fix 26.07)"
+else
+  # Sync failures are reported out-of-repo only. Appending sync_skipped to the
+  # tracked ledger here would make the next git-dirty-guard invocation reject the
+  # pipeline's own diagnostic write and turn a transient failure into a permanent
+  # dirty-tree loop. The periodic sync service owns persistent failure counters.
+  git pull --rebase || {
+    tg_notify "⚠️ Day Open: git pull --rebase failed — continuing without pull (WP-484 fix 26.07)"
+  }
+fi
 
 # Archive stale DayPlans (move + overwrite, and record the deletion).
 # Bug history (feedback_dayplan_archive_silent_skip.md): `git mv ... || true` silently
 # skipped when the archive copy already existed (Day Close had archived an earlier copy),
 # leaving a stale DayPlan stuck in current/. And the commit pathspec listed only archive/,
 # so the current/ deletion was never committed even when git mv did run.
-TODAY=$(date +%Y-%m-%d)
-ARCHIVE_DIR="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/archive/day-plans"
-ARCHIVED_PATHS=()
 for f in "$CURRENT_DIR"/DayPlan\ *.md; do
   [ -f "$f" ] || continue
   basename_f=$(basename "$f")
@@ -377,7 +1050,9 @@ for f in "$CURRENT_DIR"/DayPlan\ *.md; do
     echo "  archived (mv fallback): $basename_f"
   fi
   ARCHIVED_PATHS+=("$f")   # old current/ path: include below so the deletion is committed
+  ARCHIVE_TARGETS+=("$ARCHIVE_DIR/$basename_f")   # new archive/ path: staged individually below
 done
+fi
 
 # session-guard.sh scope gate (added 2026-07-07, WP-7 SGFIX3) blocks any new/renamed
 # path that isn't declared in an active session's note-file log — a headless launchd
@@ -389,26 +1064,98 @@ done
 # loudly on 2+ candidates — "claude-code" would collide with a live interactive
 # session open on the same machine at the same time.
 SG_AGENT="day-open-pipeline"
-bash "$IWE/scripts/session-guard.sh" open --housekeeping day-open --agent "$SG_AGENT" 2>/dev/null || true
-bash "$IWE/scripts/session-guard.sh" note-file "$DAYPLAN_PATH" --agent "$SG_AGENT"
-for f in "${ARCHIVED_PATHS[@]+"${ARCHIVED_PATHS[@]}"}"; do
-  bash "$IWE/scripts/session-guard.sh" note-file "$ARCHIVE_DIR/$(basename "$f")" --agent "$SG_AGENT"
-done
+if [ "$PROBE" != "true" ]; then
+  # WP-484 F91: explicit --slug keeps note-file resolution unambiguous when the
+  # agent has 2+ open semaphores (a stale housekeeping semaphore used to make
+  # both note-file calls fail in one run); the slug is fixed by the `open
+  # --housekeeping day-open` call above. --owner-pid from the author copy is NOT
+  # ported: this parser swallows unknown flags and misparses the PID as positional.
+  bash "$IWE_SCRIPTS/session-guard.sh" open --housekeeping day-open --agent "$SG_AGENT" 2>/dev/null || true
+  bash "$IWE_SCRIPTS/session-guard.sh" note-file "$DAYPLAN_PATH" --agent "$SG_AGENT" --slug day-open
+  for f in "${ARCHIVED_PATHS[@]+"${ARCHIVED_PATHS[@]}"}"; do
+    bash "$IWE_SCRIPTS/session-guard.sh" note-file "$ARCHIVE_DIR/$(basename "$f")" --agent "$SG_AGENT" --slug day-open
+  done
+fi
+
+# ============================================
+# 4.8. Extension graph — "after" hooks (WP-529 Ф11)
+# ============================================
+# Same mechanism and failure semantics as the "before" hook at the top of
+# this script (see its comment) — runs after DayPlan generation/patches, so
+# a hook that enriches the DayPlan (e.g. extensions/day-open.after.session-
+# orphans.md) sees the final content, and Checks below validates whatever
+# it left behind.
+echo "=== 4.8. Extension graph: after ==="
+AFTER_HOOK_OUT=$(bash "$DS_STRATEGY/scripts/day-open-hooks-runner.sh" after 2>&1)
+AFTER_HOOK_EXIT=$?
+echo "$AFTER_HOOK_OUT"
+if [ $AFTER_HOOK_EXIT -ne 0 ]; then
+  tg_notify "❌ Day Open aborted: an 'after' extension hook failed for $DATE. See output above."
+  abort "after-hook failed — see output above"
+fi
+
+# ============================================
+# 5. Checks
+# ============================================
+echo "=== 5. Checks ==="
+CHECKS_OUT=$(bash "$DS_STRATEGY/scripts/day-open-checks-runner.sh" "$DAYPLAN_PATH" 2>&1)
+CHECKS_EXIT=$?
+echo "$CHECKS_OUT"
+
+if [ $CHECKS_EXIT -ne 0 ]; then
+  tg_notify "❌ DayPlan checks failed for $DATE. Commit blocked. Fix and retry."
+  abort "Checks failed — see output above"
+fi
+
+# ============================================
+# 6. Commit + Push
+# ============================================
+if [ "$PROBE" = "true" ]; then
+  echo "=== 6. Commit + Push — SKIPPED (probe) ==="
+  COMMIT_HASH="(probe, not committed)"
+  echo "  Probe file left for review: $DAYPLAN_PATH"
+else
+echo "=== 6. Commit + Push ==="
+cd "$DS_STRATEGY" || abort "Cannot cd to repo"
+reap_stale_git_lock
 
 git add "$DAYPLAN_PATH"
-git add "$ARCHIVE_DIR/" 2>/dev/null || true
+for f in "${ARCHIVE_TARGETS[@]+"${ARCHIVE_TARGETS[@]}"}"; do
+  git add "$f"
+done
 
 # [allow:current]: the new-files guard (peer-audit 2026-06-04) blocks any commit that adds
 # files under current/ without this tag. Every unattended run hit this — the guard was added
 # after this line was written and nobody updated it (bug found 2026-07-02).
-git commit -m "feat(dayplan): $DATE — auto Day Open (WP-356) [allow:current]" --trailer "Co-Authored-By: Kimi <noreply@moonshot.ai>" -- "$DAYPLAN_PATH" "$ARCHIVE_DIR/" ${ARCHIVED_PATHS[@]+"${ARCHIVED_PATHS[@]}"} || abort "Git commit failed"
+git commit -m "feat(dayplan): $DATE — auto Day Open (WP-356) [allow:current]" --trailer "Co-Authored-By: Kimi <noreply@moonshot.ai>" -- "$DAYPLAN_PATH" ${ARCHIVE_TARGETS[@]+"${ARCHIVE_TARGETS[@]}"} ${ARCHIVED_PATHS[@]+"${ARCHIVED_PATHS[@]}"} || abort "Git commit failed"
 
-git push || abort "Git push failed"
+# Push with fetch+rebase retries: origin/main moves continuously (parallel agent
+# sessions, ledger-publish every 30 min), so a plain push loses the race whenever
+# anything landed between this run's start and its commit — exactly how the
+# 2026-08-14 07:22 run died after an otherwise green pipeline (WP-520 class:
+# shared checkout vs busy origin). --autostash covers the routinely dirty shared
+# worktree; on rebase failure we abort the rebase and leave the checkout as-is,
+# which is no worse than the old unconditional abort.
+PUSH_OK=false
+for PUSH_ATTEMPT in 1 2 3; do
+  if git push; then PUSH_OK=true; break; fi
+  echo "  push rejected (attempt $PUSH_ATTEMPT/3) — fetch+rebase onto origin/main and retry"
+  git fetch origin main --quiet || true
+  git rebase origin/main --autostash || { git rebase --abort 2>/dev/null || true; break; }
+done
+[ "$PUSH_OK" = "true" ] || abort "Git push failed (after fetch+rebase retries)"
 
-bash "$IWE/scripts/session-guard.sh" close --housekeeping day-open --agent claude-code 2>/dev/null || true
+# WP-484 F64: input-hash means "this data set is PUBLISHED", so it is recorded
+# only after the remote accepted the commit (see the guard comment at step 3).
+if [ "$PROBE" != "true" ]; then
+  echo "$INPUT_HASH" > "$INPUT_HASH_FILE"
+fi
+
+bash "$IWE_SCRIPTS/session-guard.sh" close --housekeeping day-open --agent "$SG_AGENT" 2>/dev/null || true
 
 COMMIT_HASH=$(git log -1 --format=%H)
 echo "  Committed: $COMMIT_HASH"
+fi
 
 # ============================================
 # 7. Morning digest
@@ -428,7 +1175,7 @@ MSG+="📋 Сегодня:"$'\n'"${PLAN_ROWS}"$'\n\n'
 MSG+="💾 ${SHORT_HASH}"
 
 # WP-149 gate-dopo (peer-session 2026-06-23-07): surface rung_fidelity from last render.
-GATE_STATUS_FILE="$IWE/${IWE_GOVERNANCE_REPO:-DS-strategy}/current/gate-status.yaml"
+GATE_STATUS_FILE="$DS_STRATEGY/current/gate-status.yaml"
 if [ -f "$GATE_STATUS_FILE" ]; then
   GATE_ST=$(grep -E "^  status:" "$GATE_STATUS_FILE" 2>/dev/null | awk '{print $2}' | tr -d "'\"")
   if [ "${GATE_ST:-ok}" != "ok" ] && [ -n "${GATE_ST:-}" ]; then
@@ -439,13 +1186,35 @@ fi
 
 tg_notify "$MSG"
 
-# Record success heartbeat for dead-man's switch watchdog
-jq -n \
-  --arg date "$DATE" \
-  --arg commit "$COMMIT_HASH" \
-  --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{date: $date, commit_hash: $commit, timestamp: $ts, status: "success"}' \
-  > "$HEARTBEAT_FILE"
-echo "  Heartbeat recorded: $HEARTBEAT_FILE"
+if [ "$PROBE" = "true" ]; then
+  echo "  [probe] real heartbeat not touched (watchdog reads only real runs)"
+else
+  # Record success heartbeat for dead-man's switch watchdog
+  jq -n \
+    --arg date "$DATE" \
+    --arg commit "$COMMIT_HASH" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{date: $date, commit_hash: $commit, timestamp: $ts, status: "success"}' \
+    > "$HEARTBEAT_FILE"
+  echo "  Heartbeat recorded: $HEARTBEAT_FILE"
+fi
+
+# ============================================
+# PROBE SUMMARY (WP-484 test stand — attention_min vs wall_min)
+# attention_min: this pipeline has ZERO pilot-blocking steps in its normal path
+# (abort() ends the run, it never pauses waiting on a human) — so attention_min is
+# structurally 0 for every probe unless a future step type changes that. Not a
+# guess: derived from reading the script, same way quick-close.yaml's reflex/ai vs
+# pilot,blocking step types make session-close's attention_min = 0 in the happy path.
+# ============================================
+if [ "$PROBE" = "true" ]; then
+  WALL_MIN=$(( (SECONDS - PROBE_START_S) / 60 ))
+  VERDICT="🔴 red"
+  [ "$CHECKS_EXIT" -eq 0 ] && VERDICT="🟢 green"
+  echo ""
+  echo "=== PROBE SUMMARY ==="
+  echo "  date=$DATE verdict=$VERDICT checks_exit=$CHECKS_EXIT wall_min=$WALL_MIN attention_min=0"
+  echo "  file=$DAYPLAN_PATH"
+fi
 
 echo "=== Done ==="

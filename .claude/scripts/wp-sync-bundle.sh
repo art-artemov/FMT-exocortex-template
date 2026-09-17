@@ -144,17 +144,96 @@ extract_fm_field() {
     || true
 }
 
-# Extract WP numbers from related: block in frontmatter
+# Extract both an inline field value and its indented continuation from YAML
+# frontmatter. This is intentionally a narrow reader for reference sections,
+# not a general YAML parser: callers recognize WP-N references and legacy
+# numeric list scalars explicitly.
+extract_fm_section() {
+  local file="$1"
+  local field="$2"
+  awk -v field="$field" '
+    /^---$/ { fm_count++; if (fm_count == 2) exit; next }
+    fm_count != 1 { next }
+    $0 ~ ("^" field ":[[:space:]]*") {
+      value=$0
+      sub("^[^:]+:[[:space:]]*", "", value)
+      sub(/^[[:space:]]*#.*/, "", value)
+      sub(/[[:space:]]+#.*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (value != "") {
+        print value
+        exit
+      }
+      in_field=1
+      next
+    }
+    in_field && /^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*/ { exit }
+    in_field {
+      value=$0
+      sub(/^[[:space:]]*#.*/, "", value)
+      sub(/[[:space:]]+#.*/, "", value)
+      if (value != "") print value
+    }
+  ' "$file" 2>/dev/null || true
+}
+
+extract_wp_display_name() {
+  local file="$1"
+  local value
+  value=$(extract_fm_field "$file" "name")
+  [[ -n "$value" ]] || value=$(extract_fm_field "$file" "title")
+  echo "$value"
+}
+
+# Extract WP numbers from either an inline or block related field.
 extract_related_wps() {
   local file="$1"
-  awk '
-    /^---$/ { fm_count++; next }
-    fm_count != 1 { next }
-    /^related:/ { in_related=1; next }
-    in_related && /^[a-z_]+:/ && !/^  / { in_related=0; next }
-    in_related { print }
-  ' "$file" 2>/dev/null \
-    | grep -oE 'WP-[0-9]+' \
+  extract_fm_section "$file" "related" \
+    | awk '
+      function trim(value) {
+        sub(/^[[:space:]]+/, "", value)
+        sub(/[[:space:]]+$/, "", value)
+        gsub(/^"|"$/, "", value)
+        return value
+      }
+      function emit_bare(value) {
+        value=trim(value)
+        if (value ~ /^[0-9]+$/) print "WP-" value
+      }
+      function emit_flow(line, content, count, item, i) {
+        line=trim(line)
+        if (line ~ /^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*\[.*\]$/) {
+          sub(/^[^:]+:[[:space:]]*/, "", line)
+        } else if (line ~ /^-[[:space:]]*\[.*\]$/) {
+          sub(/^-[[:space:]]*/, "", line)
+        } else if (line !~ /^\[.*\]$/) {
+          return
+        }
+        content=line
+        sub(/^\[/, "", content)
+        sub(/\]$/, "", content)
+        count=split(content, item, ",")
+        for (i=1; i<=count; i++) emit_bare(item[i])
+      }
+      {
+        line=$0
+        while (match(line, /WP-[0-9]+/)) {
+          print substr(line, RSTART, RLENGTH)
+          line=substr(line, 1, RSTART - 1) "X" substr(line, RSTART + RLENGTH)
+        }
+        emit_flow($0)
+        scalar=trim($0)
+        if (scalar ~ /^[0-9]+$/) {
+          emit_bare(scalar)
+        } else if (scalar ~ /^-[[:space:]]*[0-9]+[[:space:]]*$/) {
+          sub(/^-[[:space:]]*/, "", scalar)
+          emit_bare(scalar)
+        } else if (scalar ~ /^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*[0-9]+[[:space:]]*$/) {
+          sub(/^[^:]+:[[:space:]]*/, "", scalar)
+          emit_bare(scalar)
+        }
+      }
+    ' \
     || true
 }
 
@@ -162,17 +241,61 @@ extract_related_wps() {
 get_rel_type() {
   local file="$1"
   local target_num="$2"
-  awk '
-    /^---$/ { fm++; next }
-    fm != 1 { next }
-    /^related:/ { in_r=1; next }
-    in_r && /^[a-z_]+:/ && !/^  / { in_r=0 }
-    in_r { print }
-  ' "$file" 2>/dev/null \
-    | grep "WP-${target_num}" \
+  local matching_line relation_type
+  matching_line=$(extract_fm_section "$file" "related" \
+    | awk -v target="$target_num" '
+        function trim(value) {
+          sub(/^[[:space:]]+/, "", value)
+          sub(/[[:space:]]+$/, "", value)
+          gsub(/^"|"$/, "", value)
+          return value
+        }
+        function has_bare(line, content, count, item, i, scalar) {
+          line=trim(line)
+          if (line ~ /^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*\[.*\]$/) {
+            sub(/^[^:]+:[[:space:]]*/, "", line)
+          } else if (line ~ /^-[[:space:]]*\[.*\]$/) {
+            sub(/^-[[:space:]]*/, "", line)
+          } else if (line ~ /^\[.*\]$/) {
+            # already a flow sequence
+          } else {
+            scalar=line
+            if (scalar ~ /^-[[:space:]]*[0-9]+[[:space:]]*$/) {
+              sub(/^-[[:space:]]*/, "", scalar)
+            } else if (scalar ~ /^[A-Za-z_][A-Za-z0-9_-]*:[[:space:]]*[0-9]+[[:space:]]*$/) {
+              sub(/^[^:]+:[[:space:]]*/, "", scalar)
+            }
+            return trim(scalar) == target
+          }
+          content=line
+          sub(/^\[/, "", content)
+          sub(/\]$/, "", content)
+          count=split(content, item, ",")
+          for (i=1; i<=count; i++) {
+            if (trim(item[i]) == target) return 1
+          }
+          return 0
+        }
+        {
+          raw=$0
+          if (raw ~ ("WP-" target "([^0-9]|$)")) { print raw; exit }
+          if (has_bare(raw)) { print raw; exit }
+        }
+      ' \
+    || true)
+  if [[ -z "$matching_line" ]]; then
+    echo "body_ref"
+    return
+  fi
+  relation_type=$(printf '%s\n' "$matching_line" \
     | grep -oE '(depends_on|references|complementary|parent|child)' \
     | head -1 \
-    || echo "body_ref"
+    || true)
+  if [[ -n "$relation_type" ]]; then
+    echo "$relation_type"
+  else
+    echo "related"
+  fi
 }
 
 grep_body_wps() {
@@ -191,12 +314,20 @@ registry_status_column() {
   local header
   header=$(grep -E '^\|[[:space:]]*#[[:space:]]*\|' "$REGISTRY_FILE" 2>/dev/null | head -1)
   [[ -z "$header" ]] && return 1
-  awk -F'|' -v h="$header" 'BEGIN {
+  # issue #717 follow-up (найдено при regression-тестах на этой же фазе, тот
+  # же класс бага, другой сбой): под некоторыми локалями (напр. en_US.UTF-8
+  # на macOS/awk-BWK 20200816) `==` в awk между двумя РАЗНЫМИ кириллическими
+  # строками возвращал true — не проблема регистра, а порча самого сравнения
+  # многобайтовых строк на уровне locale-aware коллации. `tolower()` для
+  # кириллицы при этом тоже locale-зависим (под голым `C` не сворачивает
+  # регистр вообще). Решение — не полагаться ни на `tolower()`, ни на
+  # locale-aware `==`: перечислить оба регистра литералом И считать байты под
+  # `LC_ALL=C`, где `==` — простое побайтовое сравнение без коллации.
+  LC_ALL=C awk -F'|' -v h="$header" 'BEGIN {
     n = split(h, cells, "|")
     for (i = 1; i <= n; i++) {
       c = cells[i]; gsub(/^[ \t]+|[ \t]+$/, "", c)
-      lc = tolower(c)
-      if (lc == "статус" || lc == "ст") { print i; exit }
+      if (c == "Статус" || c == "статус" || c == "СТАТУС" || c == "Ст" || c == "ст") { print i; exit }
     }
   }'
 }
@@ -213,6 +344,10 @@ registry_status() {
     echo "_некорректный номер РП: ${1}_"
     return
   fi
+  # issue #715: ведущие нули (WP-038) не совпадали с голым "38" в реестре —
+  # нормализуем ДО построения regex поиска строки. `10#` держит базу 10
+  # явно (иначе bash читает "038" как некорректный восьмеричный литерал).
+  num=$((10#$num))
   if [[ ! -f "$REGISTRY_FILE" ]]; then
     echo "_нет файла REGISTRY_"
     return
@@ -222,16 +357,27 @@ registry_status() {
   # "открыт как спин-офф WP-47" в статусе WP-49 возвращал статус WP-49 при
   # запросе WP-47). Строка опознаётся по СВОЕЙ первой ячейке (номер РП),
   # тем же приёмом, что ROW_RE в build-active-wp.py.
-  local line
-  line=$(grep -E "^\|[[:space:]]*(~~)?(\*\*)?${num}(\*\*)?(~~)?[[:space:]]*\|" "$REGISTRY_FILE" 2>/dev/null | head -1 || true)
-  if [[ -z "$line" ]]; then
+  # issue #716: пометка рядом с номером ("13★") не проходила прежний шаблон
+  # (требовал пробел/pipe сразу после числа) — поиск перескакивал на другую
+  # строку с тем же номером (например зачёркнутую предыдущую итерацию).
+  # `[^0-9|]*` разрешает произвольный суффикс между числом и разделителем
+  # колонки, но не цифру — иначе "13" совпал бы и с "138".
+  local regex="^\|[[:space:]]*(~~)?(\*\*)?${num}(\*\*)?(~~)?[^0-9|]*[[:space:]]*\|"
+  local match_count
+  match_count=$(grep -cE "$regex" "$REGISTRY_FILE" 2>/dev/null || true)
+  match_count=${match_count:-0}
+  if [[ "$match_count" -eq 0 ]]; then
     echo "_не в реестре_"
     return
   fi
-  if echo "$line" | grep -qE '~~'; then
-    echo "~~done~~ (зачёркнут)"
-    return
+  if [[ "$match_count" -gt 1 ]]; then
+    # issue #716: раньше молчаливый `head -1` без предупреждения мог отдать
+    # ПРОТИВОПОЛОЖНЫЙ действительности статус — теперь неоднозначность хотя
+    # бы видна в stderr, вместо тихой уверенной ошибки на первой строке.
+    echo "неоднозначно: $match_count совпадений по номеру ${num} в реестре, взята первая строка" >&2
   fi
+  local line
+  line=$(grep -E "$regex" "$REGISTRY_FILE" 2>/dev/null | head -1)
   local status_col status_cell
   status_col=$(registry_status_column)
   if [[ -z "$status_col" ]]; then
@@ -239,28 +385,58 @@ registry_status() {
     return
   fi
   # Статус берётся из СВОЕЙ ячейки, не грепом эмодзи по всей строке —
-  # эмодзи в описании соседней колонки раньше мог перебить вердикт.
+  # эмодзи в описании соседней колонки раньше мог перебить вердикт (issue #473).
   status_cell=$(echo "$line" | awk -F'|' -v col="$status_col" '{ v=$col; gsub(/^[ \t]+|[ \t]+$/, "", v); print v }')
-  if echo "$status_cell" | grep -q '✅'; then
-    echo "✅ done"
-  elif echo "$status_cell" | grep -q '🔄'; then
-    echo "🔄 in_progress"
-  elif echo "$status_cell" | grep -q '⏳'; then
-    echo "⏳ pending"
-  elif echo "$status_cell" | grep -q '📦'; then
-    echo "📦 archived"
-  elif echo "$status_cell" | grep -q '⏹'; then
-    echo "⏹ снят"
-  elif echo "$status_cell" | grep -q '🔁'; then
-    echo "🔁 свёрнут в спринт"
+  # issue #717: обычный `grep -q 'ЭМОДЗИ'` зависит от локали/сборки grep — на
+  # части машин (напр. GNU grep 3.0 + en_US.UTF-8) многобайтовый literal
+  # молча не матчился, хотя байты совпадали, и вся ось статуса слепла тихо.
+  # `LC_ALL=C grep -F` сравнивает как байтовую fixed-строку, не парсит эмодзи
+  # как regex-класс символов — не зависит от локали сборки. Область действия
+  # — только эти вызовы, не весь скрипт (глобальный `export LC_ALL=C` рискует
+  # сломать сортировку/срез многобайтовых строк в других местах файла, не
+  # относящихся к этой функции).
+  local resolved=""
+  if   LC_ALL=C grep -qF '✅' <<<"$status_cell"; then resolved="✅ done"
+  elif LC_ALL=C grep -qF '🔄' <<<"$status_cell"; then resolved="🔄 in_progress"
+  elif LC_ALL=C grep -qF '⏳' <<<"$status_cell"; then resolved="⏳ pending"
+  elif LC_ALL=C grep -qF '📦' <<<"$status_cell"; then resolved="📦 archived"
+  elif LC_ALL=C grep -qF '⏸' <<<"$status_cell"; then resolved="⏸ paused"
+  elif LC_ALL=C grep -qF '⏹' <<<"$status_cell"; then resolved="⏹ снят"
+  elif LC_ALL=C grep -qF '🔁' <<<"$status_cell"; then resolved="🔁 свёрнут в спринт"
+  fi
+  if [[ -n "$resolved" ]]; then
+    echo "$resolved"
+    return
+  fi
+  local text_status
+  text_status=$(echo "$status_cell" | grep -oE '(done|in_progress|pending|paused|archived|closed|open)' | head -1 || true)
+  if [[ -n "$text_status" ]]; then
+    echo "$text_status"
+    return
+  fi
+  # issue #714: зачёркивание — фолбэк ПОСЛЕ того, как своя колонка статуса не
+  # дала ответа, не проверка по всей строке раньше чтения колонки. Раньше
+  # зачёркнутое НАЗВАНИЕ при активном статусе в колонке (например 📦) давало
+  # ложный "~~done~~" — своя колонка теперь всегда главнее оформления строки.
+  # issue #713: код возврата пайплайна `grep | head` брался от `head`,
+  # который всегда завершается успешно даже на пустом входе — `||` был
+  # недостижим, и пустой результат утекал наружу как есть. Промежуточная
+  # переменная (text_status выше) — единственный надёжный способ отличить
+  # "нашли" от "не нашли" на пустом выводе grep.
+  if echo "$line" | grep -qE '~~'; then
+    echo "~~done~~ (зачёркнут)"
   else
-    echo "$status_cell" | grep -oE '(done|in_progress|pending|closed|open)' | head -1 || echo "_статус неизвестен_"
+    echo "_статус неизвестен_"
   fi
 }
 
 git_log_for_file() {
   local filepath="$1"
-  if [[ ! -d "$STRATEGY_DIR/.git" ]]; then
+  local git_root strategy_root
+  git_root=$(git -C "$STRATEGY_DIR" rev-parse --show-toplevel 2>/dev/null || true)
+  [[ -z "$git_root" ]] || git_root=$(cd "$git_root" 2>/dev/null && pwd -P || true)
+  strategy_root=$(cd "$STRATEGY_DIR" 2>/dev/null && pwd -P || true)
+  if [[ -z "$git_root" || -z "$strategy_root" || "$git_root" != "$strategy_root" ]]; then
     echo "_git недоступен_"
     return
   fi
@@ -358,7 +534,12 @@ main() {
 
   local input="$1"
 
-  # Self-test mode (diagnostic — see WP-294 Ф7)
+  # Self-test / canary mode (diagnostic — see WP-294 Ф7; extended issue #718:
+  # a canary that only checks file lookup passes even when the registry
+  # itself is unreadable or the WP's status cell can't be resolved — exactly
+  # the class of "plausible result instead of a loud failure" the issue
+  # describes. An explicit WP-N argument makes this usable as an
+  # update.sh --check canary against a known-good WP, not just a diagnostic.)
   if [[ "$input" == "--self-test" ]]; then
     echo "=== WP Sync Bundle Self-Test ==="
     echo "IWE_WORKSPACE: $IWE_WORKSPACE"
@@ -370,9 +551,18 @@ main() {
       echo "REGISTRY_FILE: MISSING"
       exit 1
     fi
-    # Find any real WP from inbox instead of hardcoded number
+
     local test_num=""
-    if [[ -d "$INBOX_DIR" ]]; then
+    if [[ $# -ge 2 && -n "${2:-}" ]]; then
+      test_num=$(normalize_wp_num "$2")
+      if ! echo "$test_num" | grep -qE '^[0-9]+$'; then
+        log_err "Неверный формат canary WP: '$2'. Ожидается WP-N или N."
+        exit 2
+      fi
+    fi
+    # No explicit WP given — find any real one from inbox (diagnostic default,
+    # unchanged from prior behavior).
+    if [[ -z "$test_num" && -d "$INBOX_DIR" ]]; then
       local first_wp
       first_wp=$(find "$INBOX_DIR" -maxdepth 1 -name "WP-*.md" 2>/dev/null | sort | head -1 || true)
       if [[ -n "$first_wp" ]]; then
@@ -386,15 +576,29 @@ main() {
       echo "WP lookup: SKIP (no WP files found in inbox or registry)"
       exit 0
     fi
+
     local test_file
     test_file=$(find_wp_file "$test_num")
     if [[ -n "$test_file" ]]; then
       echo "WP-${test_num} lookup: OK ($test_file)"
-      exit 0
     else
       echo "WP-${test_num} lookup: FAIL"
       exit 1
     fi
+
+    # registry_status() is the part update.sh's silent-drift class of bug
+    # (issue #718) actually cares about — a WP file can exist while the
+    # registry row it's supposed to have is empty, stale, or unparseable.
+    local status
+    status=$(registry_status "$test_num")
+    echo "WP-${test_num} registry_status: $status"
+    case "$status" in
+      _не\ в\ реестре_|_статус\ неизвестен_|_колонка\ статуса\ не\ найдена*|_нет\ файла\ REGISTRY_|_некорректный\ номер\ РП*)
+        echo "Canary FAILED: registry status unresolved for WP-${test_num}: $status" >&2
+        exit 1
+        ;;
+    esac
+    exit 0
   fi
 
   local wp_num
@@ -427,7 +631,7 @@ main() {
 
   local status name spawned updated created last_session
   status=$(extract_fm_field "$wp_file" "status")
-  name=$(extract_fm_field "$wp_file" "name")
+  name=$(extract_wp_display_name "$wp_file")
   spawned=$(extract_fm_field "$wp_file" "spawned")
   updated=$(extract_fm_field "$wp_file" "updated")
   # F19 (REVIEW-ARCHITECTURE.md, WP-503 Ф6.6 план): карточки без `updated:` в
@@ -532,7 +736,7 @@ main() {
         local rpath rstatus rname
         rpath=$(wp_path_label "$rfile")
         rstatus=$(extract_fm_field "$rfile" "status")
-        rname=$(extract_fm_field "$rfile" "name")
+        rname=$(extract_wp_display_name "$rfile")
         [[ -z "$rstatus" ]] && rstatus="_не указан_"
         [[ -z "$rname" ]] && rname="_не указано_"
 
@@ -561,7 +765,7 @@ main() {
           local open_phase_with_ref
           open_phase_with_ref=$(
             awk '/^---$/{fm++; next} fm<2{next} /- \[ \]/{print}' "$wp_file" 2>/dev/null \
-            | grep "WP-${rnum}" || true
+            | grep -E "WP-${rnum}([^0-9]|$)" || true
           )
           if [[ -n "$open_phase_with_ref" ]]; then
             echo "DRIFT: WP-${rnum} закрыт (${reg_status}), но текущий РП имеет открытую фазу со ссылкой на него" >> "$drift_file"

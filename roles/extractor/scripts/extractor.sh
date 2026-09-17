@@ -54,16 +54,20 @@ elif [ -x "$HOME/.npm-global/bin/claude" ]; then
 else
     CLAUDE_PATH="{{CLAUDE_PATH}}"  # fallback: build-runtime должен был подставить
 fi
-if [ ! -x "$CLAUDE_PATH" ]; then
-    echo "[$(date '+%H:%M:%S')] ERROR: claude CLI не найден (CLAUDE_CLI_PATH/PATH/~/.local/bin/~/.npm-global/fallback='$CLAUDE_PATH')." >&2
-    exit 127
-fi
 ENV_FILE="$HOME/.config/aist/env"
 
 # AI CLI: переопределение через переменные окружения (см. strategist.sh)
 AI_CLI="${AI_CLI:-$CLAUDE_PATH}"
 AI_CLI_PROMPT_FLAG="${AI_CLI_PROMPT_FLAG:--p}"
 AI_CLI_EXTRA_FLAGS="${AI_CLI_EXTRA_FLAGS:---dangerously-skip-permissions --allowedTools Read,Write,Edit,Glob,Grep,Bash}"
+
+# AR.293: гейт проверяет эффективную программу ($AI_CLI), не литерал CLAUDE_PATH —
+# иначе override остаётся декоративным, когда claude физически отсутствует, но
+# AI_CLI указывает на реально установленную другую программу.
+if ! command -v "$AI_CLI" >/dev/null 2>&1 && [ ! -x "$AI_CLI" ]; then
+    echo "[$(date '+%H:%M:%S')] ERROR: $AI_CLI CLI не найден (AI_CLI/CLAUDE_CLI_PATH/PATH/~/.local/bin/~/.npm-global/fallback='$AI_CLI')." >&2
+    exit 127
+fi
 
 # issue #17: load NOTIFY_SH_PATH from params.yaml if not already set in environment
 if [ -z "${NOTIFY_SH_PATH:-}" ]; then
@@ -218,25 +222,16 @@ $extra_args"
         return 1
     fi
 
-    log "Completed process: $command_file"
+    log "AI CLI finished: $command_file"
 
     # Commit + push changes (отчёты, помеченные captures)
     local strategy_dir="$WORKSPACE/${IWE_GOVERNANCE_REPO:-DS-strategy}"
 
     if git -C "$strategy_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        # WP-429 Ф6.5: пре-фильтры на новых extraction-reports ДО commit — advisory,
-        # не блокирует (WP-429 паттерн: детектор предлагает, не правит; решение по
-        # находке — R15 на /apply-captures). Только реально новые (untracked) отчёты
-        # этого прогона, не весь каталог — иначе шумит на старых уже прошедших отчётах.
-        local prefilter_script="$SCRIPT_DIR/wp429-extractor-prefilters.py"
-        if [ -f "$prefilter_script" ] && command -v python3 >/dev/null 2>&1; then
-            local new_report
-            for new_report in $(git -C "$strategy_dir" ls-files --others --exclude-standard -- inbox/extraction-reports/ 2>/dev/null); do
-                python3 "$prefilter_script" --report "$strategy_dir/$new_report" >> "$LOG_FILE" 2>&1 \
-                    && log "Pre-filters clean: $new_report" \
-                    || log "Pre-filters found signals (advisory): $new_report — см. $LOG_FILE"
-            done
+        if [ "$commit_mode" = "isolated-inbox" ]; then
+            verify_inbox_outputs "$strategy_dir" || return 1
         fi
+        prefilter_changed_reports "$strategy_dir" || return 1
 
         if ! commit_extractor_changes "$strategy_dir" "$_gov_repo" "$commit_mode"; then
             return 1
@@ -245,6 +240,100 @@ $extra_args"
 
     # macOS notification
     notify "KE: $command_file" "Процесс завершён"
+}
+
+verify_inbox_outputs() {
+    local strategy_dir="$1" report new_reports=0
+    while IFS= read -r -d '' report; do
+        if [[ "$report" = *.md ]] && [ -s "$strategy_dir/$report" ]; then
+            new_reports=$((new_reports + 1))
+        fi
+    done < <(git -C "$strategy_dir" ls-files --others --exclude-standard -z -- inbox/extraction-reports/)
+    if [ "$new_reports" -eq 0 ]; then
+        log "ERROR: AI CLI returned success without a new extraction report; publication blocked"
+        return 1
+    fi
+    if [ "${#EXTRACTOR_CAPTURE_PATHS[@]}" -eq 0 ] || \
+       git -C "$strategy_dir" diff --quiet -- "${EXTRACTOR_CAPTURE_PATHS[@]}"; then
+        log "ERROR: AI CLI returned success without updated input marks; publication blocked"
+        return 1
+    fi
+}
+
+markdown_fence_awk() {
+    cat <<'AWK'
+    function markdown_in_code(line, marker, marker_length) {
+        if (line ~ /^[[:space:]]*(```|~~~)/) {
+            sub(/^[[:space:]]*/, "", line)
+            marker=substr(line,1,1)
+            match(line, /^`+|^~+/); marker_length=RLENGTH
+            if (fence == "") { fence=marker; fence_length=marker_length }
+            else if (fence == marker && marker_length >= fence_length &&
+                     substr(line,marker_length+1) ~ /^[[:space:]]*$/) fence=""
+            return 1
+        }
+        return fence != ""
+    }
+AWK
+}
+
+write_prefilter_section() {
+    local report="$1" status="$2" details="$3" temporary
+    temporary=$(mktemp "${report}.prefilter.XXXXXX") || return 1
+    # Reject malformed managed sections instead of truncating report content.
+    if ! awk "$(markdown_fence_awk)"'
+        { in_code=markdown_in_code($0) }
+        !in_code && /^<!-- extractor-prefilter:start -->$/ { if (inside) exit 1; inside=1; blanks=""; next }
+        !in_code && /^<!-- extractor-prefilter:end -->$/ { if (!inside) exit 1; inside=0; next }
+        !inside {
+            if ($0 ~ /^[[:space:]]*$/) blanks=blanks $0 "\n"
+            else { printf "%s%s\n", blanks, $0; blanks="" }
+        }
+        END { if (inside) exit 1 }
+    ' "$report" > "$temporary"; then
+        rm -f "$temporary"
+        log "ERROR: malformed prefilter section; report preserved: $report"
+        return 1
+    fi
+    {
+        printf '\n<!-- extractor-prefilter:start -->\n## Детерминированные проверки\n\n'
+        printf 'Статус: %s\n\n%s\n' "$status" "$details"
+        pack_snapshot_context
+        printf '\nРезультат — сигнал для проверки пилотом, не решение о приёмке.\n'
+        printf '<!-- extractor-prefilter:end -->\n'
+    } >> "$temporary"
+    mv "$temporary" "$report"
+}
+
+prefilter_changed_reports() {
+    local strategy_dir="$1" report output status result pack_ref
+    local prefilter_script="$SCRIPT_DIR/wp429-extractor-prefilters.py"
+    local python_resolver="${IWE_TEMPLATE:-${PROMPTS_DIR%/roles/extractor/prompts}}/scripts/lib/find-python3.sh"
+    local prefilter_python=""
+    if [ -f "$python_resolver" ]; then
+        prefilter_python=$(bash "$python_resolver" --stdlib-only 2>> "$LOG_FILE") || prefilter_python=""
+    fi
+    local prefilter_args=()
+    for pack_ref in "${EXTRACTOR_PACK_REFS[@]}"; do
+        prefilter_args+=(--pack-ref "$pack_ref")
+    done
+    while IFS= read -r -d '' report; do
+        [[ "$report" = *.md ]] || continue
+        status="not-checked"
+        output="Проверка не выполнена: отсутствует фильтр или недоступен штатный выбор Python 3."
+        if [ -f "$prefilter_script" ] && [ -n "$prefilter_python" ]; then
+            result=0
+            output=$("$prefilter_python" "$prefilter_script" --report "$strategy_dir/$report" \
+                --iwe-root "$WORKSPACE" "${prefilter_args[@]}" 2>&1) || result=$?
+            case "$result" in
+                0) status="clean" ;;
+                1) status="warnings" ;;
+                *) status="not-checked" ;;
+            esac
+        fi
+        write_prefilter_section "$strategy_dir/$report" "$status" "$output" || return 1
+        log "Pre-filters $status: $report"
+    done < <(git -C "$strategy_dir" ls-files --modified --others --exclude-standard -z -- inbox/extraction-reports/)
 }
 
 # WP-5 Ф48 follow-up (found live 02.09 on the first real test run after the
@@ -313,6 +402,26 @@ commit_extractor_changes() {
     local repo_name="$2"
     local commit_mode="${3:-main}"
     local branch head_before head_after target_changes gov_branch
+    local source_file target_paths=()
+    if [ "$commit_mode" = "isolated-inbox" ]; then
+        target_paths=("${EXTRACTOR_CAPTURE_PATHS[@]}")
+        for source_file in "${target_paths[@]}"; do
+            if [ ! -f "$strategy_dir/$source_file" ]; then
+                log "ERROR: input source disappeared during analysis: $source_file"
+                EXTRACTOR_COMMIT_RESULT="failed"
+                return 1
+            fi
+        done
+    else
+        while IFS= read -r source_file; do
+            target_paths+=("${source_file#"$strategy_dir/"}")
+        done < <(capture_source_files "$strategy_dir/inbox")
+    fi
+    if [ -d "$strategy_dir/inbox/extraction-reports" ]; then
+        while IFS= read -r -d '' source_file; do
+            target_paths+=("${source_file#"$strategy_dir/"}")
+        done < <(find "$strategy_dir/inbox/extraction-reports" -maxdepth 1 -type f -name '*.md' -print0)
+    fi
 
     EXTRACTOR_COMMIT_RESULT=""
 
@@ -347,15 +456,17 @@ commit_extractor_changes() {
 
     # Не трогаем файлы экстрактора, если их уже подготовил другой процесс.
     # `commit --only` сохраняет staging всех остальных путей без ручного reset.
-    if ! git -C "$strategy_dir" diff --cached --quiet -- \
-        inbox/captures.md inbox/captures/ inbox/extraction-reports/; then
+    if [ "${#target_paths[@]}" -eq 0 ]; then
+        EXTRACTOR_COMMIT_RESULT="no_changes"
+        return 0
+    fi
+    if ! git -C "$strategy_dir" diff --cached --quiet -- "${target_paths[@]}"; then
         log "SKIP: extractor paths are already staged; skipping commit"
         EXTRACTOR_COMMIT_RESULT="blocked"
         return 0
     fi
 
-    target_changes=$(git -C "$strategy_dir" status --porcelain --untracked-files=all -- \
-        inbox/captures.md inbox/captures/ inbox/extraction-reports/)
+    target_changes=$(git -C "$strategy_dir" status --porcelain --untracked-files=all -- "${target_paths[@]}")
     if [ -z "$target_changes" ]; then
         log "No new changes to commit in $repo_name"
         EXTRACTOR_COMMIT_RESULT="no_changes"
@@ -382,12 +493,14 @@ commit_extractor_changes() {
     if extractor_scope_open_and_note "$strategy_dir" "$scope_agent" "$scope_reason" "$changed_paths"; then
         scope_opened=1
     else
-        log "WARN: cannot open housekeeping session-guard session for $repo_name; commit may be blocked by the pre-commit Scope gate"
+        log "ERROR: cannot open housekeeping session-guard session for $repo_name; commit and publication blocked"
+        EXTRACTOR_COMMIT_RESULT="blocked"
+        return 1
     fi
 
     # `git commit --only` does not discover a brand-new report directory. Stage only
     # extractor-owned paths; `--only` below still leaves every foreign staged path intact.
-    if ! git -C "$strategy_dir" add -- inbox/captures.md inbox/captures/ inbox/extraction-reports/ >> "$LOG_FILE" 2>&1; then
+    if ! git -C "$strategy_dir" add -- "${target_paths[@]}" >> "$LOG_FILE" 2>&1; then
         log "WARN: cannot stage extractor changes for $repo_name"
         EXTRACTOR_COMMIT_RESULT="failed"
         [ "$scope_opened" -eq 1 ] && extractor_scope_close "$strategy_dir" "$scope_agent" "$scope_reason"
@@ -396,7 +509,7 @@ commit_extractor_changes() {
 
     if ! git -C "$strategy_dir" commit --only \
         -m "inbox-check: extraction report $DATE" -- \
-        inbox/captures.md inbox/captures/ inbox/extraction-reports/ >> "$LOG_FILE" 2>&1; then
+        "${target_paths[@]}" >> "$LOG_FILE" 2>&1; then
         log "WARN: git commit failed for $repo_name"
         EXTRACTOR_COMMIT_RESULT="failed"
         [ "$scope_opened" -eq 1 ] && extractor_scope_close "$strategy_dir" "$scope_agent" "$scope_reason"
@@ -558,37 +671,68 @@ cleanup_isolated_inbox_worktree() {
 mount_readonly_packs() {
     local canonical_workspace="$1"
     local isolated_workspace="$2"
-    local pack_dir pack_name
+    local pack_dir pack_name remote_url snapshot_ref pack_count=0
+    EXTRACTOR_PACK_REFS=()
+    EXTRACTOR_PACK_VERIFIED_AT=""
     for pack_dir in "$canonical_workspace"/PACK-*; do
-        [ -d "$pack_dir/.git" ] || continue
+        [ -d "$pack_dir" ] || continue
         pack_name=$(basename "$pack_dir")
-        if git clone -q --depth 1 --no-tags "$pack_dir" "$isolated_workspace/$pack_name" >> "$LOG_FILE" 2>&1; then
-            chmod -R a-w "$isolated_workspace/$pack_name"
-            log "Mounted read-only Pack for duplicate-check: $pack_name"
-        else
-            log "WARN: could not clone $pack_name for read-only mount; inbox-check will see it as absent"
+        if ! remote_url=$(git -C "$pack_dir" remote get-url origin 2>/dev/null) || \
+           ! (cd "$pack_dir" && git clone -q --no-local --depth 1 --single-branch --no-tags \
+               "$remote_url" "$isolated_workspace/$pack_name") >> "$LOG_FILE" 2>&1 || \
+           ! snapshot_ref=$(git -C "$isolated_workspace/$pack_name" rev-parse HEAD) || \
+           ! git -C "$isolated_workspace/$pack_name" checkout -q --detach "$snapshot_ref" >> "$LOG_FILE" 2>&1; then
+            log "ERROR: Pack freshness not verified: $pack_name; duplicate check and analysis were not started"
+            EXTRACTOR_PACK_REFS=()
+            return 1
         fi
+        chmod -R a-w "$isolated_workspace/$pack_name" || return 1
+        EXTRACTOR_PACK_REFS+=("$pack_name=$snapshot_ref")
+        pack_count=$((pack_count + 1))
+        log "Mounted published Pack snapshot: $pack_name@$snapshot_ref"
+    done
+    if [ "$pack_count" -eq 0 ]; then
+        log "ERROR: no Pack repositories available; duplicate check and analysis were not started"
+        return 1
+    fi
+    EXTRACTOR_PACK_VERIFIED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+}
+
+pack_snapshot_context() {
+    local pack_ref
+    if [ -z "${EXTRACTOR_PACK_VERIFIED_AT:-}" ]; then
+        printf '\nСвежесть опубликованных Pack не подтверждена; отсутствие дублей не установлено.\n'
+        return 0
+    fi
+    printf '\nОпубликованные снимки Pack (проверено %s):\n' "$EXTRACTOR_PACK_VERIFIED_AT"
+    for pack_ref in "${EXTRACTOR_PACK_REFS[@]}"; do
+        printf -- '- %s\n' "$pack_ref"
     done
 }
 
 pending_capture_count() {
-    # Accepts one or more capture files; awk accumulates pending across all.
-    awk '
-      /^### / && !/\[(analyzed|processed|duplicate|defer)/ {
-        found = 0
-        for (i = 1; i <= 8; i++) {
-          if ((getline line) > 0) {
-            if (line ~ /^\*\*(Источник|Type|Тип|Source|Маркер|Trigger)/) { found = 1; break }
-            if (line ~ /^### |^## /) break
-          }
-        }
-        if (found) pending++
+    # A block owns its body until the next heading, including when it is empty.
+    awk "$(markdown_fence_awk)"'
+      function finish() { if (active && body) pending++; active=0; body=0 }
+      FNR == 1 { finish(); fence=""; comment=0 }
+      !comment && markdown_in_code($0) {
+        if (active) body=1
+        next
       }
-      END { print pending+0 }
+      /^[[:space:]]*<!--/ { comment=1 }
+      comment { if (/-->/) comment=0; next }
+      /^### / {
+        finish()
+        active=($0 !~ /\[(analyzed|processed|duplicate|defer)([[:space:]]|\])/)
+        next
+      }
+      /^# |^## / { finish(); next }
+      active && /[^[:space:]]/ { body=1 }
+      END { finish(); print pending+0 }
     ' "$@" 2>/dev/null
 }
 
-# WP-526 rotation: capture sources = legacy captures.md + monthly
+# Capture sources = legacy captures.md + monthly + fleeting notes.
 # inbox/captures/YYYY-MM.md files (whitelist by name, other files in the
 # directory are not inbox material).
 capture_source_files() {
@@ -598,6 +742,49 @@ capture_source_files() {
         find "$inbox_dir/captures" -maxdepth 1 -type f \
             -name '[0-9][0-9][0-9][0-9]-[0-9][0-9].md' | sort
     fi
+    [ ! -f "$inbox_dir/fleeting-notes.md" ] || printf '%s\n' "$inbox_dir/fleeting-notes.md"
+}
+
+# Browser-source captures: individual <type>_<slug>.md files (lesson_/
+# pattern_/distinction_/feedback_), produced by the browser's server-side
+# run_extractor (gateway-mcp -> agent-runner) via a direct GitHub commit.
+# Each such file IS one capture, with YAML frontmatter (status:
+# pending-review) instead of a "### " heading inside a shared monthly file --
+# pending_capture_count()'s awk cannot parse this shape at all (it looks for
+# "### " lines), so these files were entirely invisible to inbox-check no
+# matter how long they sat there. Found live (WP-560 Ф13, 2026-09-14,
+# peer-session Kimi+Codex): 3 real pending-review files unprocessed for
+# ~2 months since 2026-07-14. A file with any other status (active, applied,
+# analyzed, ...) is not pending and is skipped.
+standalone_capture_files() {
+    local inbox_dir="$1"
+    [ -d "$inbox_dir/captures" ] || return 0
+    local f
+    while IFS= read -r f; do
+        [ -r "$f" ] || continue
+        # Frontmatter block only (between the two "---" delimiters), not a
+        # whole-file grep: a lesson/pattern whose BODY happens to quote or
+        # describe this exact status line (very plausible -- these captures
+        # are lessons about this pipeline's own bugs) would otherwise match
+        # and falsely re-enter the queue. [[:space:]]* rather than a literal
+        # space: same bug class already fixed once in day-open-scaffold.sh
+        # (bug-2026-06-10-ke-queue-drift) -- a tab or CRLF right after
+        # "status:" breaks a literal-space regex and silently drops a real
+        # pending file; [[:space:]] also matches a trailing CRLF "\r" on the
+        # delimiter line itself.
+        awk '
+          NR == 1 {
+            if ($0 ~ /^---[[:space:]]*$/) { infm = 1; next }
+            exit
+          }
+          infm && $0 ~ /^---[[:space:]]*$/ { exit }
+          infm && $0 ~ /^status:[[:space:]]*pending-review[[:space:]]*$/ { found = 1 }
+          END { exit !found }
+        ' "$f" 2>/dev/null && printf '%s\n' "$f"
+    done < <(find "$inbox_dir/captures" -maxdepth 1 -type f \
+               \( -name 'lesson_*.md' -o -name 'pattern_*.md' \
+                  -o -name 'distinction_*.md' -o -name 'feedback_*.md' \) \
+               2>/dev/null | sort)
 }
 
 run_inbox_check_isolated() {
@@ -660,15 +847,25 @@ run_inbox_check_isolated() {
         return 1
     fi
 
-    local capture_sources=()
+    local capture_sources=() EXTRACTOR_CAPTURE_PATHS=()
     while IFS= read -r src; do
         capture_sources+=("$src")
+        EXTRACTOR_CAPTURE_PATHS+=("${src#"$worktree/"}")
     done < <(capture_source_files "$worktree/inbox")
+    # Browser-source files count separately: each one already IS one
+    # pending capture (no "### " sub-sections to parse), so the array
+    # length itself is the pending count for this source -- no awk needed.
+    local standalone_sources=()
+    while IFS= read -r src; do
+        standalone_sources+=("$src")
+        EXTRACTOR_CAPTURE_PATHS+=("${src#"$worktree/"}")
+    done < <(standalone_capture_files "$worktree/inbox")
     actual_pending=0
     if [ "${#capture_sources[@]}" -gt 0 ]; then
         actual_pending=$(pending_capture_count "${capture_sources[@]}")
     fi
     actual_pending=${actual_pending:-0}
+    actual_pending=$((actual_pending + ${#standalone_sources[@]}))
     if [ "$actual_pending" -le 0 ]; then
         log "SKIP: No pending captures in refreshed inbox"
         cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
@@ -678,13 +875,25 @@ run_inbox_check_isolated() {
     fi
     log "Found $actual_pending pending captures in refreshed inbox"
 
-    mount_readonly_packs "$canonical_workspace" "$isolated_workspace"
+    if ! mount_readonly_packs "$canonical_workspace" "$isolated_workspace"; then
+        log "WARN: Pack refresh failed; inbox marks unchanged, worktree preserved: $worktree"
+        release_inbox_lock "$lock_dir"
+        return 1
+    fi
+
+    local source_context="Разрешённые входящие файлы (в этом порядке):" src
+    for src in "${EXTRACTOR_CAPTURE_PATHS[@]}"; do
+        source_context="$source_context
+- $src"
+    done
+    source_context="$source_context
+$(pack_snapshot_context)"
 
     local WORKSPACE="$isolated_workspace"
     local IWE_WORKSPACE="$isolated_workspace"
     local AI_CLI_EXTRA_FLAGS="${IWE_EXTRACTOR_INBOX_AI_FLAGS:---dangerously-skip-permissions --allowedTools Read,Write,Edit,Glob,Grep}"
     export IWE_WORKSPACE
-    if ! run_claude "inbox-check" "" "isolated-inbox"; then
+    if ! run_claude "inbox-check" "$source_context" "isolated-inbox"; then
         log "WARN: isolated inbox-check failed; worktree preserved for review: $worktree"
         release_inbox_lock "$lock_dir"
         return 1
@@ -702,10 +911,7 @@ run_inbox_check_isolated() {
             # EXTRACTOR_COMMIT_RESULT=published after that 0.
             cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
                 "$isolated_workspace" "$repo_name" "$run_root" || true
-            ;;
-        no_changes)
-            cleanup_isolated_inbox_worktree "$canonical_repo" "$worktree" "$branch_name" \
-                "$isolated_workspace" "$repo_name" "$run_root" || true
+            log "Completed process: inbox-check; report and input marks published"
             ;;
         *)
             log "WARN: isolated inbox-check did not reach a safe publication state; worktree preserved: $worktree"
@@ -796,6 +1002,18 @@ case "$1" in
         # WP-247 Ф-MULTI-SOURCE.2: git-diff feeder (cron 06:00/21:00).
         # Извлекает кандидатов из git log за окно и пишет ###-блоки в captures-inbox.
         # Окно: $2 (по умолчанию "12 hours ago").
+        #
+        # issue #840: this case wrote to the same captures.md as
+        # session-close-feed without taking any lock -- a concurrent
+        # session-close-feed run could lose this run's edits (read-modify-
+        # write race, same class as the one already fixed for session-close-
+        # feed above). Reuses that same lock dir/var: both feeders append to
+        # the identical file, so one shared lock is correct, not two.
+        feed_lock_dir="${IWE_EXTRACTOR_FEED_LOCK_DIR:-${TMPDIR:-/tmp}/iwe-extractor-session-close-feed.lock}"
+        if ! acquire_inbox_lock "$feed_lock_dir" "git-diff-feed"; then
+            exit 0
+        fi
+        trap 'release_inbox_lock "$feed_lock_dir" "git-diff-feed"' EXIT
         SINCE="${2:-12 hours ago}"
         log "Running git-diff FEED (since: $SINCE)"
         run_claude "git-diff-feed" "$SINCE"

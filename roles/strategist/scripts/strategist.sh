@@ -59,9 +59,21 @@ REPO_DIR="$(dirname "$SCRIPT_DIR")"
 WORKSPACE="${IWE_WORKSPACE:-$HOME/IWE}/${IWE_GOVERNANCE_REPO:-DS-strategy}"
 
 # Guard: IWE_GOVERNANCE_REPO mismatch (Claude peer-review, 2026-05-26)
-EXPECTED_GOV=$(grep 'IWE_GOVERNANCE_REPO=' "$HOME/.iwe-paths" 2>/dev/null | sed 's/.*="//;s/"$//' || echo "DS-strategy")
+# WP-529 Ф94 (peer-session 2026-09-08-32, Evgenii's report): $HOME/.iwe-paths
+# is a legacy path install-iwe-paths.sh stopped writing (canonical file is
+# $WORKSPACE_DIR/.iwe-paths, see WORKSPACE above). Read the current path, and
+# read it without a pipe: `grep|sed || echo` masked grep's exit code behind
+# sed's (sed exits 0 on empty stdin), so the "|| echo DS-strategy" fallback
+# never fired and EXPECTED_GOV silently ended up empty instead.
+IWE_PATHS_FILE="${IWE_WORKSPACE:-$HOME/IWE}/.iwe-paths"
+# `|| true` guards against awk's own exit code (e.g. file not found) tripping
+# `set -e` on this assignment — not a pipe, so no exit-code-masking risk;
+# the value fallback below is the actual default, this only keeps the script
+# alive to reach it.
+EXPECTED_GOV=$(awk -F'"' '/^export IWE_GOVERNANCE_REPO=/{print $2; exit}' "$IWE_PATHS_FILE" 2>/dev/null || true)
+EXPECTED_GOV="${EXPECTED_GOV:-DS-strategy}"
 if [ "${IWE_GOVERNANCE_REPO:-}" ] && [ "$IWE_GOVERNANCE_REPO" != "$EXPECTED_GOV" ]; then
-    echo "WARN: IWE_GOVERNANCE_REPO=$IWE_GOVERNANCE_REPO, expected $EXPECTED_GOV (from ~/.iwe-paths)" >&2
+    echo "WARN: IWE_GOVERNANCE_REPO=$IWE_GOVERNANCE_REPO, expected $EXPECTED_GOV (from $IWE_PATHS_FILE)" >&2
 fi
 
 # WP-529 F6 (Evgenii post-update defect #1, 18.08): update.sh reinstalls
@@ -103,11 +115,19 @@ elif [ -x "$HOME/.npm-global/bin/claude" ]; then
 else
     CLAUDE_PATH="{{CLAUDE_PATH}}"  # fallback: build-runtime должен был подставить
 fi
-if [ ! -x "$CLAUDE_PATH" ]; then
-    echo "[$(date '+%H:%M:%S')] ERROR: claude CLI не найден (CLAUDE_CLI_PATH/PATH/~/.local/bin/~/.npm-global/fallback='$CLAUDE_PATH')." >&2
+CLAUDE_TIMEOUT=1800  # 30 мин — защита от зависания Claude CLI
+
+# AI CLI: переопределение через переменные окружения (см. extractor.sh)
+AI_CLI="${AI_CLI:-$CLAUDE_PATH}"
+AI_CLI_PROMPT_FLAG="${AI_CLI_PROMPT_FLAG:--p}"
+
+# AR.293: гейт проверяет эффективную программу ($AI_CLI), не литерал CLAUDE_PATH —
+# иначе override остаётся декоративным, когда claude физически отсутствует, но
+# AI_CLI указывает на реально установленную другую программу.
+if ! command -v "$AI_CLI" >/dev/null 2>&1 && [ ! -x "$AI_CLI" ]; then
+    echo "[$(date '+%H:%M:%S')] ERROR: $AI_CLI CLI не найден (AI_CLI/CLAUDE_CLI_PATH/PATH/~/.local/bin/~/.npm-global/fallback='$AI_CLI')." >&2
     exit 127
 fi
-CLAUDE_TIMEOUT=1800  # 30 мин — защита от зависания Claude CLI
 
 # macOS не имеет GNU timeout — используем perl fallback
 if ! command -v timeout &>/dev/null; then
@@ -238,10 +258,20 @@ ${prompt}"
     # дефолт — проверенный mcp__claude_ai_Google_Calendar. Неизвестные имена в
     # whitelist безвредны — просто никогда не совпадут.
     local calendar_mcp="${IWE_CALENDAR_MCP_SERVERS:-mcp__claude_ai_Google_Calendar}"
-    timeout "$CLAUDE_TIMEOUT" "$CLAUDE_PATH" \
-        "${model_args[@]}" \
-        --allowedTools "Read,Write,Edit,Glob,Grep,Bash,${calendar_mcp}" \
-        -p "$prompt" \
+    # AR.293: AI_CLI_EXTRA_FLAGS — точка подмены на случай, когда AI_CLI указывает
+    # не на Claude Code (--model/--allowedTools — его флаги, не переносимы как есть).
+    # Дефолт воспроизводит прежнее поведение один в один.
+    local extra_flags
+    if [ -n "${AI_CLI_EXTRA_FLAGS:-}" ]; then
+        # намеренный word-splitting единой override-строки — тот же контракт,
+        # что уже принят в extractor.sh
+        read -ra extra_flags <<< "$AI_CLI_EXTRA_FLAGS"
+    else
+        extra_flags=("${model_args[@]}" --allowedTools "Read,Write,Edit,Glob,Grep,Bash,${calendar_mcp}")
+    fi
+    timeout "$CLAUDE_TIMEOUT" "$AI_CLI" \
+        "${extra_flags[@]}" \
+        $AI_CLI_PROMPT_FLAG "$prompt" \
         >> "$LOG_FILE" 2>&1 || rc=$?
 
     if [ $rc -eq 124 ]; then
@@ -260,8 +290,20 @@ ${prompt}"
     if git -C "$WORKSPACE" diff --quiet origin/main..HEAD 2>/dev/null; then
         log "No unpushed commits"
     else
-        git -C "$WORKSPACE" pull --rebase >> "$LOG_FILE" 2>&1 && log "Pulled (rebase)" || log "WARN: pull --rebase failed"
-        git -C "$WORKSPACE" push >> "$LOG_FILE" 2>&1 && log "Pushed to GitHub" || log "WARN: git push failed"
+        # WP-7 Ф101: raw pull --rebase + push on a checkout shared with
+        # concurrent agent sessions routinely hit a dirty tree or a
+        # non-fast-forward push and silently dropped the commit (found via a
+        # W36 week-review that never reached origin/main). ds-publish.sh
+        # isolates this exact commit into a disposable worktree instead of
+        # waiting for a clean window.
+        local push_sha
+        push_sha=$(git -C "$WORKSPACE" rev-parse HEAD)
+        if bash "$WORKSPACE/scripts/ds-publish.sh" "$WORKSPACE" normal \
+            --reason "strategist: $command_file" --from-commit "$push_sha" >> "$LOG_FILE" 2>&1; then
+            log "Pushed to GitHub"
+        else
+            log "WARN: ds-publish.sh failed — публикация не удалась"
+        fi
     fi
 
     # Очистить staging area после Claude сессии (предотвращает staging leak в следующие скрипты)
@@ -306,9 +348,79 @@ acquire_lock() {
     add_exit_cleanup "rm -rf \"$lockdir\" 2>/dev/null"
 }
 
+# issue #840: git-diff-feed and session-close-feed (extractor.sh) and this
+# note-review step all read-modify-write the same shared inbox/captures.md.
+# acquire_lock() above only serializes note-review against a second
+# note-review run (own $LOG_DIR/locks) -- it never intersects extractor.sh's
+# separate TMPDIR-based lock, so the two scripts could still race on the
+# same file. Shares that exact lock dir/var so both writers contend for the
+# same resource instead of two disjoint namespaces.
+acquire_captures_write_lock() {
+    local lock_dir="${IWE_EXTRACTOR_FEED_LOCK_DIR:-${TMPDIR:-/tmp}/iwe-extractor-session-close-feed.lock}"
+    local waited=0
+    while true; do
+        if mkdir "$lock_dir" 2>/dev/null; then
+            printf '%s\n' "$$" > "$lock_dir/pid"
+            add_exit_cleanup "rm -f '$lock_dir/pid' 2>/dev/null; rmdir '$lock_dir' 2>/dev/null"
+            return 0
+        fi
+        local owner_pid=""
+        [ -f "$lock_dir/pid" ] && owner_pid=$(tr -d '[:space:]' < "$lock_dir/pid")
+        # Mirrors acquire_inbox_lock() (extractor.sh) exactly: only reclaim
+        # when the pid file is present and non-empty. A missing/empty pid
+        # file means another writer's mkdir has landed but its own pid write
+        # has not (a real, if narrow, gap -- see extractor.sh's own mkdir/
+        # printf pair) -- reclaiming there would steal a lock someone else
+        # already holds (TOCTOU), reintroducing the exact race #840 fixes.
+        # Cold-review (same session) caught this asymmetry before deploy.
+        if [ -n "$owner_pid" ] && { ! [[ "$owner_pid" =~ ^[0-9]+$ ]] || ! kill -0 "$owner_pid" 2>/dev/null; }; then
+            rm -f "$lock_dir/pid"
+            rmdir "$lock_dir" 2>/dev/null
+            continue
+        fi
+        if [ "$waited" -ge 30 ]; then
+            log "WARN: captures.md lock unavailable after ${waited}s (pid: ${owner_pid:-mid-acquire}) — proceeding without it"
+            return 1
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+}
+
 # Читаем strategy_day из конфига (L4 Personal)
-RHYTHM_CONFIG="$HOME/.claude/projects/-Users-$(whoami)-IWE/memory/day-rhythm-config.yaml"
-STRATEGY_DAY_NAME=$(grep 'strategy_day:' "$RHYTHM_CONFIG" 2>/dev/null | awk '{print $2}' || echo "monday")
+# issue #729: раньше единственным источником был auto-memory Claude Code по
+# литеральному пути "-Users-$(whoami)-IWE" — ломается молча, если workspace
+# не буквально ~/IWE (симлинк или другой путь на Linux/WSL), а fallback на
+# monday ничем не сигнализировал об ошибке. Governance-репо копия — тот же
+# источник, что уже читают day-open-scaffold.sh и server-calendar.sh, и она
+# не зависит от workspace-пути. Функция вынесена отдельно ради регрессионного
+# теста (scripts/tests/test_issue_729_rhythm_config_resolve.sh).
+resolve_rhythm_config() {
+    local ws="$1" iwe_workspace="$2"
+    local rhythm_config="$ws/exocortex/day-rhythm-config.yaml"
+    if [ ! -f "$rhythm_config" ]; then
+        # Fallback: auto-memory Claude Code, путь выводим из РЕАЛЬНОГО workspace
+        # (pwd -P разворачивает симлинки), не из literal "~/IWE".
+        local ws_real
+        ws_real="$(cd "${iwe_workspace:-$HOME/IWE}" 2>/dev/null && pwd -P || true)"
+        if [ -n "$ws_real" ]; then
+            # tr '/_.' '-', не sed 's#/#-#g': Claude Code слугифицирует путь,
+            # заменяя на "-" также "_" и "." (см. memory-exocortex-sync.sh) —
+            # sed-only вариант молча ломался бы для workspace-путей с "." или "_".
+            local ws_slug
+            ws_slug="$(printf '%s' "$ws_real" | tr '/_.' '-')"
+            rhythm_config="$HOME/.claude/projects/${ws_slug}/memory/day-rhythm-config.yaml"
+        fi
+    fi
+    printf '%s\n' "$rhythm_config"
+}
+
+RHYTHM_CONFIG="$(resolve_rhythm_config "$WORKSPACE" "${IWE_WORKSPACE:-}")"
+STRATEGY_DAY_NAME=$(grep 'strategy_day:' "$RHYTHM_CONFIG" 2>/dev/null | awk '{print $2}')
+if [ -z "$STRATEGY_DAY_NAME" ]; then
+    log "WARN: strategy_day not found in $RHYTHM_CONFIG — fallback: monday"
+    STRATEGY_DAY_NAME="monday"
+fi
 # Конвертируем имя дня в номер (1=Mon..7=Sun)
 case "$STRATEGY_DAY_NAME" in
     monday)    STRATEGY_DAY_NUM=1 ;;
@@ -424,6 +536,7 @@ case "$1" in
         BOLD_NEW_BEFORE=$(grep -vc '🔄' <(grep '^\*\*' "$FLEETING" 2>/dev/null) 2>/dev/null || true); BOLD_NEW_BEFORE=${BOLD_NEW_BEFORE:-0}
         log "Canary: $BOLD_BEFORE bold total ($BOLD_NEW_BEFORE new, $(( BOLD_BEFORE - BOLD_NEW_BEFORE )) deferred 🔄)"
 
+        acquire_captures_write_lock || true
         run_claude "note-review" "claude-haiku-4-5-20251001"
 
         # Canary: count bold notes after (needs to be visible for alert at line ~274)
@@ -474,9 +587,21 @@ case "$1" in
         # If cleanup made changes, commit and push
         if ! git -C "$WORKSPACE" diff --quiet -- inbox/fleeting-notes.md archive/notes/Notes-Archive.md 2>/dev/null; then
             git -C "$WORKSPACE" add inbox/fleeting-notes.md archive/notes/Notes-Archive.md
-            git -C "$WORKSPACE" commit -m "chore: auto-cleanup processed notes from fleeting-notes.md" >> "$LOG_FILE" 2>&1 || true
-            git -C "$WORKSPACE" pull --rebase >> "$LOG_FILE" 2>&1 && log "Cleanup: pulled (rebase)" || log "WARN: cleanup pull --rebase failed"
-            git -C "$WORKSPACE" push >> "$LOG_FILE" 2>&1 && log "Cleanup: pushed" || log "WARN: cleanup push failed"
+            # WP-7 Ф101: same ds-publish.sh move as the main push block above,
+            # plus an explicit commit-result check — `|| true` here used to
+            # swallow a failed commit while still reporting "Cleanup: pushed"
+            # for a commit that never happened.
+            if git -C "$WORKSPACE" commit -m "chore: auto-cleanup processed notes from fleeting-notes.md" >> "$LOG_FILE" 2>&1; then
+                cleanup_sha=$(git -C "$WORKSPACE" rev-parse HEAD)
+                if bash "$WORKSPACE/scripts/ds-publish.sh" "$WORKSPACE" normal \
+                    --reason "strategist: cleanup" --from-commit "$cleanup_sha" >> "$LOG_FILE" 2>&1; then
+                    log "Cleanup: pushed"
+                else
+                    log "WARN: cleanup ds-publish.sh failed"
+                fi
+            else
+                log "WARN: cleanup git commit failed"
+            fi
         else
             log "Cleanup: no changes to commit"
         fi

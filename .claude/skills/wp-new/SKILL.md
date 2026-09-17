@@ -56,7 +56,8 @@ gates_rationale: "операционный скилл; WP Gate применим 
 ## Шаг 1. Сбор информации
 
 Запроси или определи:
-- **Название:** формулировка артефакта (не задачи)
+- **Название:** формулировка артефакта (не задачи). **Обязательный шаг для ЛЮБОГО класса задачи, без исключений (WP-563, ужесточено WP-7 Ф142 2026-09-11 — go-ahead пилота: trivial/closed-loop НЕ освобождены от вызова):** вызвать Skill `artifactor` с сырым описанием задачи — не формулировать название самому. Сохранить JSON-ответ в файл (например `$STATE_DIR/artifactor-result-{slug}.json`) — этот файл передаётся в `create-wp.sh` на Шаге 4, скрипт сам берёт `title` из его поля `artifact` и механически откажет, если файла нет или переданный отдельно `--title` с ним расходится (Артефактор-гейт, см. Шаг 4). Ответ `{"error": "INSUFFICIENT_INPUT"}` → запросить у пилота более развёрнутое описание, повторить вызов. Название пилоту не показывать, минуя этот вызов.
+- **Правка пилота.** Пилот вправе поправить формулировку Артефактора сам — тогда на Шаге 4 передать `--pilot-revision "причина"` вместе с исправленным `--title`; без этого флага расхождение `--title` с результатом Артефактора — отказ скрипта, не тихая подмена.
 - **Репо:** целевой репозиторий
 - **Бюджет:** оценка в часах
 - **Приоритет:** критический / высокий / средний / низкий
@@ -94,15 +95,20 @@ gates_rationale: "операционный скилл; WP Gate применим 
 ```bash
 touch "${IWE_ROOT:-$HOME/IWE}/.claude/state/wp-consent-{N}"   # WP Gate — обязательно перед запуском (тот же путь, что проверяет create-wp.sh, — НЕ ~/.claude, issue #556)
 bash "$IWE_SCRIPTS/create-wp.sh" \
-  --title "Название РП" \
+  --artifactor-result "$STATE_DIR/artifactor-result-{slug}.json" \  # результат Шага 1, обязателен всегда
   --budget 5h \
   --priority P2 \
+  --verification-class open-loop \  # обязателен всегда: trivial|closed-loop|open-loop|problem-framing
   --state "belonging (Оснащённость): пилот без Х → с Х" \  # обязателен при наличии docs/state-axes-registry.yaml
   --hypothesis H-101 \ # для tests/enables/responds
   --hypothesis-relation tests \ # tests|enables|responds|researches|operational
   --result R3 \        # необязательно; если ≥3h — передать для автовставки в Strategy.md
   --repo "DS-repo"     # необязательно
+  # --pilot-revision "причина" \   # только если пилот сам поправил формулировку Артефактора
+  # --title "Название" \           # тот же класс случая — только вместе с --pilot-revision
 ```
+
+**Артефактор-гейт (WP-7 Ф142, 2026-09-11) — механический, не только инструкция.** `create-wp.sh` отказывает (exit 1), если `--artifactor-result` не передан (кроме явного `--no-artifactor-check` — только для тестов/скриптов, никогда для обычного создания РП агентом) или если JSON нечитаем / без поля `artifact`. Title всегда берётся из этого файла; отдельно переданный `--title`, расходящийся с ним без `--pilot-revision`, — тоже отказ. Это закрывает дыру, которую нашла пир-сессия 2026-09-11-04-wp7-f140-artifactor-process: раньше ничто не проверяло, что агент реально использовал результат вызова, а не вписал своё.
 
 **Шаблон context file** (создаётся скриптом автоматически):
 ```markdown
@@ -115,9 +121,12 @@ budget: {Nh}
 created: {YYYY-MM-DD}
 last_session: {YYYY-MM-DD}
 related: []
+verification_class: {trivial|closed-loop|open-loop|problem-framing}
 state_transition: "{ось (Русское имя): из → в}"
 hypothesis: "{H-NNN или —}"
 hypothesis_relation: "{tests|enables|responds|researches|operational}"
+artifactor_resolution_path: {keyword|llm|bypassed}
+artifactor_result_sha256: {sha256 результата Артефактора}
 ---
 
 # WP-{N}: {название}

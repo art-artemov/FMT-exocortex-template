@@ -7,10 +7,24 @@
 # see DP.M.010, DP.ROLE.037
 #
 # Использование:
-#   bash create-wp.sh --title "Название" --budget 5h --priority P3 [--slug slug] [--repo "репо"] [--related "WP-150:dependency,WP-167:продукт"]
-#   bash create-wp.sh --title "Название" --budget 5h --priority P3 --state "belonging (Оснащённость): из → в" --hypothesis "H-101 | —:infra|techdebt|order|spinoff" [--hypothesis-relation tests]
-#   bash create-wp.sh --title "Название" --budget 5h --priority P3 --no-consent-check
+#   bash create-wp.sh --artifactor-result result.json --budget 5h --priority P3 --verification-class closed-loop [--slug slug] [--repo "репо"] [--related "WP-150:dependency,WP-167:продукт"]
+#   bash create-wp.sh --artifactor-result result.json --budget 5h --priority P3 --verification-class open-loop --state "belonging (Оснащённость): из → в" --hypothesis "H-101 | —:infra|techdebt|order|spinoff" [--hypothesis-relation tests]
+#   bash create-wp.sh --artifactor-result result.json --budget 5h --priority P3 --verification-class trivial --no-consent-check
 #
+# --verification-class (WP structural-hole fix): REQUIRED, always — trivial|closed-loop|open-loop|problem-framing.
+#   Determines whether the WP needs a staged plan (/decompose): open-loop/problem-framing
+#   with budget ≥3h get an extra checklist item in the generated context file's «Осталось»
+#   section reminding the pilot to run /decompose. Unlike --state/--hypothesis this gate is
+#   NOT conditional on a governance-repo file existing — every WP declares its class.
+# --artifactor-result (WP-7 Ф142, 2026-09-11): путь к JSON-результату вызова
+#   Артефактора (scripts/artifactor.py или LLM-fallback скилла /artifactor,
+#   поле обязательно: "artifact"). TITLE берётся из поля "artifact" этого
+#   файла -- --title больше не источник имени сам по себе, только сверка/явная
+#   правка пилота: если задан ОБА (--title и --artifactor-result) и они
+#   расходятся, нужен --pilot-revision "причина" (иначе отказ -- имя придумано
+#   в обход результата Артефактора). Обязателен для ЛЮБОГО класса задачи (нет
+#   исключения для trivial/closed-loop, go-ahead пилота 2026-09-11) --
+#   экстренный обход: --no-artifactor-check.
 # --state (WP-505): target state transition (WP-457 State-Transition Gate).
 #   REQUIRED when <governance>/docs/state-axes-registry.yaml exists (author install);
 #   optional otherwise (typical user install — gate inactive per template contract).
@@ -51,10 +65,14 @@ SLUG=""
 REPO=""
 RELATED=""
 RESULT=""
+VERIFICATION_CLASS=""
 STATE=""
 HYPOTHESIS=""
 HYPOTHESIS_RELATION="unclassified"
 SKIP_CONSENT=0
+ARTIFACTOR_RESULT_FILE=""
+PILOT_REVISION=""
+SKIP_ARTIFACTOR=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -65,19 +83,95 @@ while [[ $# -gt 0 ]]; do
     --repo)     REPO="$2";     shift 2 ;;
     --related)  RELATED="$2";  shift 2 ;;
     --result)   RESULT="$2";   shift 2 ;;
+    --verification-class) VERIFICATION_CLASS="$2"; shift 2 ;;
     --state)    STATE="$2";    shift 2 ;;
     --hypothesis) HYPOTHESIS="$2"; shift 2 ;;
     --hypothesis-relation) HYPOTHESIS_RELATION="$2"; shift 2 ;;
     --no-consent-check) SKIP_CONSENT=1; shift ;;
+    --artifactor-result) ARTIFACTOR_RESULT_FILE="$2"; shift 2 ;;
+    --pilot-revision) PILOT_REVISION="$2"; shift 2 ;;
+    --no-artifactor-check) SKIP_ARTIFACTOR=1; shift ;;
     *) echo "Неизвестный флаг: $1" >&2; exit 1 ;;
   esac
 done
 
-# --- Валидация ---
-if [[ -z "$TITLE" || -z "$BUDGET" ]]; then
-  echo "Использование: $0 --title \"Название\" --budget 5h [--priority P3] [--slug slug] [--repo репо] [--related \"WP-NNN:тип\"] [--result R3] [--state \"ось: из → в\"] [--hypothesis H-NNN] [--hypothesis-relation tests]" >&2
+# --- Artefactor Gate (WP-7 Ф142, 2026-09-11) ---
+# Title обязан прийти из результата Артефактора, не быть придуманным агентом
+# в обход него — go-ahead пилота: без исключения для trivial/closed-loop.
+# Разошедшийся --title без --pilot-revision — отказ (агент вписал своё имя,
+# хотя результат Артефактора был другим); экстренный обход — --no-artifactor-check.
+ARTF_RESOLUTION_PATH="bypassed"
+ARTF_SHA256=""
+if [[ -n "$ARTIFACTOR_RESULT_FILE" ]]; then
+  if [[ ! -f "$ARTIFACTOR_RESULT_FILE" ]]; then
+    echo "❌ --artifactor-result: файл не найден: $ARTIFACTOR_RESULT_FILE" >&2
+    exit 1
+  fi
+  ARTF_PARSED=$(python3 - "$ARTIFACTOR_RESULT_FILE" <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        data = json.load(f)
+except (OSError, json.JSONDecodeError) as exc:
+    print(f"INVALID:не читается или не JSON ({exc})")
+    sys.exit(0)
+if not isinstance(data, dict):
+    print("INVALID:верхний уровень JSON не объект (ожидается {...})")
+    sys.exit(0)
+artifact = data.get("artifact")
+if not artifact or not isinstance(artifact, str):
+    print("INVALID:поле 'artifact' пустое или не строка")
+    sys.exit(0)
+if "\n" in artifact or "\r" in artifact:
+    print("INVALID:поле 'artifact' содержит перевод строки — название РП должно быть одной строкой")
+    sys.exit(0)
+resolution_path = data.get("resolution_path") or "unknown"
+print(f"OK:{resolution_path}\t{artifact}")
+PYEOF
+)
+  if [[ "$ARTF_PARSED" != OK:* ]]; then
+    echo "❌ --artifactor-result: ${ARTF_PARSED#INVALID:}" >&2
+    exit 1
+  fi
+  ARTF_RESOLUTION_PATH="${ARTF_PARSED#OK:}"
+  ARTF_RESOLUTION_PATH="${ARTF_RESOLUTION_PATH%%$'\t'*}"
+  ARTF_ARTIFACT="${ARTF_PARSED#*$'\t'}"
+  ARTF_SHA256=$({ shasum -a 256 "$ARTIFACTOR_RESULT_FILE" 2>/dev/null || sha256sum "$ARTIFACTOR_RESULT_FILE" 2>/dev/null; } | cut -d' ' -f1)
+  if [[ -z "$TITLE" ]]; then
+    TITLE="$ARTF_ARTIFACT"
+  elif [[ "$TITLE" != "$ARTF_ARTIFACT" && -z "$PILOT_REVISION" ]]; then
+    echo "❌ --title (\"$TITLE\") расходится с результатом Артефактора (\"$ARTF_ARTIFACT\")." >&2
+    echo "   Либо возьми формулировку Артефактора как есть, либо, если пилот осознанно" >&2
+    echo "   поправил её сам, добавь --pilot-revision \"причина правки\"." >&2
+    exit 1
+  fi
+elif [[ "$SKIP_ARTIFACTOR" -eq 0 ]]; then
+  echo "🚫 WP Gate: нет результата Артефактора для нового РП" >&2
+  echo "   Вызови Skill artifactor (или его keyword-классификатор напрямую), сохрани JSON-ответ в файл:" >&2
+  echo "   --artifactor-result /path/to/artifactor-result.json" >&2
+  echo "   Обязателен для любого класса задачи, исключений нет (go-ahead пилота 2026-09-11)." >&2
+  echo "   Экстренный обход (не для штатного создания РП): --no-artifactor-check" >&2
   exit 1
 fi
+
+# --- Валидация ---
+if [[ -z "$TITLE" || -z "$BUDGET" ]]; then
+  echo "Использование: $0 --artifactor-result result.json --budget 5h --verification-class <trivial|closed-loop|open-loop|problem-framing> [--priority P3] [--slug slug] [--repo репо] [--related \"WP-NNN:тип\"] [--result R3] [--state \"ось: из → в\"] [--hypothesis H-NNN] [--hypothesis-relation tests]" >&2
+  exit 1
+fi
+
+# --- Verification-Class Gate (structural-hole fix) ---
+# Unlike --state/--hypothesis, this is unconditionally required: every WP
+# declares its verification class regardless of which governance-repo files
+# exist. The class feeds the decompose-reminder checklist item below.
+case "$VERIFICATION_CLASS" in
+  trivial|closed-loop|open-loop|problem-framing) ;;
+  *)
+    echo "❌ --verification-class обязателен: trivial|closed-loop|open-loop|problem-framing" >&2
+    echo "   Передано: ${VERIFICATION_CLASS:-<пусто>}" >&2
+    exit 1
+    ;;
+esac
 
 case "$HYPOTHESIS_RELATION" in
   tests|enables|responds)
@@ -176,6 +270,47 @@ if [[ -f "$HYP_LOG" ]]; then
   esac
 fi
 
+# --- Decompose-reminder derivation (structural-hole fix) ---
+# Budget formats seen in the wild: "5h", "2h", "3-4h" (range). For a range we
+# want the upper bound — the more conservative read when deciding whether the
+# WP is big enough to need a staged plan. Plain `sed 's/[^0-9]//g'` (used
+# elsewhere in this script for a different, looser purpose) would mangle
+# "3-4h" into "34"; this instead takes the max of all digit groups found.
+budget_upper_bound_hours() {
+  local budget="$1" n max=0
+  for n in $(grep -oE '[0-9]+' <<<"$budget"); do
+    [[ "$n" -gt "$max" ]] && max="$n"
+  done
+  printf '%s\n' "$max"
+}
+
+# Шаг 4.5 protocol-open.md (/decompose): open-loop/problem-framing + budget
+# ≥3h needs a staged plan. create-wp.sh is deterministic=true and cannot call
+# the (non-deterministic) /decompose skill itself — instead it plants a
+# checklist reminder directly in the generated «Осталось» section, so the
+# nudge survives even when the console output scrolls away.
+DECOMPOSE_CHECKLIST_ITEM=""
+if [[ "$VERIFICATION_CLASS" == "open-loop" || "$VERIFICATION_CLASS" == "problem-framing" ]]; then
+  if [[ "$(budget_upper_bound_hours "$BUDGET")" -ge 3 ]]; then
+    DECOMPOSE_CHECKLIST_ITEM="- [ ] Запустить /decompose — план по этапам (класс проверки требует)
+"
+  fi
+fi
+
+# YAML double-quoted scalar escape (WP-7 Ф142, найдено cold-review 2026-09-11):
+# title теперь обязательно приходит из внешнего JSON (в т.ч. LLM-fallback
+# Артефактора), не только с клавиатуры агента -- кавычка или перевод строки
+# в значении раньше молча ломали frontmatter карточки (title: "${TITLE}" без
+# экранирования). Применяется к любому свободному тексту, идущему в YAML
+# double-quoted scalar: title, --state, --hypothesis, --pilot-revision.
+yaml_dq_escape() {  # yaml_dq_escape <string>
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  printf '%s' "$s"
+}
+
 # Registry cell «Ставка»: Russian axis names + hypothesis id (WP-505).
 axis_ru() {
   case "$1" in
@@ -200,8 +335,24 @@ if [[ -n "$STATE" && -n "${STATE_AXES:-}" ]]; then
   fi
 fi
 
-# --- Найти следующий номер WP ---
-WP_NUM=$(python3 - "$REGISTRY" <<'PYEOF' 2>/dev/null
+# --- Найти и атомарно зарезервировать следующий номер WP ---
+# issue #743: max(REGISTRY)+1 без резервирования отдаёт один и тот же номер
+# двум параллельным агентам (Claude/Kimi/Codex — штатный режим платформы,
+# см. AGENTS.md § Git Staging), и повторно — любому сокращению активного
+# реестра (архивация, разделение). Тот же класс гонки уже закрыт для номеров
+# пир-сессий (session-dir-reserve.sh, WP-530): маркер-каталог + `mkdir` без
+# -p как единственный атомарный арбитр на POSIX-файловой системе, retry на
+# EEXIST. Маркеры никогда не удаляются при архивации WP — номер не переиздаётся.
+WP_NUMBERS_DIR="$STATE_DIR/wp-numbers"
+mkdir -p "$WP_NUMBERS_DIR"
+# Fail fast on a real filesystem problem (permissions, read-only, disk full)
+# instead of burning all 50 retry attempts and reporting a misleading
+# "couldn't reserve after 50 tries" — that message is meant for a genuine
+# reservation race, not a broken filesystem (cold-review finding, PR #746).
+[[ -w "$WP_NUMBERS_DIR" ]] || { echo "❌ Нет прав на запись в $WP_NUMBERS_DIR — резервирование номера невозможно" >&2; exit 1; }
+
+registry_max() {
+  python3 - "$REGISTRY" <<'PYEOF' 2>/dev/null
 import sys, re
 registry = sys.argv[1]
 max_num = 0
@@ -214,18 +365,43 @@ try:
                 n = int(m.group(1))
                 if n > max_num:
                     max_num = n
-except Exception as e:
-    print(0, file=sys.stderr)
-print(max_num + 1)
+except Exception:
+    pass
+print(max_num)
 PYEOF
-)
+}
 
-if [[ -z "$WP_NUM" || "$WP_NUM" -le 0 ]]; then
-  echo "❌ Не удалось определить следующий номер WP из REGISTRY" >&2
+highest_taken() {
+  local max
+  max=$(registry_max)
+  [[ "$max" =~ ^[0-9]+$ ]] || max=0
+  local d n
+  for d in "$WP_NUMBERS_DIR"/*/; do
+    [[ -d "$d" ]] || continue
+    n="$(basename "$d")"
+    [[ "$n" =~ ^[0-9]+$ ]] || continue
+    if [ "$n" -gt "$max" ]; then max=$n; fi
+  done
+  printf '%s\n' "$max"
+}
+
+WP_NUM=""
+for ((_attempt = 1; _attempt <= 50; _attempt++)); do
+  next=$(( $(highest_taken) + 1 ))
+  # Без -p: EEXIST — сигнал, что номер выиграла другая сессия, повторить со
+  # свежим highest_taken (могла также вырасти сама REGISTRY-часть максимума).
+  if mkdir "$WP_NUMBERS_DIR/$next" 2>/dev/null; then
+    WP_NUM="$next"
+    break
+  fi
+done
+
+if [[ -z "$WP_NUM" ]]; then
+  echo "❌ Не удалось зарезервировать номер WP за 50 попыток" >&2
   exit 1
 fi
 
-echo "📋 Следующий номер WP: $WP_NUM"
+echo "📋 Следующий номер WP: $WP_NUM (зарезервирован: $WP_NUMBERS_DIR/$WP_NUM)"
 
 # issue #338 п.4: без паддинга "WP-9" в листинге сортируется после "WP-10".
 # WP_ID — только для строк с префиксом "WP-" (пути, заголовки); frontmatter
@@ -233,9 +409,18 @@ echo "📋 Следующий номер WP: $WP_NUM"
 WP_ID=$(printf '%03d' "$WP_NUM")
 
 # --- Проверка consent ---
+# Отказ здесь — штатный первый круг WP Gate (реальный пользователь ещё не
+# подтвердил создание), не гонка за номером: ничего для WP_NUM не создано,
+# поэтому маркер резервации снимаем перед выходом — иначе повторный запуск
+# после `touch` резервирует СЛЕДУЮЩИЙ номер, а не тот, что пользователь только
+# что подтвердил, и WP Gate никогда не проходит (живой тест поймал это до
+# релиза: touch consent-2 → второй запуск требует consent-3 → бесконечная
+# погоня). Отличие от "не удалось создать WP-N" ниже (rollback_wp_creation):
+# там уже могли быть частичные файловые следы, здесь — гарантированно нет.
 CONSENT_FILE="$STATE_DIR/wp-consent-${WP_NUM}"
 if [[ "$SKIP_CONSENT" -eq 0 ]]; then
   if [[ ! -f "$CONSENT_FILE" ]]; then
+    rmdir "$WP_NUMBERS_DIR/$WP_NUM" 2>/dev/null
     echo "🚫 WP Gate: нет согласия пользователя на создание WP-${WP_NUM}" >&2
     echo "   Создайте consent file и повторите:" >&2
     echo "   touch $CONSENT_FILE" >&2
@@ -340,22 +525,32 @@ echo "1/5 context file..."
 # installs without the axes registry); hypothesis always present, "—" = no bet.
 FM_STAKE=""
 if [[ -n "$STATE" ]]; then
-  FM_STAKE="state_transition: \"${STATE}\"
+  FM_STAKE="state_transition: \"$(yaml_dq_escape "$STATE")\"
 "
 fi
-FM_STAKE="${FM_STAKE}hypothesis: \"${HYPOTHESIS:-—}\"
-hypothesis_relation: \"${HYPOTHESIS_RELATION}\""
+FM_STAKE="${FM_STAKE}hypothesis: \"$(yaml_dq_escape "${HYPOTHESIS:-—}")\"
+hypothesis_relation: \"${HYPOTHESIS_RELATION}\"
+artifactor_resolution_path: \"${ARTF_RESOLUTION_PATH}\""
+if [[ -n "$ARTF_SHA256" ]]; then
+  FM_STAKE="${FM_STAKE}
+artifactor_result_sha256: \"${ARTF_SHA256}\""
+fi
+if [[ -n "$PILOT_REVISION" ]]; then
+  FM_STAKE="${FM_STAKE}
+pilot_revision: \"$(yaml_dq_escape "$PILOT_REVISION")\""
+fi
 
 if ! cat > "$WP_FILE" <<WPEOF
 ---
 wp: ${WP_NUM}
-title: "${TITLE}"
+title: "$(yaml_dq_escape "$TITLE")"
 status: pending
 priority: ${PRIORITY}
 budget: ${BUDGET}
 created: ${TODAY}
 last_session: ${TODAY}
 related: []
+verification_class: ${VERIFICATION_CLASS}
 ${FM_STAKE}
 activation: on-demand
 ---
@@ -392,7 +587,7 @@ ${RELATED_ROWS}
 **Что узнали:** —
   → memory: не нужно
 **Что дальше:**
-- [ ] Открыть сессию, прочитать задачу, составить план
+${DECOMPOSE_CHECKLIST_ITEM}- [ ] Открыть сессию, прочитать задачу, составить план
 **Следующий шаг:** Открыть сессию — прочитать задачу, составить план
 **Контекст для следующей сессии:** РП только создан, нет контекста
 WPEOF
