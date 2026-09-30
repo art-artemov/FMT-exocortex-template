@@ -308,8 +308,32 @@ fi
 HOME_DIR="$HOME"
 USER_NAME="$(id -un)"
 
-# Compute Claude project slug: /Users/alice/IWE → -Users-alice-IWE
-CLAUDE_PROJECT_SLUG="$(echo "$WORKSPACE_DIR" | tr '/' '-')"
+# iwe_claude_project_slug PATH — the directory name Claude Code uses under
+# ~/.claude/projects for PATH: every character that is not an ASCII letter or
+# digit becomes "-" (so "/", ".", "_" and " " all do): /Users/alice/IWE → -Users-alice-IWE.
+# issue #869: three scripts used three different rules ("tr /", "tr /_.",
+# "tr /_ "), and none converted a Git Bash path ("/f/notes") to the native form
+# Claude Code actually sees ("F:\notes"). On Windows the native path comes from
+# cygpath; the drive-letter case does not matter there, the file system is
+# case-insensitive. A non-ASCII character becomes one dash (python3 counts characters
+# whatever the locale - launchd and cron run with none; the sed fallback does the same
+# only under a UTF-8 locale). Not verified against Claude Code for non-ASCII paths.
+# KEEP IN SYNC with update.sh and scripts/day-close.sh — the same function body;
+# scripts/tests/test_issue_869_claude_slug.sh fails when the copies diverge.
+iwe_claude_project_slug() {
+    local path="$1" native=""
+    if command -v cygpath >/dev/null 2>&1; then
+        native=$(cygpath -w "$path" 2>/dev/null) || native=""
+        [ -n "$native" ] && path="$native"
+    fi
+    if command -v python3 >/dev/null 2>&1 \
+       && python3 -c 'import os, re, sys; sys.stdout.write(re.sub("[^A-Za-z0-9]", "-", os.fsencode(sys.argv[1]).decode("utf-8", "replace")))' "$path" 2>/dev/null; then
+        return 0
+    fi
+    printf '%s' "$path" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
+CLAUDE_PROJECT_SLUG="$(iwe_claude_project_slug "$WORKSPACE_DIR")"
 
 # === Governance repo contract (WP-560 Ф5-Phase-2) ===
 # Single machine-readable source for the governance repo's default name and
@@ -507,7 +531,10 @@ IWE_RUNTIME="$IWE_RUNTIME_PATH"
 IWE_SCRIPTS="$IWE_TEMPLATE_PATH/scripts"
 
 # === Platform LLM Proxy (optional own API key for unlimited usage) ===
-PLATFORM_LLM_PROXY_URL=https://llm.aisystant.com/v1
+# No default address is written: the platform gateway does not answer yet (older
+# versions recorded an address here that returns HTTP 404 on every path). Fill it in
+# once a real gateway exists; day-open reads LLM_PROXY_URL first, then this value.
+# PLATFORM_LLM_PROXY_URL=
 # ANTHROPIC_API_KEY=  # Optional: own key for unlimited usage (Direct MCP mode)
 
 ENVEOF
@@ -674,8 +701,38 @@ else
 
     # Create symlink so CLAUDE.md references (memory/protocol-open.md etc.) resolve from workspace root
     if [ ! -e "$WORKSPACE_DIR/memory" ]; then
-        ln -s "$CLAUDE_MEMORY_DIR" "$WORKSPACE_DIR/memory"
-        echo "  Symlink: $WORKSPACE_DIR/memory → $CLAUDE_MEMORY_DIR"
+        MEMORY_LN_ERR=$(ln -s "$CLAUDE_MEMORY_DIR" "$WORKSPACE_DIR/memory" 2>&1) || true
+        # issue #869: on Windows (Git Bash without symlink rights) `ln -s` quietly
+        # makes a plain COPY instead of a link, and the failure only surfaced a
+        # day later as an ambiguous-memory error in update.sh. Check the result:
+        # a link, and one that points where it should (a dangling link made earlier
+        # makes `ln -s` fail with "File exists" yet still passes a bare [ -L ] test).
+        if [ -L "$WORKSPACE_DIR/memory" ] && [ "$(readlink "$WORKSPACE_DIR/memory")" = "$CLAUDE_MEMORY_DIR" ]; then
+            echo "  Symlink: $WORKSPACE_DIR/memory → $CLAUDE_MEMORY_DIR"
+        else
+            echo "  ВНИМАНИЕ: ссылка $WORKSPACE_DIR/memory → $CLAUDE_MEMORY_DIR не создана." >&2
+            [ -n "$MEMORY_LN_ERR" ] && echo "    ln: $MEMORY_LN_ERR" >&2
+            # The directory found here can only be the plain copy `ln -s` just made (the
+            # branch is entered only when nothing existed). Leaving it would keep two
+            # independent MEMORY.md copies AND make the next run skip this fix because
+            # "memory already exists" - so set it aside; the real memory in
+            # $CLAUDE_MEMORY_DIR was written above and is not touched.
+            if [ ! -L "$WORKSPACE_DIR/memory" ] && [ -e "$WORKSPACE_DIR/memory" ]; then
+                MEMORY_COPY_ASIDE="$WORKSPACE_DIR/memory.not-a-link-$(date +%Y%m%d%H%M%S)"
+                if mv "$WORKSPACE_DIR/memory" "$MEMORY_COPY_ASIDE" 2>/dev/null; then
+                    echo "    Копия, которую вместо ссылки сделал ln, перенесена в $MEMORY_COPY_ASIDE (память в $CLAUDE_MEMORY_DIR не тронута)." >&2
+                else
+                    echo "    Копию перенести не удалось: удалите $WORKSPACE_DIR/memory вручную (память в $CLAUDE_MEMORY_DIR не тронута)." >&2
+                fi
+            fi
+            echo "    Без ссылки CLAUDE.md не найдёт memory/ в рабочей папке." >&2
+            case "$(uname -s 2>/dev/null)" in
+                MINGW*|MSYS*|CYGWIN*)
+                    echo "    Windows: включите «Режим разработчика» и запустите терминал с MSYS=winsymlinks:nativestrict," >&2
+                    echo "    затем повторите установку (или создайте ссылку через mklink /D)." >&2
+                    ;;
+            esac
+        fi
     else
         echo "  WARN: $WORKSPACE_DIR/memory already exists, symlink skipped."
     fi
@@ -734,6 +791,23 @@ else
         cp "$TEMPLATE_DIR/.claude/settings.json" "$WORKSPACE_DIR/.claude/settings.json"
         echo "  ✓ .claude/settings.json"
     fi
+    # issue #891: settings.json above was the only loose top-level .claude/
+    # file this installer ever copied. update-manifest.json declares several
+    # more (rules-registry.yaml among them — AR.112/AR.113, read by
+    # sql-pii-guard.sh on every .sql write) that this loop never delivered,
+    # so a fresh install has them checksummed in the manifest but absent on
+    # disk. Mirror every remaining loose file in the template's .claude/
+    # root instead of naming each one, the same way the subdir loop above
+    # mirrors directories rather than hardcoding a file list.
+    for f in "$TEMPLATE_DIR/.claude/"*; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f")
+        case "$name" in
+            settings.json|settings.local.json) continue ;;  # already handled above
+        esac
+        cp "$f" "$WORKSPACE_DIR/.claude/$name"
+        echo "  ✓ .claude/$name"
+    done
 fi
 
 # Resolves IWE_TIER: env var → ~/.iwe/config.yaml → default T1
@@ -911,11 +985,11 @@ if YAML_PYTHON3=$("$TEMPLATE_DIR/scripts/lib/find-python3.sh" 2>/dev/null); then
     :
 else
     YAML_PYTHON3=""
-    echo "  ⚠ Не найден python3 с библиотекой PyYAML — календарь, лента «Мир» и обзор РП будут отключаться с явной ошибкой зависимости."
+    echo "  ⚠ Не найден python3 >= 3.10 с библиотекой PyYAML — календарь, лента «Мир», обзор РП и core-скрипты (artifactor.py, session-dispatcher-tsekh.py) будут отключаться с явной ошибкой зависимости."
     if [ "$(uname)" = "Linux" ]; then
-        echo "    Установи: sudo apt install python3-yaml (или: pip3 install pyyaml)"
+        echo "    Установи: sudo apt install python3-yaml (или python3.10 + pip3 install pyyaml)"
     else
-        echo "    Установи: pip3 install pyyaml (python3 из Homebrew уже содержит pip3)"
+        echo "    Установи: brew install python3 && pip3 install pyyaml"
     fi
 fi
 

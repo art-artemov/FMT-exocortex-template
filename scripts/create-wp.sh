@@ -435,8 +435,16 @@ TODAY=$(date +%Y-%m-%d)
 # --- Slug из title (если не задан) ---
 if [[ -z "$SLUG" ]]; then
   SLUG=$(echo "$TITLE" | python3 -c "
-import sys, re, unicodedata
-s = sys.stdin.read().strip().lower()
+import sys, re
+# issue #851: reading via sys.stdin.read() left the decoding to Python's
+# default (locale-dependent) stdin codec, which on Windows Git Bash is not
+# guaranteed to be UTF-8 even though the pipe itself carries UTF-8 bytes --
+# a Cyrillic title decoded as mojibake, transliterated to nothing the table
+# recognizes, and collapsed to dashes. Reading raw bytes and decoding as
+# UTF-8 explicitly removes that platform dependency; errors='replace' keeps
+# this a slug generator, not a strict validator.
+data = sys.stdin.buffer.read().decode('utf-8', errors='replace')
+s = data.strip().lower()
 # Транслитерация кириллицы
 tr = {
   'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh',
@@ -450,7 +458,15 @@ for c in s:
 result = re.sub(r'[^a-z0-9]+', '-', result)
 result = result[:40].strip('-')
 print(result)
-" 2>/dev/null || echo "wp-$(echo "$TITLE" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | cut -c1-30)")
+" 2>/dev/null)
+  # issue #851: the pre-existing bash fallback below only ran on a non-zero
+  # python3 exit -- a *successful* run that decoded to an empty/dash-only
+  # slug (e.g. an undetected encoding mismatch) slipped through silently and
+  # went on to create files with a degenerate name. Treat an empty result
+  # the same as a failed one.
+  if [[ -z "$SLUG" ]]; then
+    SLUG="wp-$(echo "$TITLE" | tr '[:upper:] ' '[:lower:]-' | tr -cd 'a-z0-9-' | cut -c1-30)"
+  fi
 fi
 
 # Inbox convention (WP-434): every WP is a folder inbox/WP-N/ with main file WP-N.md.
@@ -798,11 +814,21 @@ BUDGET_H=$(echo "$BUDGET" | sed 's/[^0-9]//g')
 if [[ -n "$RESULT" && "${BUDGET_H:-0}" -ge 3 ]]; then
   STRATEGY_FILE="$STRATEGY/docs/Strategy.md"
   python3 - "$STRATEGY_FILE" "$WP_ID" "$REPO" "$RESULT" <<'PYEOF'
+import re
 import sys
 
 strategy_path, wp_id, repo, result = sys.argv[1:5]
 
 section_anchor = "### РП → Результаты"
+# A markdown table separator row (`|---|---|`, `|----|----|`, `| --- | --- |`,
+# `|:---|---:|`, or without outer pipes) — any line made only of `|`, `-`, `:`
+# and whitespace, requiring at least two `|`-separated cells (this table is
+# always 4 columns; a bare single-cell "|---|" does not match, unlike the old
+# literal search issue #901 reported — not a concern here). The old literal
+# "|---|" also missed every width other than exactly three dashes per cell.
+TABLE_SEP_RE = re.compile(
+    r"^[ \t]*\|?[ \t:-]*-[ \t:-]*(?:\|[ \t:-]*-[ \t:-]*)+\|?[ \t]*$", re.MULTILINE
+)
 
 with open(strategy_path, "r", encoding="utf-8") as f:
     content = f.read()
@@ -812,12 +838,19 @@ if section_anchor not in content:
     sys.exit(0)
 
 section_start = content.index(section_anchor)
-table_sep = content.find("|---|", section_start)
-if table_sep == -1:
+next_heading = re.search(r"\n#{2,3} ", content[section_start + len(section_anchor):])
+section_end = (
+    section_start + len(section_anchor) + next_heading.start()
+    if next_heading
+    else len(content)
+)
+
+sep_match = TABLE_SEP_RE.search(content, section_start, section_end)
+if not sep_match:
     print("   ⚠️  Strategy.md: разделитель таблицы не найден в секции — добавить вручную")
     sys.exit(0)
 
-insert_at = content.index("\n", table_sep) + 1
+insert_at = content.index("\n", sep_match.end()) + 1
 repo_cell = repo if repo else "—"
 new_row = "| WP-{} | {} | {} | pending |\n".format(wp_id, repo_cell, result)
 content = content[:insert_at] + new_row + content[insert_at:]

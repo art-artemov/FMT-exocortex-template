@@ -130,25 +130,93 @@ notify_telegram() {
 
 # Загрузка переменных окружения
 load_env() {
+    # An explicit CLAUDE_CODE_OAUTH_TOKEN (launchd plist, shell) beats ENV_FILE too.
+    local explicit_token="${CLAUDE_CODE_OAUTH_TOKEN:-}"
     if [ -f "$ENV_FILE" ]; then
         set -a
         source "$ENV_FILE"
         set +a
     fi
-    # WP-5 Ф46: subscription token saved by scripts/connect.sh lives in its own
-    # 600-mode file (add-secret.sh convention), not in ENV_FILE. An explicit
-    # env var (launchd plist, shell) still wins over the file.
-    local token_file="$HOME/.secrets/claude_code_oauth_token"
-    if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && [ -f "$token_file" ]; then
-        CLAUDE_CODE_OAUTH_TOKEN="$(<"$token_file")"
+    if [ -n "$explicit_token" ]; then
+        CLAUDE_CODE_OAUTH_TOKEN="$explicit_token"
         export CLAUDE_CODE_OAUTH_TOKEN
     fi
+    load_claude_subscription_token
+    prefer_subscription_over_proxy
+}
+
+# WP-5 Ф46: the subscription token lives in its own 600-mode file, not in
+# ENV_FILE. First non-empty source wins; an explicit env var (launchd plist,
+# shell) beats both files:
+#   ~/.secrets/claude_code_oauth_token  raw token, written by scripts/connect.sh
+#   ~/.secrets/claude-subscription      CLAUDE_CODE_OAUTH_TOKEN=<token> (add-secret.sh style)
+# The KEY=value file is parsed for that one key, not sourced: sourcing would run
+# the file as shell and export every other variable it happens to hold.
+load_claude_subscription_token() {
+    if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        return 0
+    fi
+    local raw_file="$HOME/.secrets/claude_code_oauth_token"
+    local kv_file="$HOME/.secrets/claude-subscription"
+    local token=""
+    if [ -f "$raw_file" ]; then
+        token="$({ tr -d '[:space:]' <"$raw_file"; } 2>/dev/null || true)"
+    fi
+    if [ -z "$token" ] && [ -f "$kv_file" ]; then
+        # Value = first run of non-space characters after the key (a trailing
+        # `# comment` and CRLF fall away); the last matching line wins; quotes are dropped.
+        token="$({ sed -n -E 's/^(export[[:space:]]+)?CLAUDE_CODE_OAUTH_TOKEN=[[:space:]]*([^[:space:]]*).*/\2/p' "$kv_file" \
+            | tail -n 1 | tr -d "\"'"; } 2>/dev/null || true)"
+    fi
+    if [ -n "$token" ]; then
+        CLAUDE_CODE_OAUTH_TOKEN="$token"
+        export CLAUDE_CODE_OAUTH_TOKEN
+    else
+        # issue #909: without this, the only diagnostic a missing token ever
+        # produced was the later "протух или отозван" ERROR (line ~278) after
+        # a failed AI CLI call -- indistinguishable from a token that really
+        # did expire. Interactive runs can still succeed on the CLI's own
+        # separate interactive login, masking the gap; a launchd/headless run
+        # has no such fallback and fails every night silently in this same
+        # generic-looking way. Say plainly, up front, that no connection was
+        # ever made.
+        log "WARN: токен не настроен ($raw_file и $kv_file отсутствуют) — ночные/headless прогоны будут падать. Запустите: bash \$IWE_TEMPLATE/roles/extractor/scripts/connect.sh"
+    fi
+}
+
+# A subscription token must reach the vendor API directly. ENV_FILE may carry a
+# proxy (ANTHROPIC_BASE_URL) and load_env sources it AFTER any wrapper already
+# dropped it, so the client sent the token to the proxy: 401 "Invalid or expired
+# token" (tsekh-1, 2026-09-21). That proxy also drops the `tools` array, so it
+# cannot serve headless tool-use at all. Auth policy: a connected subscription
+# wins over proxy/API-key env; IWE_EXTRACTOR_USE_API_ENV=1 opts out for a
+# deliberate custom gateway and then withholds the subscription token from it.
+# A non-Claude AI_CLI keeps its environment but never receives the Claude token
+# (a custom claude binary is declared with CLAUDE_CLI_PATH, not AI_CLI).
+prefer_subscription_over_proxy() {
+    if ! ai_cli_is_claude; then
+        unset CLAUDE_CODE_OAUTH_TOKEN
+        return 0
+    fi
+    if [ "${IWE_EXTRACTOR_USE_API_ENV:-}" = "1" ]; then
+        unset CLAUDE_CODE_OAUTH_TOKEN
+        return 0
+    fi
+    [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || return 0
+    if [ -n "${ANTHROPIC_BASE_URL:-}${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}${ANTHROPIC_CUSTOM_HEADERS:-}" ]; then
+        log "Auth: subscription oauth preferred — dropping proxy/API-key env"
+    fi
+    unset ANTHROPIC_BASE_URL ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_CUSTOM_HEADERS
 }
 
 # AI_CLI may be overridden to a non-Claude CLI (see strategist.sh) — then
 # Claude auth checks and hints are meaningless.
 ai_cli_is_claude() {
-    [ "$AI_CLI" = "$CLAUDE_PATH" ]
+    [ "$AI_CLI" = "$CLAUDE_PATH" ] && return 0
+    # Another spelling of the same binary (`claude` vs /run/current-system/sw/bin/claude)
+    local resolved
+    resolved="$(command -v "$AI_CLI" 2>/dev/null)" || return 1
+    [ "$resolved" = "$CLAUDE_PATH" ] || [ "$resolved" -ef "$CLAUDE_PATH" ]
 }
 
 # WP-5 Ф46: preflight before any headless run. `claude auth status` is the
@@ -354,7 +422,7 @@ extractor_scope_open_and_note() {  # <strategy_dir> <agent> <reason> <changed-pa
     local strategy_dir="$1" agent="$2" reason="$3" changed_paths="$4"
     local guard="${IWE_SCRIPTS:-$HOME/IWE/scripts}/session-guard.sh"
     [ -x "$guard" ] || return 1
-    bash "$guard" open --housekeeping "$reason" --agent "$agent" >> "$LOG_FILE" 2>&1 || return 1
+    bash "$guard" open --housekeeping "$reason" --agent "$agent" --canonical-owner "$reason" >> "$LOG_FILE" 2>&1 || return 1
     local rel
     while IFS= read -r rel; do
         [ -n "$rel" ] || continue
@@ -469,6 +537,57 @@ commit_extractor_changes() {
     target_changes=$(git -C "$strategy_dir" status --porcelain --untracked-files=all -- "${target_paths[@]}")
     if [ -z "$target_changes" ]; then
         log "No new changes to commit in $repo_name"
+        # issue #860: the agent may have already committed inside the prompt.
+        # If HEAD is ahead of origin by extractor-owned commits, publish them
+        # instead of leaving them local.
+        local ahead_count
+        ahead_count=$(git -C "$strategy_dir" rev-list --count "origin/${gov_branch}..HEAD" 2>/dev/null || echo 0)
+        ahead_count=${ahead_count:-0}
+        if [ "$ahead_count" -gt 0 ]; then
+            local latest_local latest_paths
+            latest_local=$(git -C "$strategy_dir" rev-parse HEAD 2>/dev/null || true)
+            latest_paths=$(git -C "$strategy_dir" diff-tree --no-commit-id --name-only -r "$latest_local" 2>/dev/null || true)
+            if [ -n "$latest_paths" ]; then
+                local p is_extractor_commit=0
+                for p in "${target_paths[@]}"; do
+                    if printf '%s\n' "$latest_paths" | grep -qxF "$p"; then
+                        is_extractor_commit=1
+                        break
+                    fi
+                done
+                if [ "$is_extractor_commit" -eq 1 ]; then
+                    log "Found unpublished extractor commit ($latest_local) already on HEAD"
+                    local publish_gate="$strategy_dir/scripts/lib/publish-gate.sh"
+                    if [ ! -f "$publish_gate" ]; then
+                        if git -C "$strategy_dir" push origin "$latest_local:refs/heads/$gov_branch" >> "$LOG_FILE" 2>&1; then
+                            log "Pushed pre-existing extractor commit $latest_local"
+                            EXTRACTOR_COMMIT_RESULT="published"
+                        else
+                            log "WARN: git push failed for pre-existing extractor commit $latest_local"
+                            EXTRACTOR_COMMIT_RESULT="failed"
+                            return 1
+                        fi
+                    else
+                        # shellcheck source=/dev/null
+                        . "$publish_gate"
+                        if is_ds_repo_by_origin "$strategy_dir" \
+                            && IWE_WORKSPACE="${IWE_ROOT:-$HOME/IWE}" \
+                               publish_commit "$strategy_dir" "$latest_local" normal "extractor $commit_mode $DATE" >> "$LOG_FILE" 2>&1; then
+                            log "Published pre-existing extractor commit $latest_local via ds-publish.sh"
+                            EXTRACTOR_COMMIT_RESULT="published"
+                        elif ! is_ds_repo_by_origin "$strategy_dir" && push_branch "$strategy_dir" >> "$LOG_FILE" 2>&1; then
+                            log "Pushed pre-existing extractor commit $latest_local"
+                            EXTRACTOR_COMMIT_RESULT="published"
+                        else
+                            log "WARN: publish failed for pre-existing extractor commit $latest_local"
+                            EXTRACTOR_COMMIT_RESULT="failed"
+                            return 1
+                        fi
+                    fi
+                    return 0
+                fi
+            fi
+        fi
         EXTRACTOR_COMMIT_RESULT="no_changes"
         return 0
     fi
@@ -671,12 +790,40 @@ cleanup_isolated_inbox_worktree() {
 mount_readonly_packs() {
     local canonical_workspace="$1"
     local isolated_workspace="$2"
-    local pack_dir pack_name remote_url snapshot_ref pack_count=0
+    local pack_dir pack_name remote_url snapshot_ref pack_count=0 pack_toplevel
     EXTRACTOR_PACK_REFS=()
+    EXTRACTOR_PACK_SKIPPED=()
+    EXTRACTOR_PACK_SKIPPED_NO_ORIGIN=()
     EXTRACTOR_PACK_VERIFIED_AT=""
     for pack_dir in "$canonical_workspace"/PACK-*; do
         [ -d "$pack_dir" ] || continue
         pack_name=$(basename "$pack_dir")
+        # Frozen Pack has no live remote by design -- skip it instead of
+        # aborting duplicate-check for every other Pack too (WP-7 F156).
+        if [ -f "$pack_dir/.pack-frozen" ]; then
+            log "WARN: $pack_name marked .pack-frozen, skipping mount (not counted toward duplicate-check coverage)"
+            EXTRACTOR_PACK_SKIPPED+=("$pack_name")
+            continue
+        fi
+        # A Pack the user deliberately keeps local-only (personal data, not
+        # for remote hosting) is a real git repository with no `origin` --
+        # a different situation from a directory that fails to clone or is
+        # not a git repository at all. `rev-parse --is-inside-work-tree`
+        # alone is not enough to tell those apart (cold-review finding,
+        # 24.09): git looks UP the tree for `.git`, so a Pack directory
+        # with no `.git` of its own -- a broken/incomplete clone, the exact
+        # case the strict branch below exists to hard-abort on -- silently
+        # inherits the WORKSPACE's own git identity (the canonical checkout
+        # itself is a git repo) and would be misclassified as this
+        # intentional local-only case instead. Require the Pack directory
+        # to be the TOP of its own work tree, not merely inside one.
+        pack_toplevel=$(git -C "$pack_dir" rev-parse --show-toplevel 2>/dev/null)
+        if [ -n "$pack_toplevel" ] && [ "$pack_toplevel" = "$(cd "$pack_dir" && pwd -P)" ] && \
+           ! git -C "$pack_dir" remote get-url origin >/dev/null 2>&1; then
+            log "WARN: $pack_name has no origin remote, skipping mount (local-only Pack, not counted toward duplicate-check coverage)"
+            EXTRACTOR_PACK_SKIPPED_NO_ORIGIN+=("$pack_name")
+            continue
+        fi
         if ! remote_url=$(git -C "$pack_dir" remote get-url origin 2>/dev/null) || \
            ! (cd "$pack_dir" && git clone -q --no-local --depth 1 --single-branch --no-tags \
                "$remote_url" "$isolated_workspace/$pack_name") >> "$LOG_FILE" 2>&1 || \
@@ -695,6 +842,10 @@ mount_readonly_packs() {
         log "ERROR: no Pack repositories available; duplicate check and analysis were not started"
         return 1
     fi
+    local total_skipped=$((${#EXTRACTOR_PACK_SKIPPED[@]} + ${#EXTRACTOR_PACK_SKIPPED_NO_ORIGIN[@]}))
+    if [ "$total_skipped" -gt 0 ]; then
+        log "WARN: duplicate-check ran against $pack_count of $((pack_count + total_skipped)) Packs; skipped (frozen): ${EXTRACTOR_PACK_SKIPPED[*]:-none}; skipped (no origin): ${EXTRACTOR_PACK_SKIPPED_NO_ORIGIN[*]:-none}"
+    fi
     EXTRACTOR_PACK_VERIFIED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 }
 
@@ -708,6 +859,12 @@ pack_snapshot_context() {
     for pack_ref in "${EXTRACTOR_PACK_REFS[@]}"; do
         printf -- '- %s\n' "$pack_ref"
     done
+    if [ "${#EXTRACTOR_PACK_SKIPPED[@]}" -gt 0 ]; then
+        printf 'Внимание: следующие Pack помечены как frozen и не участвовали в проверке на дубли: %s\n' "${EXTRACTOR_PACK_SKIPPED[*]}"
+    fi
+    if [ "${#EXTRACTOR_PACK_SKIPPED_NO_ORIGIN[@]}" -gt 0 ]; then
+        printf 'Внимание: следующие Pack без origin (локальные) и не участвовали в проверке на дубли — захваты для них defer, не accept: %s\n' "${EXTRACTOR_PACK_SKIPPED_NO_ORIGIN[*]}"
+    fi
 }
 
 pending_capture_count() {

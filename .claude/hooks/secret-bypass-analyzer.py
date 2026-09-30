@@ -24,7 +24,14 @@ import sys
 # redacted -- the cost of a missed real secret is judged higher than the
 # cost of an unnecessarily redacted test name.
 YOOKASSA_CANDIDATE_RE = re.compile(r"(?:live|test)_[A-Za-z0-9_-]{30,}")
-YOOKASSA_PYTEST_SHAPE_RE = re.compile(r"test_[a-z][a-z0-9]*(?:_[a-z][a-z0-9]*){4,}\Z")
+# issue #896: each segment required a LETTER-first char (`[a-z][a-z0-9]*`),
+# so an issue-number segment like test_issue_463_... (463 starts with a
+# digit) never matched the shape at all -- no context exemption below can
+# rescue a candidate that already failed this fullmatch. The real safety net
+# against an actual key is structural (>=5 underscore-separated segments,
+# checked below), which a random blob or a Stripe/YooKassa-style unbroken
+# token never has, not the per-segment leading character.
+YOOKASSA_PYTEST_SHAPE_RE = re.compile(r"test_[a-z0-9]+(?:_[a-z0-9]+){4,}\Z")
 
 
 def redact_yookassa(match):
@@ -41,7 +48,20 @@ def redact_yookassa(match):
         before.endswith("::")
         and re.match(r"(?:\[[^\]\r\n]*\])?(?=\s|$|:)", after) is not None
     )
-    if YOOKASSA_PYTEST_SHAPE_RE.fullmatch(value) and (source_definition or pytest_nodeid):
+    # issue #848: the same pytest-identifier shape also shows up merely
+    # MENTIONING a test's name rather than defining or addressing it -- a
+    # comment referencing it, a `--exclude=`/`=`-style CLI argument, or the
+    # basename of a `test_*.sh`/`test_*.py` file. Recognized the same way as
+    # source_definition/pytest_nodeid above: by syntactic context, not by
+    # relaxing YOOKASSA_PYTEST_SHAPE_RE itself -- the shape bar (five or more
+    # lowercase snake_case segments) stays exactly as strict as before.
+    current_line = before.rsplit("\n", 1)[-1]
+    comment_mention = "#" in current_line
+    cli_argument = re.search(r"=\Z", before) is not None
+    script_filename = re.match(r"\.(?:sh|py)\b", after) is not None
+    if YOOKASSA_PYTEST_SHAPE_RE.fullmatch(value) and (
+        source_definition or pytest_nodeid or comment_mention or cli_argument or script_filename
+    ):
         return value
     return "[REDACTED-YOOKASSA-KEY]"
 
@@ -476,10 +496,15 @@ def parse_heredoc_header(command, start):
             )
         if character == "\n":
             return index + 1, declarations
-        if (
-            command.startswith("<<", index)
-            and not command.startswith("<<<", index)
-        ):
+        if command.startswith("<<<", index):
+            # issue #874: a here-string is not a here-document. Skip the whole
+            # operator; falling through to `index += 1` left the cursor on the
+            # 2nd "<", where "<<" + a non-"<" looked like a here-document start,
+            # took the next word as its delimiter and failed on the missing
+            # terminator, blocking every Bash call that used `<<<`.
+            index += 3
+            continue
+        if command.startswith("<<", index):
             operator_start = index
             index += 2
             strip_tabs = index < len(command) and command[index] == "-"
@@ -1590,11 +1615,36 @@ def analyze_bash(raw):
     command = tool_input.get("command")
     if not isinstance(command, str) or not command.strip():
         fail("invalid Bash hook envelope")
-    shell_scaffold, heredoc_bodies = extract_heredocs(command)
+    # issue #760: parse_heredoc_header() tracks quoting with one flat variable
+    # and does not know that $(...) opens an independent quoting context. A
+    # heredoc declared inside a still-open outer quote (`echo "$(cat <<'EOF'
+    # ... )"`) can therefore produce a bogus declaration and then fail()
+    # looking for a delimiter line that will never appear -- or, downstream,
+    # hand shell_command_variants() a scaffold shlex cannot tokenize. Both
+    # fail() with SystemExit rather than returning an error value. Degrading
+    # to a literal scan of the raw text (same as the heredoc_bodies scan a
+    # few lines below, which already needs no shell model) keeps secret
+    # detection working instead of fail-closed-blocking every tool call whose
+    # command happens to contain this shape -- exactly what the issue asked
+    # for. Confirmed by enumeration (peer-session 2026-09-17-08-wp582, with
+    # Kimi as reviewer) that every fail() reachable from extract_heredocs()
+    # (via parse_heredoc_header()/read_heredoc_word()) and from
+    # shell_tokens() is a grammar-parse failure, never a "secret found"
+    # result -- those come back through scan()'s return value, not an
+    # exception -- so nothing that should stay fail-closed is caught here.
+    try:
+        shell_scaffold, heredoc_bodies = extract_heredocs(command)
+    except SystemExit:
+        shell_scaffold, heredoc_bodies = command, []
     pattern_ids = []
     match_count = 0
     for variant in shell_command_variants(shell_scaffold):
-        variant_ids, variant_count, _details = scan(" ".join(shell_tokens(variant)))
+        try:
+            tokens = shell_tokens(variant)
+        except SystemExit:
+            variant_ids, variant_count, _details = scan(variant)
+        else:
+            variant_ids, variant_count, _details = scan(" ".join(tokens))
         pattern_ids.extend(variant_ids)
         match_count += variant_count
     for body in heredoc_bodies:
@@ -1612,26 +1662,47 @@ def analyze_bash(raw):
     try:
         direct_read, direct_upload, bulk_enumeration = analyze_shell_paths(shell_scaffold)
         shell_model = "complete"
-    except ShellModelUnsupported:
+    except (ShellModelUnsupported, SystemExit):
+        # issue #760 (peer-session 2026-09-17-08-wp582, with Kimi): a
+        # scaffold extract_heredocs() could not fully normalize can be
+        # malformed enough that analyze_shell_paths() itself hits shell_tokens()
+        # and fail()s with SystemExit -- not the friendlier ShellModelUnsupported
+        # ("valid Bash this analyzer does not model") this except used to
+        # assume was the only way in. Same degraded branch either way.
         shell_model = "unsupported"
-        scaffold_tokens = shell_tokens(shell_scaffold)
-        # Conservative token-level answers. value_has_sensitive_path, not
-        # is_sensitive_path: an uploader names the file INSIDE an argument
-        # (curl --data-binary @~/.config/aist/env), and a whole-token compare
-        # missed exactly that - cold review 06.09 showed the upload check was
-        # switched off entirely in this branch, so five characters of extra
-        # grammar (an elif) turned a refusal into a pass.
-        direct_read = any(
-            value_has_sensitive_path(token) for token in scaffold_tokens
-        )
-        # One mechanism covers both questions here: reading and sending name
-        # the same file, and without the shell model there is nothing left to
-        # tell the two apart. The refusal above is what stops both.
-        direct_upload = False
-        bulk_enumeration = any(
-            token in BULK_ENV_DUMP_EXECUTABLES or token == "railway"
-            for token in scaffold_tokens
-        )
+        try:
+            scaffold_tokens = shell_tokens(shell_scaffold)
+        except SystemExit:
+            # Even the token-level fallback below cannot lex this scaffold.
+            # The literal-value scan already ran and needs no shell model at
+            # all (see the comment above it) -- that stays the primary
+            # defense. secret-leak-block.sh already surfaces a visible
+            # "разобрано не полностью" notice whenever shell_model != complete,
+            # so silently answering "unknown" here for the path/upload
+            # heuristic is not a silent degradation for the user.
+            scaffold_tokens = None
+        if scaffold_tokens is None:
+            direct_read = False
+            direct_upload = False
+            bulk_enumeration = False
+        else:
+            # Conservative token-level answers. value_has_sensitive_path, not
+            # is_sensitive_path: an uploader names the file INSIDE an argument
+            # (curl --data-binary @~/.config/aist/env), and a whole-token compare
+            # missed exactly that - cold review 06.09 showed the upload check was
+            # switched off entirely in this branch, so five characters of extra
+            # grammar (an elif) turned a refusal into a pass.
+            direct_read = any(
+                value_has_sensitive_path(token) for token in scaffold_tokens
+            )
+            # One mechanism covers both questions here: reading and sending name
+            # the same file, and without the shell model there is nothing left to
+            # tell the two apart. The refusal above is what stops both.
+            direct_upload = False
+            bulk_enumeration = any(
+                token in BULK_ENV_DUMP_EXECUTABLES or token == "railway"
+                for token in scaffold_tokens
+            )
     return {
         "applicable": True,
         "session_id": session_id,
@@ -1754,6 +1825,9 @@ def self_test():
         "bearer": "Bearer " + "Q" * 28,
         "yookassa-dense": "test_" + "9" * 32,
         "yookassa-bare-pytest-shape-no-context": "test_alpha_bravo_charlie_delta_echo",
+        # issue #896: a digit-leading segment (an issue number) must
+        # still redact bare with no protecting context around it.
+        "yookassa-digit-segment-bare-no-context": "test_issue_463_foo_bar_baz_qux_quux",
     }
     negatives = (
         "sk-proj-short",
@@ -1764,6 +1838,14 @@ def self_test():
         "123456789:short",
         "def test_alpha_bravo_charlie_delta_echo(self):",
         "tests/test_foo.py::test_alpha_bravo_charlie_delta_echo PASSED",
+        # issue #896: def-line context must rescue a digit-leading
+        # segment (an issue number) the same way it rescues a
+        # letter-only one.
+        "def test_issue_463_foo_bar_baz(self):",
+        # issue #848: mentioning a test's name outside a def/nodeid context.
+        "# scripts/tests/test_alpha_bravo_charlie_delta_echo.sh",
+        "--exclude=test_alpha_bravo_charlie_delta_echo.sh",
+        "# see test_alpha_bravo_charlie_delta_echo for the fixture",
     )
     for name, value in positives.items():
         ids, count, _details = scan(value)
@@ -2098,6 +2180,34 @@ def self_test():
         if any(is_sensitive_path(fragment) for fragment in fragments) != expected:
             fail(f"path_fragments/is_sensitive_path({path_value!r}) expected {expected}")
 
+    # issue #874: `<<<` (here-string) is not a here-document. The header scan
+    # used to leave its cursor on the 2nd "<" and fail closed with
+    # "unterminated heredoc", which blocked every Bash call that used `<<<`.
+    here_string_cases = (
+        'cat <<< "hello"',
+        'jq . <<< "$json"',
+        "cat <<<'x << y'",
+        'cat <<<"$value"',
+        "cat <<<word",
+        "cat <<< foo <<EOF\nplain body\nEOF\n",
+    )
+    for command in here_string_cases:
+        upload["tool_input"] = {"command": command}
+        try:
+            analyze_bash(json.dumps(upload))
+        except SystemExit:
+            fail("here-string was rejected as a broken heredoc: " + repr(command))
+    # A here-document next to a here-string must still be parsed and its body
+    # still scanned as literal text, so secret detection keeps covering it.
+    body_secret = positives["openai-project"]
+    for command in (
+        "cat <<< x <<EOF\n" + body_secret + "\nEOF\n",
+        "cat <<EOF\n" + body_secret + "\nEOF\n",
+    ):
+        upload["tool_input"] = {"command": command}
+        if not analyze_bash(json.dumps(upload))["pattern_ids"]:
+            fail("heredoc body next to a here-string was not scanned")
+
     print("PASS canonical_pattern_corpus")
     print("PASS structured_output_shape")
     print("PASS direct_sensitive_upload")
@@ -2106,6 +2216,7 @@ def self_test():
     print("PASS path_bypass_normalization")
     print("PASS home_config_dir_coverage")
     print("PASS file_uri_case_insensitive")
+    print("PASS here_string_operator")
 
 
 mode = sys.argv[1]

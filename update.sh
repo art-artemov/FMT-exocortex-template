@@ -62,6 +62,9 @@ esac
 RAW_BASE="https://raw.githubusercontent.com/$REPO/$BRANCH"
 API_BASE="https://api.github.com/repos/$REPO"
 
+# issue #863: release commit SHA, set by resolve_delivery_ref for rollback detection.
+RELEASE_SHA=""
+
 CHECK_ONLY=false
 AUTO_YES=false
 FAST_CHECK=false
@@ -439,6 +442,106 @@ author_diverged() {
     return 1
 }
 
+# author_release_regression FPATH PAYLOAD — bug-2026-09-17-tsekh1-release-
+# regression: author_diverged() above only catches commits НЕ ЕЩЁ дошедшие до
+# origin/$BRANCH — if the author's fix is already merged into main, that
+# check reports "no divergence" even though the release channel is about to
+# overwrite the file with an OLDER release snapshot (release_tag can trail
+# main by any number of unreleased commits). Live incident: an author's fix
+# landed on origin/main, update.sh (release channel, default) applied the
+# release payload anyway and silently reverted it — noticed only by manually
+# re-reading the file, not by any warning.
+#
+# The check needs no reference to whichever ref the release payload actually
+# came from: PAYLOAD is already the downloaded release content
+# ($TMPDIR_UPDATE/files/$f), so comparing it directly against origin/$BRANCH
+# HEAD answers the only question that matters — "does applying this payload
+# move the file away from what main already has?". Fires only when the local
+# file already equals origin/$BRANCH HEAD (author_diverged already covers
+# "has local edits") but the payload does not match that same HEAD. Reuses
+# the fetch done by author_diverged() via $_AUTHOR_FETCH_DONE — no extra
+# network round-trip.
+author_release_regression() {
+    local fpath="$1" payload="$2" head_sha local_sha payload_sha
+    [ "$UPDATE_CHANNEL" = "release" ] || return 1
+    is_author_mode || return 1
+    git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+    if [ "$_AUTHOR_FETCH_DONE" = false ]; then
+        git -C "$SCRIPT_DIR" fetch --quiet origin "$BRANCH" 2>/dev/null || true
+        _AUTHOR_FETCH_DONE=true
+    fi
+    head_sha=$(git -C "$SCRIPT_DIR" rev-parse "origin/$BRANCH:$fpath" 2>/dev/null) || return 1
+    local_sha=$(git -C "$SCRIPT_DIR" hash-object "$SCRIPT_DIR/$fpath" 2>/dev/null) || return 1
+    [ "$local_sha" = "$head_sha" ] || return 1
+    payload_sha=$(git -C "$SCRIPT_DIR" hash-object "$payload" 2>/dev/null) || return 1
+    [ "$payload_sha" != "$head_sha" ]
+}
+
+# issue #863: detect when the default release channel would roll back an install
+# that is already newer than the latest published release. Fires in release
+# channel when SCRIPT_DIR is a git repo and local HEAD contains commits that are
+# not present in the release (i.e. the release is strictly behind local).
+#
+# Exit codes:
+#   0 - rollback detected (release is a strict ancestor of local HEAD)
+#   1 - no rollback (release is HEAD, ahead, or unrelated)
+#   2 - cannot determine (network/history missing) -> caller must block --yes
+detect_release_rollback() {
+    [ "$UPDATE_CHANNEL" = "release" ] || return 1
+    [ -n "$RELEASE_SHA" ] || return 1
+    git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+    local local_sha release_sha merge_base commit_json
+    local_sha=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null) || return 1
+    [ -n "$local_sha" ] || return 1
+
+    release_sha="$RELEASE_SHA"
+    # Resolve a tag/branch ref to the actual commit SHA via the delivery API.
+    # A full SHA is already resolved; local resolution is not enough because
+    # the install's `origin` may point to a different fork or the local tag may
+    # differ from the published one.
+    if ! printf '%s' "$release_sha" | grep -qxE '[0-9a-f]{40}'; then
+        commit_json=$(github_api_get "$API_BASE/commits/$release_sha" 2>/dev/null) || return 2
+        # Prefer JSON parsing; fall back to sed only when Python is unavailable.
+        # Guard the assignment with || return 2: under set -e a bare failing
+        # command-substitution aborts the whole script when this function is
+        # not invoked from an if/|| context (WP-529 review of #863).
+        if py_available; then
+            release_sha=$(printf '%s\n' "$commit_json" | "$PY_BIN" -c '
+import json, re, sys
+try:
+    doc = json.load(sys.stdin)
+except json.JSONDecodeError:
+    raise SystemExit(1)
+sha = doc.get("sha", "") if isinstance(doc, dict) else ""
+if not re.fullmatch(r"[0-9a-f]{40}", sha):
+    raise SystemExit(1)
+print(sha)') || return 2
+        else
+            # Non-greedy: take the first 40-hex sha field only (head -1).
+            release_sha=$(printf '%s\n' "$commit_json" | \
+                sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' | head -1) || return 2
+        fi
+        [ -n "$release_sha" ] || return 2
+    fi
+
+    # Ensure the release commit object is available locally for merge-base.
+    if ! git -C "$SCRIPT_DIR" cat-file -e "$release_sha" 2>/dev/null; then
+        if ! git -C "$SCRIPT_DIR" fetch --quiet origin "$release_sha" 2>/dev/null; then
+            return 2
+        fi
+    fi
+
+    merge_base=$(git -C "$SCRIPT_DIR" merge-base "$local_sha" "$release_sha" 2>/dev/null) || return 2
+    [ -n "$merge_base" ] || return 2
+
+    # Rollback if the release commit is an ancestor of local HEAD but not equal
+    # to it (local has additional commits after the release).
+    if [ "$merge_base" = "$release_sha" ] && [ "$local_sha" != "$release_sha" ]; then
+        return 0
+    fi
+    return 1
+}
+
 # author_mode skip classification (WP-7 F71 stage A, peer-session 2026-08-14-05):
 # tell the author WHY each file was skipped (authored edits vs merely stale vs
 # undecidable) instead of one generic warning per file — Konstantin's live
@@ -637,6 +740,7 @@ fi
 WORKSPACE_DIR="$(dirname "$SCRIPT_DIR")"
 RULES_BACKUP_RUN=""
 RULES_SAFE_TO_UPDATE="|"
+MEMORY_BACKUP_RUN=""
 UPDATE_INCOMPLETE_MARKER="$SCRIPT_DIR/.update-incomplete"
 UPDATE_TRANSACTION_STARTED=false
 
@@ -1561,7 +1665,7 @@ backfill_governance_seed_script() {
     local relative_path="$1"
     local source_path="$SCRIPT_DIR/seed/strategy/$relative_path"
     local target_path="$governance_dir/$relative_path"
-    local git_prefix git_relative_path git_pathspec tracked_paths status_output
+    local git_prefix git_relative_path git_pathspec tracked_paths status_output tracked_status
 
     if [ -L "$governance_dir" ]; then
         echo "  ✗ $relative_path не обновлён: governance repo является symlink." >&2
@@ -1600,7 +1704,9 @@ backfill_governance_seed_script() {
             if ! tracked_paths=$(agent_fault_git "$governance_dir" \
                     ls-files -- "$git_pathspec") || \
                ! status_output=$(agent_fault_git "$governance_dir" \
-                    status --porcelain=v1 --untracked-files=all -- "$git_pathspec"); then
+                    status --porcelain=v1 --untracked-files=all -- "$git_pathspec") || \
+               ! tracked_status=$(agent_fault_git "$governance_dir" \
+                    status --porcelain=v1 --untracked-files=no -- "$git_pathspec"); then
                 echo "  ✗ $relative_path: Git state не прочитан; backfill запрещён." >&2
                 return 1
             fi
@@ -1609,12 +1715,22 @@ backfill_governance_seed_script() {
                 echo "  ✗ $relative_path имеет case-insensitive tracked alias; backfill запрещён." >&2
                 return 1
             fi
-            if [ -n "$status_output" ]; then
-                echo "  ✗ $relative_path содержит локальные изменения/удаление или case alias; сначала разберите Git state." >&2
+            # status_output mixes the tracked file's own state with any
+            # untracked case-variant sibling matched by the icase pathspec;
+            # tracked_status (--untracked-files=no) isolates the former so
+            # each branch below names the actual cause, not a catch-all.
+            if [ -n "$tracked_status" ]; then
+                echo "  ✗ $relative_path содержит локальные изменения/удаление; сначала разберите Git state." >&2
                 return 1
             fi
-            if [ -z "$tracked_paths" ] && [ -e "$target_path" ]; then
-                echo "  ✗ $relative_path существует как пользовательский untracked-файл; автоматическая перезапись запрещена." >&2
+            if [ -n "$status_output" ]; then
+                if [ -n "$tracked_paths" ]; then
+                    echo "  ✗ $relative_path: рядом обнаружен untracked-файл с другим регистром имени (case alias); backfill запрещён." >&2
+                elif [ -e "$target_path" ]; then
+                    echo "  ✗ $relative_path существует как пользовательский untracked-файл; автоматическая перезапись запрещена. Если это платформенный файл, который забыли закоммитить — выполните git add/git commit и повторите обновление." >&2
+                else
+                    echo "  ✗ $relative_path: рядом обнаружен файл с другим регистром имени (untracked case alias); backfill запрещён." >&2
+                fi
                 return 1
             fi
         elif [ -e "$target_path" ]; then
@@ -1842,6 +1958,25 @@ backup_rule_before_overwrite() {
     echo "  ↳ backup: $dst → $backup"
 }
 
+# issue #847: memory/* stale-repair (see repair_pass() below) used to overwrite
+# a workspace-local memory file with the template's version whenever hashes
+# differed, with no backup — unlike .claude/rules/* above, which already has
+# this via backup_rule_before_overwrite(). memory/* files are owner:platform
+# by convention but some (e.g. navigation.md) are filled in per-installation,
+# so the same safety net applies here under its own backup dir.
+backup_memory_file_before_overwrite() {
+    local fpath="$1" dst="$2" backup
+    case "$fpath" in memory/*.md|memory/*.yaml|memory/*.yml) ;; *) return 0 ;; esac
+    [ -f "$dst" ] || return 0
+    if [ -z "$MEMORY_BACKUP_RUN" ]; then
+        MEMORY_BACKUP_RUN="$WORKSPACE_DIR/.backups/memory-pre-update/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    fi
+    backup="$MEMORY_BACKUP_RUN/${fpath#memory/}"
+    mkdir -p "$(dirname "$backup")"
+    cp "$dst" "$backup"
+    echo "  ↳ backup: $dst → $backup"
+}
+
 copy_platform_file_preserving_user_space() {
     local src="$1" dst="$2" fpath="$3" user_section=""
     if [ -f "$dst" ]; then
@@ -1866,9 +2001,34 @@ copy_platform_file_preserving_user_space() {
     fi
 }
 
+# iwe_claude_project_slug PATH — the directory name Claude Code uses under
+# ~/.claude/projects for PATH: every character that is not an ASCII letter or
+# digit becomes "-" (so "/", ".", "_" and " " all do): /Users/alice/IWE → -Users-alice-IWE.
+# issue #869: three scripts used three different rules ("tr /", "tr /_.",
+# "tr /_ "), and none converted a Git Bash path ("/f/notes") to the native form
+# Claude Code actually sees ("F:\notes"). On Windows the native path comes from
+# cygpath; the drive-letter case does not matter there, the file system is
+# case-insensitive. A non-ASCII character becomes one dash (python3 counts characters
+# whatever the locale - launchd and cron run with none; the sed fallback does the same
+# only under a UTF-8 locale). Not verified against Claude Code for non-ASCII paths.
+# KEEP IN SYNC with setup.sh and scripts/day-close.sh — the same function body;
+# scripts/tests/test_issue_869_claude_slug.sh fails when the copies diverge.
+iwe_claude_project_slug() {
+    local path="$1" native=""
+    if command -v cygpath >/dev/null 2>&1; then
+        native=$(cygpath -w "$path" 2>/dev/null) || native=""
+        [ -n "$native" ] && path="$native"
+    fi
+    if command -v python3 >/dev/null 2>&1 \
+       && python3 -c 'import os, re, sys; sys.stdout.write(re.sub("[^A-Za-z0-9]", "-", os.fsencode(sys.argv[1]).decode("utf-8", "replace")))' "$path" 2>/dev/null; then
+        return 0
+    fi
+    printf '%s' "$path" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
 resolve_workspace_memory_dir() {
-    local workspace="$1" physical="" computed slug
-    slug=$(printf '%s' "$workspace" | tr '/_.' '-')
+    local workspace="$1" physical="" computed slug legacy_slug legacy_dir
+    slug=$(iwe_claude_project_slug "$workspace")
     computed="$HOME/.claude/projects/$slug/memory"
     if [ -d "$workspace/memory" ]; then
         physical=$(cd -P "$workspace/memory" 2>/dev/null && pwd -P) || return 1
@@ -1876,6 +2036,20 @@ resolve_workspace_memory_dir() {
     if [ -n "$physical" ] && [ -d "$computed" ]; then
         computed=$(cd -P "$computed" 2>/dev/null && pwd -P) || return 1
         if [ "$physical" != "$computed" ]; then
+            # issue #869: installs made before the single slug rule pointed workspace/memory at
+            # a directory named by an older rule ("tr /", "tr /_.", "tr /_ "). For a path with a
+            # space or other punctuation that is not the directory Claude Code uses. The physical
+            # link stays authoritative: accept it with a note instead of stopping the updater.
+            for legacy_slug in "$(printf '%s' "$workspace" | tr '/' '-')" \
+                               "$(printf '%s' "$workspace" | tr '/_.' '-')" \
+                               "$(printf '%s' "$workspace" | tr '/_ ' '-')"; do
+                legacy_dir="$HOME/.claude/projects/$legacy_slug/memory"
+                if [ -d "$legacy_dir" ] && [ "$(cd -P "$legacy_dir" 2>/dev/null && pwd -P)" = "$physical" ]; then
+                    echo "ВНИМАНИЕ: workspace/memory ведёт в $physical (каталог назван по прежнему правилу), а Claude Code читает $computed. Обновление продолжается с физической memory/." >&2
+                    printf '%s\n' "$physical"
+                    return 0
+                fi
+            done
             echo "ОШИБКА: memory target неоднозначен: workspace/memory → $physical, slug target → $computed" >&2
             return 1
         fi
@@ -2172,9 +2346,13 @@ if not re.fullmatch(r"[0-9a-f]{40}", sha):
 print(sha)'); then
                 RAW_BASE="https://raw.githubusercontent.com/$REPO/$resolved_ref"
                 echo "  Канал поставки: релиз $release_tag (снимок ${resolved_ref:0:12})"
+                # issue #863: remember the release commit SHA for rollback detection.
+                RELEASE_SHA="$resolved_ref"
             else
                 RAW_BASE="https://raw.githubusercontent.com/$REPO/$release_tag"
                 echo "  Канал поставки: релиз $release_tag (закреплён по тегу)"
+                # Fallback: tag itself is the best SHA proxy we have.
+                RELEASE_SHA="$release_tag"
             fi
             return 0
         fi
@@ -2501,13 +2679,19 @@ for entry in data.get('files', []):
                         # молча затирал бы её версией из SCRIPT_DIR.
                         echo "  ⚠ $fpath — author_mode: memory/ рабочая копия не тронута. Сверь: diff \"$SCRIPT_DIR/$fpath\" \"$mem_dst\""
                     elif [ -r "$mem_dst" ] && [ "$(hash_file "$SCRIPT_DIR/$fpath")" != "$(hash_file "$mem_dst")" ]; then
+                        backup_memory_file_before_overwrite "$fpath" "$mem_dst"
                         cp "$SCRIPT_DIR/$fpath" "$mem_dst"
-                        echo "  ⟲ $fpath → memory/ (stale repair)"
+                        echo "  ⟲ $fpath → memory/ (stale repair, прежняя версия сохранена в .backups/memory-pre-update/)"
                         REPAIRED=$((REPAIRED + 1))
                     fi
                 fi
                 ;;
-            .claude/skills/*|.claude/hooks/*|.claude/rules/*|.claude/rules-lazy/*|.claude/lib/*|.claude/config/*|.claude/detectors/*|.claude/scripts/*|.claude/agents/*|.claude/styles/*|.claude/templates/*)
+            # issue #891: the .claude/*.yaml|.claude/*.yml|.claude/*.example arm
+            # covers loose top-level .claude/ files (rules-registry.yaml among
+            # them). repair_pass() iterates the WHOLE manifest (every declared
+            # path, not just subdirectories), so a missing/stale loose file needs
+            # the same repair arm as the subdir ones, or it is silently skipped.
+            .claude/skills/*|.claude/hooks/*|.claude/rules/*|.claude/rules-lazy/*|.claude/lib/*|.claude/config/*|.claude/detectors/*|.claude/scripts/*|.claude/agents/*|.claude/styles/*|.claude/templates/*|.claude/*.yaml|.claude/*.yml|.claude/*.example)
                 dst="$WORKSPACE_DIR/$fpath"
                 if [ ! -f "$dst" ]; then
                     mkdir -p "$(dirname "$dst")"
@@ -2585,6 +2769,14 @@ sync_workspace_claude_md() {
         # 3-way merge for workspace CLAUDE.md (same logic as repo copy)
         WS_BASE="$WORKSPACE_DIR/.claude.md.base"
         WS_CURRENT="$WORKSPACE_DIR/CLAUDE.md"
+        # issue #846: records the WS_NEW content at the moment a conflict was
+        # last written to $WS_CURRENT. $WS_BASE is deliberately never advanced
+        # on conflict (issue #711), so once the pilot removes the markers by
+        # hand, the branches below used to re-run the exact same 3-way merge
+        # against the still-stale base and reproduce the exact same conflict
+        # on every run. This sidecar lets that specific case be recognized
+        # and the pilot's resolution accepted, instead of merged again.
+        WS_CONFLICT_PENDING="$WORKSPACE_DIR/.claude.md.conflict-pending"
 
         # issue #711: a previous run left unresolved <<<<<<< markers in
         # $WS_CURRENT (pilot hasn't touched the file yet). Running
@@ -2596,7 +2788,21 @@ sync_workspace_claude_md() {
             echo "  ~ $WS_CURRENT (неразрешённый конфликт с прошлого запуска — сначала разрешите маркеры вручную)"
             CLAUDE_CONFLICT_DETECTED=true
             CLAUDE_CONFLICT_FILES+=("$WS_CURRENT")
+        elif [ -f "$WS_CONFLICT_PENDING" ] && [ -f "$WS_BASE" ] && diff -q "$WS_CONFLICT_PENDING" "$WS_NEW" >/dev/null 2>&1; then
+            # Markers are gone and the upstream CLAUDE.md hasn't moved since
+            # the conflict that produced them — the pilot resolved it by hand.
+            # Accept their file as the new ground truth instead of re-merging
+            # it against the stale base (which is exactly what reproduced the
+            # same conflict every run).
+            cp "$WS_BASE" "$WS_BASE.bak-$(date -u +%Y%m%dT%H%M%SZ)"
+            cp "$WS_NEW" "$WS_BASE"
+            rm -f "$WS_CONFLICT_PENDING"
+            echo "  ✓ $WS_CURRENT принят как разрешённый вручную (база обновлена, прежняя сохранена рядом)"
         elif [ -f "$WS_BASE" ] && [ -f "$WS_CURRENT" ] && command -v git >/dev/null 2>&1; then
+            # Either the upstream template moved on since any earlier conflict
+            # (a stale pending record no longer applies), or this is the very
+            # first merge attempt — either way, a fresh merge decides next.
+            rm -f "$WS_CONFLICT_PENDING"
             WS_MERGE_TMP="$TMPDIR_UPDATE/ws-claude-merge.md"
             cp "$WS_CURRENT" "$WS_MERGE_TMP"
             if git merge-file -p "$WS_MERGE_TMP" "$WS_BASE" "$WS_NEW" > "$TMPDIR_UPDATE/ws-claude-merged.md" 2>/dev/null; then
@@ -2625,6 +2831,10 @@ sync_workspace_claude_md() {
                     # <<<<<<< markers, so update.sh reported "Всё актуально" on a corrupt
                     # file. Base now advances only once the markers are gone (see the
                     # pre-check above, which takes over on the next run).
+                    # issue #846: record $WS_NEW so a future run whose markers are gone
+                    # but whose $WS_NEW is unchanged can recognize a hand-resolved file
+                    # (see $WS_CONFLICT_PENDING branch above) instead of re-merging it.
+                    cp "$WS_NEW" "$WS_CONFLICT_PENDING"
                     echo "  ~ $WS_CURRENT ($WS_CONFLICTS конфликтов — разрешите вручную)"
                     echo "    Конфликты обозначены <<<<<<< / ======= / >>>>>>>"
                     CLAUDE_CONFLICT_DETECTED=true
@@ -3449,6 +3659,31 @@ if [ "$TOTAL_CHANGES" -eq 0 ]; then
     exit_clean
 fi
 
+# issue #863: rollback warning must appear before the file list, not hidden inside it.
+ROLLBACK_DETECTED=false
+ROLLBACK_UNCERTAIN=false
+_rollback_code=1
+if detect_release_rollback; then
+    _rollback_code=0
+else
+    _last_rc=$?
+    if [ "$_last_rc" -eq 2 ]; then
+        _rollback_code=2
+    fi
+fi
+if [ "$_rollback_code" -eq 0 ]; then
+    ROLLBACK_DETECTED=true
+    echo "🔴 ВНИМАНИЕ: локальная установка новее последнего релиза."
+    echo "   Применение обновления release-каналом ОТКАТИТ установку на более старый снимок."
+    echo "   Чтобы получить актуальную main, запустите: IWE_UPDATE_CHANNEL=main bash update.sh"
+    echo ""
+elif [ "$_rollback_code" -eq 2 ]; then
+    ROLLBACK_UNCERTAIN=true
+    echo "⚠️ ВНИМАНИЕ: не удалось проверить историю релиза; автоматическое применение с --yes заблокировано."
+    echo "   Чтобы получить актуальную main, запустите: IWE_UPDATE_CHANNEL=main bash update.sh"
+    echo ""
+fi
+
 if [ ${#NEW_FILES[@]} -gt 0 ]; then
     echo "Новые файлы (${#NEW_FILES[@]}):"
     for i in "${!NEW_FILES[@]}"; do
@@ -3516,7 +3751,35 @@ if $CHECK_ONLY; then
 fi
 
 # === Step 4: Confirmation ===
-if ! $AUTO_YES; then
+if [ "$ROLLBACK_DETECTED" = true ]; then
+    # issue #863: automatic/scheduled runs must not silently roll back a newer install.
+    if $AUTO_YES; then
+        echo "🔴 Остановлено: обнаружен откат на более старый релиз, а --yes запрещает интерактивное подтверждение." >&2
+        echo "   Для явного отката запустите без --yes и введите ROLLBACK на запрос подтверждения." >&2
+        echo "   Чтобы получить актуальную main, запустите: IWE_UPDATE_CHANNEL=main bash update.sh" >&2
+        exit "$EXIT_USAGE"
+    fi
+    echo "🔴 Это ОТКАТ на более старый релиз. Чтобы продолжить, введите ROLLBACK явно."
+    read -p "Применить ОТКАТ? (введите ROLLBACK для подтверждения / anything else для отмены) " -r
+    echo ""
+    if [ "$REPLY" != "ROLLBACK" ]; then
+        echo "Отменено."
+        exit 0
+    fi
+elif [ "$ROLLBACK_UNCERTAIN" = true ]; then
+    # issue #863: history could not be verified; require explicit manual approval.
+    if $AUTO_YES; then
+        echo "🔴 Остановлено: не удалось проверить историю релиза, а --yes запрещает интерактивное подтверждение." >&2
+        echo "   Запустите без --yes и подтвердите обновление вручную, либо используйте IWE_UPDATE_CHANNEL=main." >&2
+        exit "$EXIT_USAGE"
+    fi
+    read -p "Продолжить, несмотря на невозможность проверить откат? (y/n) " -n 1 -r
+    echo ""
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Отменено."
+        exit 0
+    fi
+elif ! $AUTO_YES; then
     read -p "Применить обновления? (y/n) " -n 1 -r
     echo ""
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -3563,6 +3826,11 @@ for f in "${UPDATED_FILES[@]}"; do
     if author_diverged "$f"; then
         echo "  ⚠ $f — author_mode: несмёрженные правки, файл не тронут."
         echo "    Сверь: diff \"$TMPDIR_UPDATE/files/$f\" \"$SCRIPT_DIR/$f\""
+        AUTHOR_SKIPPED=$((AUTHOR_SKIPPED + 1))
+        continue
+    elif author_release_regression "$f" "$TMPDIR_UPDATE/files/$f"; then
+        echo "  ⚠ $f — author_mode: локальная копия уже равна main, но release-канал старее (фикс влит, релиза под него ещё не было) — файл не тронут."
+        echo "    Хотите намеренно синхронизироваться с релизом — запустите: IWE_UPDATE_CHANNEL=main bash update.sh"
         AUTHOR_SKIPPED=$((AUTHOR_SKIPPED + 1))
         continue
     fi
@@ -3941,7 +4209,7 @@ else
 GITHUB_USER="your-username"
 WORKSPACE_DIR="$DETECTED_WORKSPACE"
 CLAUDE_PATH="$(command -v claude 2>/dev/null || echo 'claude')"
-CLAUDE_PROJECT_SLUG="$(echo "$DETECTED_WORKSPACE" | tr '/' '-')"
+CLAUDE_PROJECT_SLUG="$(iwe_claude_project_slug "$DETECTED_WORKSPACE")"
 TIMEZONE_HOUR="4"
 TIMEZONE_DESC="4:00 (местное время)"
 HOME_DIR="$HOME"
@@ -4076,7 +4344,14 @@ for f in "${NEW_FILES[@]}" "${UPDATED_FILES[@]}"; do
                 echo "  ✓ $f → workspace"
             fi
             ;;
-        .claude/skills/*|.claude/hooks/*|.claude/rules/*|.claude/rules-lazy/*|.claude/lib/*|.claude/config/*|.claude/detectors/*|.claude/scripts/*|.claude/agents/*|.claude/styles/*|.claude/templates/*)
+        # issue #891: the .claude/*.yaml|.claude/*.yml|.claude/*.example arm
+        # covers loose top-level .claude/ files (rules-registry.yaml among
+        # them -- sql-pii-guard.sh's AR.112/AR.113 source). They were
+        # manifest-checksummed but matched no branch here before, so a fresh
+        # NEW_FILES entry for one silently fell through this loop and never
+        # reached disk. None of them carry a USER-SPACE block, so the same
+        # helper as the subdir arms is enough.
+        .claude/skills/*|.claude/hooks/*|.claude/rules/*|.claude/rules-lazy/*|.claude/lib/*|.claude/config/*|.claude/detectors/*|.claude/scripts/*|.claude/agents/*|.claude/styles/*|.claude/templates/*|.claude/*.yaml|.claude/*.yml|.claude/*.example)
             src="$SCRIPT_DIR/$f"
             dst="$WORKSPACE_DIR/$f"
             if is_author_mode && [ -f "$dst" ]; then

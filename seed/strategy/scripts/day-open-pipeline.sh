@@ -282,15 +282,44 @@ WP_REGISTRY="$DS_STRATEGY/docs/WP-REGISTRY.md"
 # писал ни один механизм. update-derived-snapshot.py (шаг 1.5 выше) уже пишет сюда.
 CP_PROFILE="$DS_STRATEGY/inbox/WP-425/cache/derived_snapshot.json"
 CALENDAR_OUT="$IWE/.tmp/calendar-$DATE.txt"
-LLM_PROXY_URL="${LLM_PROXY_URL:-https://iwe-llm-proxy-production.up.railway.app}"
+# issue #877: the shipped script carries NO built-in gateway address. The old
+# default was the maintainer's private Railway gateway, which a user install can
+# never authenticate against (no secret for it is provisioned anywhere), so the
+# failure surfaced as an HTTP 401 that reads like a key-rotation problem.
+# Resolution order: explicit LLM_PROXY_URL, then PLATFORM_LLM_PROXY_URL (from the
+# environment, or from the workspace env file that setup.sh writes), else empty
+# and step 2 stops with a direct "gateway not configured" message. The platform
+# value carries a "/v1" suffix, while every call below appends its own "/v1/...".
+if [ -z "${LLM_PROXY_URL:-}" ]; then
+  _platform_proxy="${PLATFORM_LLM_PROXY_URL:-}"
+  if [ -z "$_platform_proxy" ] && [ -f "$DS_STRATEGY/scripts/lib/common.sh" ]; then
+    # Read in a subshell: common.sh defines its own tg_notify(), which would replace
+    # this pipeline's (probe-aware, telegram.sh-based) one for the rest of the run.
+    # shellcheck source=lib/common.sh
+    _platform_proxy=$( . "$DS_STRATEGY/scripts/lib/common.sh" && iwe_env_get "$IWE/.exocortex.env" PLATFORM_LLM_PROXY_URL 2>/dev/null ) || _platform_proxy=""
+  fi
+  _platform_proxy="${_platform_proxy%/}"
+  _platform_proxy="${_platform_proxy%/v1}"
+  # Installs made before this fix carry the address older setup.sh wrote as an
+  # active value; it answers HTTP 404 on every path. Only this one known value is
+  # ignored (with a note) - any other user-supplied URL is left alone.
+  if [ "$_platform_proxy" = "https://llm.aisystant.com" ]; then
+    echo "  Note: PLATFORM_LLM_PROXY_URL is the legacy placeholder older setup.sh wrote (that address does not answer) - ignored." >&2
+    _platform_proxy=""
+  fi
+  LLM_PROXY_URL="$_platform_proxy"
+  unset _platform_proxy
+fi
+# Every call below appends its own "/v1/...": accept an explicit URL given with the
+# suffix or a trailing slash too, instead of probing ".../v1/v1/health".
+LLM_PROXY_URL="${LLM_PROXY_URL%/}"
+LLM_PROXY_URL="${LLM_PROXY_URL%/v1}"
 PROXY_PORT="${PROXY_PORT:-18765}"
 PROXY_PID=""
-# WP-484 Ф48b (04.08): default flipped from the Mac-only localhost:18765 (the
-# WP-149/504 "dead file" llm-proxy.py, superseded by auth-gateway.py at the
-# WP-400 cutover 09.06) to the properly-maintained Railway gateway. This
-# pipeline runs on either machine of the dual-machine pair (see note below) --
-# a Mac-local address is simply wrong on tsekh-1, and was the root cause of
-# the 30.07/02.08/04.08 stale-credential recurrences on the Mac. Local-only
+# WP-484 Ф48b (04.08): a remote gateway is the normal target. This pipeline runs
+# on either machine of the dual-machine pair (see note below) -- a Mac-local
+# address is simply wrong on tsekh-1, and was the root cause of the
+# 30.07/02.08/04.08 stale-credential recurrences on the Mac. Local-only
 # branches below (spawn-if-missing, kill-on-port self-heal) only make sense
 # for an actual localhost target, so they're gated on PROXY_IS_LOCAL.
 case "$LLM_PROXY_URL" in
@@ -320,8 +349,14 @@ reap_stale_git_lock() {
 }
 
 # --- Helper: abort with notification + proxy cleanup ---
+# issue #893: a caller (strategist.sh's morning scenario) needs to tell "no
+# gateway configured -- retry with --scaffold-only" apart from every other
+# abort reason without re-deriving LLM_PROXY_URL/PLATFORM_LLM_PROXY_URL
+# itself (that resolution already lives in one place, §2 above, and #894's
+# whole point is not to grow a second copy of it). A distinct exit code is
+# the same contract this file already uses for exit 7/8 below.
 abort() {
-  local reason="$1"
+  local reason="$1" code="${2:-1}"
   echo "❌ $reason"
   tg_notify "🚨 Day Open pipeline aborted: ${reason}"
   if [ "$PROBE" = "true" ]; then
@@ -330,7 +365,7 @@ abort() {
     echo "=== PROBE SUMMARY ==="
     echo "  date=$DATE verdict=🔴 red (abort) reason=\"$reason\" wall_min=$wall_min attention_min=0"
   fi
-  exit 1
+  exit "$code"
 }
 
 # Cleanup proxy on exit
@@ -634,6 +669,15 @@ done
 # below actually needs the proxy; the deterministic scaffold (step 3) does not.
 if [ "$SCAFFOLD_ONLY" != "true" ]; then
 echo "=== 2. LLM Proxy healthcheck ==="
+# issue #877: no gateway address resolved (see the resolution chain near the top).
+# Say so directly instead of probing an empty URL, and do not send the reader
+# hunting for a key rotation - there is no key problem, there is no gateway.
+if [ -z "$LLM_PROXY_URL" ]; then
+  echo "  LLM gateway is not configured: LLM_PROXY_URL and PLATFORM_LLM_PROXY_URL are both empty."
+  # exit 9 = no gateway configured -> caller should retry with --scaffold-only
+  # (issue #893), same contract class as exit 7/8 elsewhere in this file.
+  abort "LLM gateway is not configured - set LLM_PROXY_URL to your gateway (or PLATFORM_LLM_PROXY_URL). This is not an API-key problem. Use --scaffold-only to build the plan without the LLM fill." 9
+fi
 PROXY_HEALTH=$(curl -s "${LLM_PROXY_URL}/v1/health" 2>/dev/null | grep -q "ok" && echo "ok" || echo "fail")
 if [ "$PROXY_HEALTH" != "ok" ]; then
   if $PROXY_IS_LOCAL; then
