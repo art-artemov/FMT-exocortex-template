@@ -25,13 +25,6 @@ elif command -v systemd-inhibit &>/dev/null; then
     trap 'kill $_INHIBIT_PID 2>/dev/null' EXIT
 fi
 
-# Cross-platform date offset: portable_date_offset <days_back> <format>
-portable_date_offset() {
-    local days="$1"
-    local fmt="${2:-%Y-%m-%d}"
-    date -v-${days}d +"$fmt" 2>/dev/null || date -d "$days days ago" +"$fmt" 2>/dev/null
-}
-
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SYNC_DIR="$(dirname "$SCRIPT_DIR")"
 STATE_DIR="$HOME/.local/state/exocortex"
@@ -98,14 +91,24 @@ if ! command -v timeout &>/dev/null; then
             use POSIX ":sys_wait_h";
             my $timeout = shift @ARGV;
             my $pid = fork();
-            if ($pid == 0) { exec @ARGV; die "exec failed: $!"; }
+            defined($pid) or die "fork failed: $!";
+            if ($pid == 0) {
+                POSIX::setpgid(0, 0) == 0 or die "setpgid failed: $!";
+                exec @ARGV; die "exec failed: $!";
+            }
             eval {
                 local $SIG{ALRM} = sub { die "alarm" };
                 alarm($timeout);
                 waitpid($pid, 0);
                 alarm(0);
             };
-            if ($@ =~ /alarm/) { kill("TERM", $pid); sleep(1); kill("KILL", $pid); waitpid($pid, WNOHANG); exit(124); }
+            if ($@ =~ /alarm/) {
+                kill("TERM", -$pid);
+                sleep(1);
+                kill("KILL", -$pid);
+                waitpid($pid, WNOHANG);
+                exit(124);
+            }
             exit($? >> 8);
         ' "$duration" "$@"
     }
@@ -130,6 +133,22 @@ run_strategist_scenario() {
         2)
             log "SKIP: strategist $scenario already running (lock held; will retry next dispatch)"
             ;;
+        75)
+            log "ALARM: strategist $scenario deferred: template update incomplete (rc=75; finish or repair update.sh; will retry next dispatch)"
+            if [ "$scenario" = morning ]; then
+                notify_incomplete_morning_update || true
+            fi
+            ;;
+        76)
+            log "ALARM: strategist $scenario exhausted today's automatic attempts (rc=76; manual retry remains available)"
+            ;;
+        77)
+            if [ "$scenario" = week-review ] && week_review_exhausted_today; then
+                log "ALARM: strategist week-review automatic retry paused (rc=77; delivery outcome uncertain or attempts exhausted; inspect status before manual retry)"
+            else
+                log "WARN: strategist $scenario failed (rc=77; next dispatch will recheck status)"
+            fi
+            ;;
         *)
             log "WARN: strategist $scenario failed (rc=$rc; will retry next dispatch)"
             ;;
@@ -147,8 +166,60 @@ ran_this_week() {
     [ -f "$STATE_DIR/$1-W$WEEK" ]
 }
 
+# #1067: use the strategist's published status record, never its mixed log:
+# model stdout in that log can contain forged GAVE UP/RECORDED markers. UNKNOWN
+# means a run may have delivered before its final status write failed; pause.
+week_review_exhausted_today() {
+    local status_file="$HOME/logs/strategist/week-review-last-status"
+    local stamped_at outcome rc failed_runs extra
+    [ -f "$status_file" ] && [ ! -L "$status_file" ] || return 1
+    IFS=$'\t' read -r stamped_at outcome rc failed_runs extra < "$status_file" || return 1
+    [ -z "$extra" ] && [ "${stamped_at%% *}" = "$DATE" ] &&
+        { { [ "$outcome" = FAILED ] && [[ "$rc" =~ ^[0-9]+$ ]] &&
+            { [ "$failed_runs" = 2 ] || [ -z "$failed_runs" ]; }; } ||
+          { [ "$outcome" = UNKNOWN ] && [ "$rc" = 77 ] &&
+            { [ "$failed_runs" = 1 ] || [ "$failed_runs" = 2 ]; }; }; }
+}
+
+# A manual retry can succeed after the cap. The next scheduler dispatch then
+# observes its dated success status and records the weekly postcondition.
+week_review_recovered_today() {
+    local status_file="$HOME/logs/strategist/week-review-last-status"
+    local stamped_at outcome rc failed_runs extra
+    [ -f "$status_file" ] && [ ! -L "$status_file" ] || return 1
+    IFS=$'\t' read -r stamped_at outcome rc failed_runs extra < "$status_file" || return 1
+    [ -z "$extra" ] && [ "${stamped_at%% *}" = "$DATE" ] &&
+        [ "$outcome" = SUCCESS ] && [ "$rc" = 0 ] && [ "$failed_runs" = 0 ]
+}
+
 mark_done() {
     echo "$(date '+%H:%M:%S')" > "$STATE_DIR/$1-$DATE"
+}
+
+# The strategist exits 75 before its own notifier is available. Use the existing
+# day-open-failed path here; a failed send (which notify.sh may report with exit 0)
+# must not consume the one-per-day notice or the morning retry.
+notify_incomplete_morning_update() {
+    local notice="strategist-morning-update-alert" output="" notify_rc=0
+    ran_today "$notice" && return 0
+    if [ ! -f "$NOTIFY_SH" ]; then
+        log "WARN: Day Open update-incomplete notification unavailable; will retry next dispatch"
+        return 1
+    fi
+    # Bound the whole notifier below TASK_TIMEOUT_SHORT (300s). The macOS
+    # fallback kills its process group, including children that inherited the
+    # command substitution's stdout; notify.sh also bounds curl itself.
+    output=$(DAY_OPEN_FAILED_REASON=update-incomplete DAY_OPEN_FAILED_RC=75 \
+        timeout 15 "$NOTIFY_SH" strategist day-open-failed 2>&1) || notify_rc=$?
+    if [ "$notify_rc" -eq 0 ] && printf '%s\n' "$output" | grep -qxF \
+        'Telegram notification sent: strategist/day-open-failed'; then
+        if mark_done "$notice"; then
+            log "Day Open update-incomplete notification delivered"
+            return 0
+        fi
+    fi
+    log "WARN: Day Open update-incomplete notification not confirmed (notifier rc=$notify_rc); will retry next dispatch"
+    return 1
 }
 
 mark_done_week() {
@@ -224,9 +295,16 @@ dispatch() {
 
     # --- Стратег: week-review (Пн, до morning) ---
     if [ "$DOW" = "1" ] && ! ran_this_week "strategist-week-review"; then
-        log "→ strategist week-review (catch-up: hour=$HOUR)"
-        if run_strategist_scenario "week-review"; then
+        if week_review_recovered_today; then
             mark_done_week "strategist-week-review"
+            log "week-review manual recovery confirmed; weekly marker recorded"
+        elif week_review_exhausted_today; then
+            log "SKIP: strategist week-review automatic retry paused (attempts exhausted or delivery outcome uncertain); inspect status before manual retry"
+        else
+            log "→ strategist week-review (catch-up: hour=$HOUR)"
+            if run_strategist_scenario "week-review"; then
+                mark_done_week "strategist-week-review"
+            fi
         fi
         ran=1
     fi
@@ -240,24 +318,13 @@ dispatch() {
         ran=1
     fi
 
-    # --- Стратег: note-review (22:00+) ---
-    if (( 10#$HOUR >= 22 )) && ! ran_today "strategist-note-review"; then
-        log "→ strategist note-review (catch-up: hour=$HOUR)"
-        if run_strategist_scenario "note-review"; then
-            mark_done "strategist-note-review"
-        fi
-        ran=1
-    elif (( 10#$HOUR < 12 )); then
-        local yesterday
-        yesterday=$(portable_date_offset 1)
-        if [ -n "$yesterday" ] && [ ! -f "$STATE_DIR/strategist-note-review-$yesterday" ]; then
-            log "→ strategist note-review (catch-up for yesterday $yesterday)"
-            if run_strategist_scenario "note-review"; then
-                echo "$(date '+%H:%M:%S') catch-up" > "$STATE_DIR/strategist-note-review-$yesterday"
-            fi
-            ran=1
-        fi
-    fi
+    # --- Стратег: note-review — no scheduled runs (template owner's decision, July 2026) ---
+    # Notes are reviewed ONLY by hand, in a live session with the pilot (e.g. the Day Open
+    # "Разбор заметок" section). The nightly run kept stripping bold and archiving notes without
+    # a pilot decision, so BOTH scheduler paths are gone: the evening run (22:00+) and the
+    # morning catch-up for "yesterday". A manual `strategist.sh note-review` from a terminal
+    # still works, but it has no chat: it only marks notes and writes proposals, the model archives
+    # nothing (only the cleanup safety net may archive a note whose bold the pilot already removed).
 
     # --- Синхронизатор: code-scan (ежедневно) ---
     if ! ran_today "synchronizer-code-scan"; then

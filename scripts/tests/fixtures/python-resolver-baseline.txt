@@ -19,15 +19,15 @@ roles/extractor/scripts/extractor.sh	python3 "$prefilter_script" --report "$stra
 roles/synchronizer/scripts/dt-collect.sh	python3 "$SCRIPT_DIR/dt-collect-neon.py" "$DT_USER_ID" "$MERGED" 2>>"$LOG_FILE"
 scripts/archive-done-wp.sh	WP_CARD=$(python3 "$WP_LIST_SCRIPT" --list-cards --source inbox --fields wp,card --format tsv \
 scripts/codex-peer-adapter.sh	_LANG_RESULT=$(printf '%s' "$CODEX_OUTPUT" | python3 "$_LANG_CHECK" 2>/dev/null || true)
-scripts/codex-peer-adapter.sh	if python3 "$TEMPLATE_SCRIPTS/content-filter-apply.py" "$CONTENT_FILTER_MAP" \
-scripts/codex-peer-adapter.sh	python3 "$TEMPLATE_SCRIPTS/peer-adapter-filter.py"
+scripts/codex-peer-adapter.sh	if python3 "$SCRIPT_DIR/content-filter-apply.py" "$CONTENT_FILTER_MAP" \
+scripts/codex-peer-adapter.sh	python3 "$SCRIPT_DIR/peer-adapter-filter.py"
 scripts/codex-peer-adapter.sh	| python3 "$HINDSIGHT_SCRIPT" 2>/dev/null || true
 scripts/create-wp.sh	TRACKER_OUTPUT=$(python3 "$TRACKER_ADAPTER" create --context "$WP_FILE" --repository "$REPO" 2>&1 || true)
 scripts/create-wp.sh	python3 "$BUILD_ACTIVE_WP" \
 scripts/day-close-lock.sh	python3 "$GATEWAY_LOCK_PY" acquire "day-close-lock" "$TTL_SECONDS" >/dev/null 2>&1 || rc=$?
 scripts/day-close-prepare.sh	python3 "$IH" 2>&1 | head -60
-scripts/day-open-pipeline.sh	(python3 "$DS_STRATEGY/scripts/update-derived-snapshot.py" --if-stale-days 10 \
-scripts/day-open-pipeline.sh	python3 "$DS_STRATEGY/scripts/day-open-budget-patch.py" \
+scripts/day-open-pipeline.sh	(python3 "$SCRIPT_HOME/update-derived-snapshot.py" --if-stale-days 10 \
+scripts/day-open-pipeline.sh	python3 "$SCRIPT_HOME/day-open-budget-patch.py" \
 scripts/hermes-peer-adapter.sh	_LANG_RESULT=$(printf '%s' "$RESPONSE" | python3 "$_LANG_CHECK" 2>/dev/null || true)
 scripts/kimi-peer-adapter.sh	if python3 "$SCRIPT_DIR/content-filter-apply.py" "$CONTENT_FILTER_MAP" \
 scripts/kimi-peer-adapter.sh	python3 "$SCRIPT_DIR/peer-adapter-filter.py"

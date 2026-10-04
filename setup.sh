@@ -206,6 +206,27 @@ check_command() {
 # Git — обязателен всегда
 check_command "git" "Git" "xcode-select --install"
 
+# Git identity — required in every mode: step 6 makes the initial commit of the
+# governance repo (full and --core). Without an identity that commit dies in the
+# middle of the install with git's own "Author identity unknown", after most of
+# the work is done and before the base repos are cloned; a new machine has none
+# until the user sets it (CI never saw this: its smoke passes GIT_AUTHOR_* env).
+# A throwaway empty commit is the only faithful probe: `git var` and `git config`
+# both answer differently from `git commit` in some environments (auto-detected
+# names, useConfigOnly). A dry run makes no commit, so it only warns.
+if command -v git >/dev/null 2>&1; then
+    _ID_PROBE=$(mktemp -d 2>/dev/null || true)
+    if [ -n "$_ID_PROBE" ] && git -C "$_ID_PROBE" init -q >/dev/null 2>&1 \
+            && git -C "$_ID_PROBE" commit -q --allow-empty -m probe >/dev/null 2>&1; then
+        echo "  ✓ Git identity: задана"
+    else
+        echo "  ✗ Git identity: не задана (имя и почта для коммитов)"
+        echo "    Install: git config --global user.name \"Your Name\" && git config --global user.email \"you@example.com\""
+        $DRY_RUN || PREREQ_FAIL=1
+    fi
+    [ -z "$_ID_PROBE" ] || rm -rf "$_ID_PROBE"
+fi
+
 # jq — обязателен всегда: .claude/hooks/dry-run-gate.sh (устанавливается в любом режиме,
 # см. шаг 4b) fail-closed блокирует ВСЕ tool calls без jq, без явного предупреждения (issue #192).
 check_command "jq" "jq" "brew install jq (Linux: apt install jq / dnf install jq)"
@@ -331,6 +352,49 @@ iwe_claude_project_slug() {
         return 0
     fi
     printf '%s' "$path" | sed 's/[^A-Za-z0-9]/-/g'
+}
+
+# hash_file FILE — the file's sha256, as update.sh computes it.
+# KEEP IN SYNC with update.sh — the same function body; setup/test-update-edge-cases.sh (T47) fails
+# when the copies diverge.
+hash_file() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    else
+        sha256sum "$1" | cut -d' ' -f1
+    fi
+}
+
+# memory_record_put FILE KEY HASH — the record of installed memory versions
+# ($WORKSPACE_DIR/.memory-deployed.tsv, one "key<TAB>sha256" line per file): afterwards its line for
+# KEY says HASH. update.sh reads it to tell a memory copy nobody changed from an edited one (issues
+# #965/#967). Written through a temporary file and mv; a record that is a link, no regular file or
+# unreadable is left as it is; returns non-zero, without a word, when it does not write.
+# KEEP IN SYNC with update.sh — the same function body; setup/test-update-edge-cases.sh (T47) fails
+# when the copies diverge.
+memory_record_put() {
+    local file="$1" key="$2" hash="$3" tmp line value tab
+    tab=$(printf '\t')
+    case "$hash" in *[!0-9a-f]*|'') return 1 ;; esac
+    [ "${#hash}" -eq 64 ] || return 1
+    if [ -L "$file" ] || { [ -e "$file" ] && { [ ! -f "$file" ] || [ ! -r "$file" ]; }; }; then
+        return 1
+    fi
+    tmp=$(mktemp "$file.XXXXXX" 2>/dev/null) || return 1
+    if [ -f "$file" ]; then
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in *"$tab"*) ;; *) continue ;; esac
+            value="${line##*"$tab"}"
+            case "$value" in *[!0-9a-f]*|'') continue ;; esac
+            [ "${#value}" -eq 64 ] || continue
+            [ "${line%"$tab"*}" = "$key" ] || printf '%s\n' "$line"
+        done < "$file" > "$tmp" || { rm -f "$tmp"; return 1; }
+    fi
+    if printf '%s\t%s\n' "$key" "$hash" >> "$tmp" && mv -f "$tmp" "$file"; then
+        return 0
+    fi
+    rm -f "$tmp"
+    return 1
 }
 
 CLAUDE_PROJECT_SLUG="$(iwe_claude_project_slug "$WORKSPACE_DIR")"
@@ -698,6 +762,17 @@ else
         [ -f "$f" ] && cp "$f" "$CLAUDE_MEMORY_DIR/"
     done
     echo "  Copied to $CLAUDE_MEMORY_DIR"
+    # issues #965/#967: record what was installed, so update.sh can later prove a copy nobody
+    # changed untouched and refresh it. A record that cannot be written only costs that proof.
+    MEMORY_RECORD_FAILED=false
+    for f in "$TEMPLATE_DIR/memory/"*.md "$TEMPLATE_DIR/memory/"*.yaml "$TEMPLATE_DIR/memory/"*.yml; do
+        [ -f "$f" ] || continue
+        memory_record_put "$WORKSPACE_DIR/.memory-deployed.tsv" "memory/$(basename "$f")" \
+            "$(hash_file "$CLAUDE_MEMORY_DIR/$(basename "$f")")" || MEMORY_RECORD_FAILED=true
+    done
+    if $MEMORY_RECORD_FAILED; then
+        echo "  ВНИМАНИЕ: не удалось записать $WORKSPACE_DIR/.memory-deployed.tsv; update.sh будет отличать нетронутые файлы памяти от изменённых по другим признакам." >&2
+    fi
 
     # Create symlink so CLAUDE.md references (memory/protocol-open.md etc.) resolve from workspace root
     if [ ! -e "$WORKSPACE_DIR/memory" ]; then
@@ -771,18 +846,20 @@ else
 fi
 
 # === 4b. Propagate skills, hooks, rules, lib, config, detectors, scripts, styles to workspace ===
-echo "[4b] Installing skills, hooks, rules, rules-lazy, lib, config, detectors, scripts, styles..."
+echo "[4b] Installing skills, hooks, rules, rules-lazy, lib, bin, config, detectors, scripts, styles..."
 if $DRY_RUN; then
-    echo "  [DRY RUN] Would copy .claude/{skills,hooks,rules,rules-lazy,lib,config,detectors,scripts,agents,styles}/ → $WORKSPACE_DIR/.claude/"
+    echo "  [DRY RUN] Would copy .claude/{skills,hooks,rules,rules-lazy,lib,bin,config,detectors,scripts,agents,styles}/ → $WORKSPACE_DIR/.claude/"
 else
     mkdir -p "$WORKSPACE_DIR/.claude"
     # lib/config/detectors — runtime dependencies капчер-шины (capture-bus.sh) и детекторов
     # scripts — требуется скиллами (напр. load-extensions.sh)
     # styles — дисциплина языковых стилей (WP-412)
     # rules-lazy — lazy-loaded rule expansions (role-prefixes-full), parity with update.sh
-    for subdir in skills hooks rules rules-lazy lib config detectors scripts agents styles templates; do
+    for subdir in skills hooks rules rules-lazy lib bin config detectors scripts agents styles templates; do
         if [ -d "$TEMPLATE_DIR/.claude/$subdir" ]; then
             cp -r "$TEMPLATE_DIR/.claude/$subdir" "$WORKSPACE_DIR/.claude/"
+            # .claude/bin holds extension-less executables (guarded-rm, issue #940)
+            [ "$subdir" = bin ] && chmod +x "$WORKSPACE_DIR/.claude/bin/"* 2>/dev/null || true
             echo "  ✓ .claude/$subdir/ → $WORKSPACE_DIR/.claude/$subdir/"
         fi
     done
@@ -1200,12 +1277,6 @@ adopt_existing_governance_repo() {
         echo "  Fix: inspect and clean it up (or rename it aside), then re-run setup.sh."
         exit 1
     fi
-    if $DRY_RUN; then
-        echo "  [DRY RUN] Remote $GITHUB_USER/$GOVERNANCE_REPO exists → would clone it into $MY_STRATEGY_DIR"
-        echo "  [DRY RUN] Would verify governance markers: ${GOVERNANCE_MARKERS[*]}"
-        generate_executor_catalog_for_governance
-        return
-    fi
     echo "  Remote $GITHUB_USER/$GOVERNANCE_REPO already exists (created elsewhere, e.g. from the browser) — adopting it."
     if ! gh repo clone "$GITHUB_USER/$GOVERNANCE_REPO" "$MY_STRATEGY_DIR" -- --quiet 2>/dev/null; then
         echo "  ERROR: could not clone $GITHUB_USER/$GOVERNANCE_REPO. Check network/access and re-run."
@@ -1238,17 +1309,21 @@ adopt_existing_governance_repo() {
     fi
 }
 
+# A dry run must not touch the network (test_fresh_seed_reproduction.sh pins this
+# with tripwire binaries), so the remote probe is skipped there and the preview
+# names both outcomes instead of guessing one (issue #956).
+# adopt_existing_governance_repo consequently only ever runs for real.
 if [ -d "$MY_STRATEGY_DIR/.git" ]; then
     echo "  $GOVERNANCE_REPO already exists as git repo."
     generate_executor_catalog_for_governance
-elif [ -d "$STRATEGY_TEMPLATE" ] && remote_governance_repo_exists; then
+elif [ -d "$STRATEGY_TEMPLATE" ] && ! $DRY_RUN && remote_governance_repo_exists; then
     adopt_existing_governance_repo
 elif $DRY_RUN; then
     if [ -d "$STRATEGY_TEMPLATE" ]; then
         echo "  [DRY RUN] Would create $GOVERNANCE_REPO from seed/strategy → $MY_STRATEGY_DIR"
         echo "  [DRY RUN] Would init git repo + initial commit"
         if ! $CORE_ONLY; then
-            echo "  [DRY RUN] Would create GitHub repo: $GITHUB_USER/$GOVERNANCE_REPO (private)"
+            echo "  [DRY RUN] Проверит GitHub: примет существующий репозиторий $GITHUB_USER/$GOVERNANCE_REPO или создаст новый (private)"
         fi
     else
         echo "  [DRY RUN] Would create minimal $GOVERNANCE_REPO (seed/strategy not found)"
@@ -1452,7 +1527,12 @@ else
         echo "  validate-режим setup.sh проверит: env-конфиг, обязательные файлы,"
         echo "  extensions, доступность MCP, структурные инварианты."
         echo ""
-        read -p "Запустить проверку сейчас? (y/n) " -n 1 -r || true
+        # #1010 F11: no question without a person to answer it (SETUP_CI or no terminal on stdin):
+        # `read` on an open stdin with no TTY waits forever.
+        REPLY=""
+        if [ -z "${SETUP_CI:-}" ] && [ -t 0 ]; then
+            read -p "Запустить проверку сейчас? (y/n) " -n 1 -r || true
+        fi
         echo ""
         if [[ ${REPLY:-} =~ ^[Yy]$ ]]; then
             echo ""

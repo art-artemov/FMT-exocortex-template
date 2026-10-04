@@ -133,6 +133,9 @@ PLATFORM_HOOKS_EXPLICIT_INCLUDE=(
     "seed/strategy/scripts/install-hooks.sh"
     # WP-485 Ф14: portable isolate-push for template users (а∩г)
     "seed/strategy/scripts/isolate-push.sh"
+    # issue #941: strategist.sh publishes through $governance/scripts/ds-publish.sh,
+    # which the template never shipped; update.sh delivers it only when absent.
+    "seed/strategy/scripts/ds-publish.sh"
     # #533: existing installations need the subject-scoped Day Open reader.
     "seed/strategy/scripts/day-open-llm-fill.py"
     "seed/strategy/scripts/update-derived-snapshot.py"
@@ -217,6 +220,10 @@ SCRIPT_CONTRACT_EXPLICIT_INCLUDE=(
     "scripts/tests/test_critical_alert_failure_matrix.sh"
     "scripts/tests/test_create_wp_repeat_and_cwd.sh"
     "scripts/tests/test_create_wp_hypothesis_relation.sh"
+    # issue #956: run-issue-tests.sh (delivered) names both in ADDITIONAL_ISSUE_TESTS,
+    # and a registered test file that is missing fails the runner on an installed copy.
+    "scripts/tests/test_create_wp_verification_class.sh"
+    "scripts/tests/test_create_wp_artifactor_gate.sh"
     "scripts/tests/test_day_close_lock_timezone.sh"
     "scripts/tests/test_fresh_seed_reproduction.sh"
     "scripts/tests/test_generate_manifest_registers_setup_exclusions.sh"
@@ -236,6 +243,8 @@ SCRIPT_CONTRACT_EXPLICIT_INCLUDE=(
     # ship with the template — a user's copy must be able to run its own
     # issue-regression gate (same rationale as the 03.08 block above).
     "scripts/tests/run-issue-tests.sh"
+    "scripts/tests/test_issue_1032_strategy_session_offline.sh"
+    "scripts/tests/test_issue_1032_windows_fail_closed.sh"
     "scripts/tests/test_issue_434_pipeline_scaffold_only.sh"
     "scripts/tests/test_issue_453_calendar_private_visibility.sh"
     "scripts/tests/test_issue_455_scaffold_missing_lib_fatal.sh"
