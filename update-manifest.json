@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "version": "0.41.4",
+  "version": "0.41.6",
   "description": "Манифест платформенных файлов FMT-exocortex-template. Используется update.sh для доставки обновлений.",
   "files": [
     {
@@ -837,7 +837,7 @@
     },
     {
       "path": ".gitleaks.toml",
-      "sha256": "1d86da22e3faa02a9c9789a8cfe5b000ce7daae9d04e3a99530fec2ca899d57c"
+      "sha256": "35e27ca3c58db2cc791c077d3e8bc5df9edd750d34a55bd4cb5999ee83c66376"
     },
     {
       "path": ".mcp.json",
@@ -857,7 +857,7 @@
     },
     {
       "path": "CHANGELOG.md",
-      "sha256": "1595d93b1c54be816deb6652b680b41dd229983a7419b00a0be02d7764046643"
+      "sha256": "519e72fbe1d52ae675d2356ec0659491ae75387f0276a0d697a1da3f14cfa5db"
     },
     {
       "path": "CLAUDE.md",
@@ -945,7 +945,7 @@
     },
     {
       "path": "docs/RELEASE-PROCESS.md",
-      "sha256": "d7f35a4cb8a1f71bfbecae54a1ea58bdd5e4aa5ac7e06fdeba3c98ae9396ee9a"
+      "sha256": "c49d250278ecf3d1d550d2d058e026f87188553c7300cd5ad1be2fa5851924af"
     },
     {
       "path": "docs/RESIDENCY-GATE-USAGE.md",
@@ -1041,7 +1041,7 @@
     },
     {
       "path": "docs/release-audit-log.md",
-      "sha256": "87a8b34c1d07188141a20e11b46795d5fd879fdc9a6ae4a97571395edd2a5f16"
+      "sha256": "a70ea18e4a85e8840b9b63b53e2df74a00cbc075c7d24f626cfc451eb1ceba1a"
     },
     {
       "path": "docs/roles-catalog.md",
@@ -2333,7 +2333,7 @@
     },
     {
       "path": "scripts/generate-executor-catalog.py",
-      "sha256": "cc2223c230fce81c372fe0950e2aae14406271b34c4141a948b6394e1e0c1816"
+      "sha256": "f65af078a152eaa37b7973589944a3c95b3162c03bf4540fe8fb6e7561b1366b"
     },
     {
       "path": "scripts/generate-hot-files-list.sh",
@@ -2520,6 +2520,10 @@
       "sha256": "65b3a09582fb2bcb61b2c0a8ac7914b21ed5479ed8805ed438978264cb390682"
     },
     {
+      "path": "scripts/lib/runtime-placeholder-count.sh",
+      "sha256": "aaf8074591d8f4ffe86eda0e378a9a0c90b9ae9a4ff325d560246b30baded6ba"
+    },
+    {
       "path": "scripts/lib/session-guard-isolate-lib.sh",
       "sha256": "82e1e60a8080976c74de0758d8635c783731e39ab4695bb20f7f794b989dbfd7"
     },
@@ -2613,7 +2617,7 @@
     },
     {
       "path": "scripts/route-task.sh",
-      "sha256": "8408b14351c31dd7f08c52f46afec7d39ac7029c017f4b1eb36d757e03dc00ca"
+      "sha256": "6909e6345d780ad2247e33eb4932e42173aa58816c980f2194079e158e095b13"
     },
     {
       "path": "scripts/run-regression-tests.sh",
@@ -3053,7 +3057,7 @@
     },
     {
       "path": "seed/strategy/scripts/generate-executor-catalog.py",
-      "sha256": "cc2223c230fce81c372fe0950e2aae14406271b34c4141a948b6394e1e0c1816"
+      "sha256": "f65af078a152eaa37b7973589944a3c95b3162c03bf4540fe8fb6e7561b1366b"
     },
     {
       "path": "seed/strategy/scripts/install-hooks.sh",
@@ -3169,7 +3173,7 @@
     },
     {
       "path": "update.sh",
-      "sha256": "775f0e763184783763edab9233178856a99b92b408328f1aa6f9e301587aca70"
+      "sha256": "7360189ff9e8e92fa03b6de43f3a0c8dc781f825949ab34571a160e3af68dca6"
     }
   ],
   "excluded_paths": [
@@ -3238,6 +3242,7 @@
     "scripts/tests/test_issue_1038_validator.sh",
     "scripts/tests/test_issue_1061_platform_bottleneck_map.sh",
     "scripts/tests/test_issue_1067_week_review_gave_up.sh",
+    "scripts/tests/test_issue_1084_runtime_placeholder_scope.sh",
     "scripts/tests/test_issue_529_owner_integrity.sh",
     "scripts/tests/test_issue_530_staged_self_scan.sh",
     "scripts/tests/test_issue_531_index_health_status_cell.py",
