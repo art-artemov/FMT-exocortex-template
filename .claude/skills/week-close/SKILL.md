@@ -109,7 +109,7 @@ WP-NNN: pending-фазы (M):
 - Просмотреть `inbox/fleeting-notes.md` за неделю → маршрутизировать невыключенные.
 - Уроки сессий → MEMORY.md + thematic `lessons_*.md` (если есть).
 - Drift-scan недели: что в MEMORY.md устарело за 7 дней.
-- **Проверка полноты переноса перед архивацией (WP-5, 2026-07-10):** `bash {{IWE_SCRIPTS}}/check-wp-transfer-completeness.sh --all {{IWE_ROOT}}` по `inbox/WP-N/` — выводит `results_not_captured`-флаги (проставленные при закрытии без заполненного `results_in`) и файлы в подпапках без учёта в основном контекст-файле. Для каждого warning — пилот решает: (a) действительно нужен перенос знания, найти куда; (b) файл технический/устарел, можно оставить; (c) `results_in` заполнить постфактум. Не блокирует Close.
+- **Проверка полноты переноса перед архивацией (WP-5, 2026-07-10):** `bash {{IWE_SCRIPTS}}/check-wp-transfer-completeness.sh --all "${IWE_ROOT:-$HOME/IWE}"` по `inbox/WP-N/` — выводит `results_not_captured`-флаги (проставленные при закрытии без заполненного `results_in`) и файлы в подпапках без учёта в основном контекст-файле. Для каждого warning — пилот решает: (a) действительно нужен перенос знания, найти куда; (b) файл технический/устарел, можно оставить; (c) `results_in` заполнить постфактум. Не блокирует Close.
 
 ### 6a. Сверка журнала гипотез (LPF, WP-496)
 
@@ -181,9 +181,11 @@ bash ${IWE_SCRIPTS}/memory-bleed.sh
 > Проверка здоровья статической нагрузки контекста. Флаги — информативно, пользователь решает.
 
 ```bash
+IWE_ROOT="${IWE_ROOT:-$HOME/IWE}"
+MEMORY_DIR="$IWE_ROOT/memory"
 echo "=== distinctions.md ===" && wc -l {{WORKSPACE_DIR}}/.claude/rules/distinctions.md
-echo "=== MEMORY.md ===" && wc -l {{MEMORY_DIR}}/MEMORY.md
-echo "=== memory/ файлы (mtime >14д) ===" && find {{MEMORY_DIR}} -name "*.md" -mtime +14 -not -name "MEMORY.md" -not -path "*/archive/*" | sort
+echo "=== MEMORY.md ===" && wc -l "$MEMORY_DIR/MEMORY.md"
+echo "=== memory/ файлы (mtime >14д) ===" && find "$MEMORY_DIR" -name "*.md" -mtime +14 -not -name "MEMORY.md" -not -path "*/archive/*" | sort
 ```
 
 | Метрика | Порог | Действие |

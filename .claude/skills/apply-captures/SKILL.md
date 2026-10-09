@@ -101,7 +101,7 @@ defer_until: "после WP-245 Ф22"     # ОБЯЗАТЕЛЬНО — дата 
 
 **Инвариант decision_source (peer-session 2026-07-07-03):** `decision_source: pilot` — обязательное поле при ЛЮБОМ решении (accept/reject/defer). Отсутствует или указано иное значение → решение invalid, Шаг 5 (запись в Pack) обязан отказать и вернуть кандидата на Шаг 2.
 
-**Инвариант defer (peer-session 2026-05-31-22):** `defer_until` — обязательное поле при `decision: defer`. Без него решение invalid. Reason: `deferred` без `defer_until` = masked cancel (см. `memory/lessons_defer_with_explicit_triggers.md`). Формат: дата `YYYY-MM-DD` ИЛИ привязка к событию («после WP-NNN Ф{N}», «при следующем Week Close»).
+**Инвариант defer (peer-session 2026-05-31-22):** `defer_until` — обязательное поле при `decision: defer`. Без него решение invalid. Reason: `deferred` без `defer_until` = masked cancel. Формат: дата `YYYY-MM-DD` ИЛИ привязка к событию («после WP-NNN Ф{N}», «при следующем Week Close»).
 
 ### Шаг 1. Найти незавершённые отчёты
 
@@ -381,7 +381,7 @@ decisions:
 ````
 
 До публикации `publication` у принятого кандидата отсутствует. После штатного
-шлюза (`scripts/lib/publish-gate.sh` / `scripts/ds-publish.sh`) записать **конечный**
+шлюза `scripts/ds-publish.sh` записать **конечный**
 SHA, а не SHA до переноса коммита, и `blob` из `git rev-parse <SHA>:<путь-в-репо>`.
 Проверяющий сверяет реальный tip `origin` указанной ветки через `ls-remote`,
 достижимость SHA и точный blob `commit:target_path`. Он не делает fetch, commit

@@ -410,7 +410,7 @@ Injection: ... (в assumption, не в action)
 11. **Stage Dependency Map без external-зависимостей** — если этап реально зависит от работ в другом РП — явное external-ребро.
 12. **Stage Map с пустой категорией без «—» (мягкий шаблон)** — нельзя отличить «забыл подумать» от «решил пропустить». Жёсткий шаблон: всегда 4 категории, пустая = «—».
 13. **[platform-only] Сводить platform к одной системе** — выбирать одну подсистему C2 как bottleneck без проверки cross-system SC. Симптом: ответ «WP-117 = bottleneck» без объяснения какие SC он закрывает.
-14. **[platform-only] B3-blindness** — bottleneck в роли (Юля, Ильшат, Tseren bus-factor) пропускается, потому что роли не в MAP.002. Force: явно проверить B3 в Ф3.
+14. **[platform-only] B3-blindness** — bottleneck в роли (Юля, Ильшат, пилот — bus-factor) пропускается, потому что роли не в MAP.002. Force: явно проверить B3 в Ф3.
 15. **[platform-only] Handover-blindness** — обе подсистемы работают, но между ними рвётся SC. Force: handover = отдельная единица анализа в Locus.
 16. **[platform-only] «Нанять менеджера» как первый Elevate для Role-constraint** — Role(B3) решается через автоматизацию роли (subsystem), не через найм. Force: EC обязателен для Role-constraint.
 17. **[platform-only] Coupling debt accumulation** — Subordinate-plan не учитывает coupling-debt после фикса (SOTA.011). Force: `--depth=3` с Coupling Model для Handover-constraint.

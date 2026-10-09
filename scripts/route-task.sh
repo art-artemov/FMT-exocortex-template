@@ -17,7 +17,20 @@
 
 set -euo pipefail
 
-IWE_DIR="${IWE_DIR:-${IWE_ROOT:-${IWE_WORKSPACE:-$HOME/IWE}}}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+
+# issue #1094: the old `${IWE_DIR:-${IWE_ROOT:-${IWE_WORKSPACE:-$HOME/IWE}}}`
+# guessed $HOME/IWE whenever none of the three variables was set — wrong for
+# any non-default workspace location (e.g. a Windows install under C:\iwe)
+# and failed only two steps later, as an opaque "catalog not found". Same
+# shared resolver already used by day-open-pipeline.sh / day-open-preflight.sh:
+# it also derives the root from this script's own location, with a structure
+# check (FMT-exocortex-template/.iwe-runtime must exist there) before
+# accepting that candidate, and fails closed with a clear message instead of
+# guessing. IWE_DIR itself stays the highest-priority override.
+IWE_DIR="$(iwe_resolve_root "${IWE_DIR:-}")" || exit 1
 IWE_TEMPLATE="${IWE_TEMPLATE:-$IWE_DIR/FMT-exocortex-template}"
 GOV_REPO="${IWE_GOVERNANCE_REPO:-DS-strategy}"
 CATALOG="${IWE_EXECUTOR_CATALOG:-${IWE_DIR}/${GOV_REPO}/scripts/executor-catalog.yaml}"

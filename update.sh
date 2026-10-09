@@ -743,6 +743,155 @@ report_memory_policy_summary() {
     return 0
 }
 
+# === Governance script policy (WP-485 Ф17) ===
+# backfill_governance_seed_script() decided "safe to replace" from the deployed copy's git
+# status: clean-tracked was always treated as ours. git status cannot tell "untouched by
+# us" from "a human's own commit that happens to be clean right now" -- it replaced a
+# pilot's own committed, more-advanced version with an older seed (live on a governance
+# repo, found 2026-10-05) for exactly that reason. A hard stop on any mismatch also meant one
+# ambiguous file aborted the whole run -- the reported user incident (two different error
+# texts because update.sh self-updated between the user's two attempts, #939 vs its fix).
+#
+# This reuses the memory/* policy's classifier (content vs. the template clone's own
+# history at the seed path, not git status of the deployed copy) and its never-abort-the-
+# run contract, through the same generic memory_copy_verdict/memory_record_put/
+# memory_record_get/saving_cp_command helpers above -- those already take explicit paths,
+# nothing here is memory-specific. Kept separate from apply_memory_policy itself (own
+# arrays, own backup root, own summary line): a kept governance script must never be
+# reported as a kept "файл памяти", and the two must never block on each other's path.
+# .memory-deployed.tsv is shared as-is -- its keys are the fpath string, and "scripts/..."
+# never collides with "memory/...".
+#
+# Dropped on purpose: the old function's case-insensitive tracked-alias detection (it
+# read the deployed copy's git index to find a same-name sibling in another case). That
+# question needed git status of the deployed copy, which is exactly what this policy
+# stops consulting. The gap is inert, not destructive: on a case-sensitive filesystem
+# where such a sibling exists, the worst outcome is a second, oddly-cased file next to it
+# -- never data loss -- and the common case-insensitive filesystems (macOS, Windows) make
+# the scenario moot (both names are the same path).
+GOVSCRIPT_REPLACED=()      # replaced in this run (report_governance_script_policy_summary)
+GOVSCRIPT_KEPT=()          # left as they were although they differ from the template seed
+GOVSCRIPT_BACKUP_RUN=""
+
+# backup_governance_script_before_overwrite DST — same shape as backup_memory_file_before_overwrite,
+# a separate function (not a generalization of it) because that one self-filters to
+# memory/*.md|.yaml|.yml and silently no-ops for any other path (update.sh:2809) -- calling
+# it here would skip the backup without saying so.
+backup_governance_script_before_overwrite() {
+    local dst="$1"
+    GOVSCRIPT_BACKUP_FILE=""
+    [ -f "$dst" ] || return 0
+    if [ -z "$GOVSCRIPT_BACKUP_RUN" ]; then
+        GOVSCRIPT_BACKUP_RUN="$WORKSPACE_DIR/.backups/governance-script-pre-update/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    fi
+    GOVSCRIPT_BACKUP_FILE="$GOVSCRIPT_BACKUP_RUN/$(basename "$dst")"
+    mkdir -p "$(dirname "$GOVSCRIPT_BACKUP_FILE")" && cp -p "$dst" "$GOVSCRIPT_BACKUP_FILE"
+}
+
+# apply_governance_script_policy RELATIVE_PATH — RELATIVE_PATH is the governance repo's own
+# copy path (e.g. "scripts/generate-executor-catalog.py"); its seed source is
+# "seed/strategy/$RELATIVE_PATH", which is also what the classifier walks: check-seed-drift.sh
+# keeps seed byte-identical to scripts/<basename> (minus the SNAPSHOT marker line), so every
+# content the template ever shipped as current already has a commit on the seed path itself --
+# no separate history to resolve, no templated-placeholder path to a different file either
+# (none of the three governance scripts contain "{{", verified 2026-10-05).
+apply_governance_script_policy() {
+    local relative_path="$1" governance_repo governance_dir fpath src dst
+    local src_hash dst_hash verdict src_q dst_q
+    governance_repo="${EFFECTIVE_GOVERNANCE_REPO:-$(effective_governance_repo)}"
+    governance_dir="$WORKSPACE_DIR/$governance_repo"
+    fpath="seed/strategy/$relative_path"
+    dst="$governance_dir/$relative_path"
+
+    if [ -L "$governance_dir" ]; then
+        echo "  ✗ $relative_path не обновлён: governance repo является symlink." >&2
+        GOVSCRIPT_KEPT+=("$relative_path")
+        return 1
+    fi
+    if [ ! -d "$governance_dir" ]; then
+        echo "  ○ $governance_repo: governance repo не найден, доставка $relative_path пропущена."
+        return 0
+    fi
+    src="$SCRIPT_DIR/$fpath"
+    if [ -L "$src" ] || [ ! -f "$src" ]; then
+        echo "  ✗ $relative_path не доставлен в целевом release payload." >&2
+        GOVSCRIPT_KEPT+=("$relative_path")
+        return 1
+    fi
+    if [ -L "$governance_dir/scripts" ] || [ -L "$dst" ]; then
+        echo "  ✗ $relative_path не обновлён: цель или её каталог — symlink." >&2
+        GOVSCRIPT_KEPT+=("$relative_path")
+        return 1
+    fi
+
+    src_hash=$(hash_file "$src")
+    if [ -z "$src_hash" ]; then
+        echo "  ⚠ $relative_path — НЕ обновлён: не удалось прочитать $src; проверьте клон шаблона и повторите update.sh"
+        GOVSCRIPT_KEPT+=("$relative_path")
+        return 1
+    fi
+
+    if [ ! -f "$dst" ]; then
+        if mkdir -p "$(dirname "$dst")" && atomic_copy_executable "$src" "$dst"; then
+            echo "  ⟲ $relative_path → $governance_repo (файла не было, доставлен)"
+            remember_memory_deployed "$fpath" "$src_hash"
+            GOVSCRIPT_REPLACED+=("$relative_path")
+            return 0
+        fi
+        echo "  ⚠ $relative_path — НЕ доставлен: не удалось скопировать в $dst; поправьте права или освободите место и повторите update.sh"
+        GOVSCRIPT_KEPT+=("$relative_path")
+        return 1
+    fi
+
+    dst_hash=$(hash_file "$dst")
+    if [ "$dst_hash" = "$src_hash" ]; then
+        remember_memory_deployed "$fpath" "$src_hash"
+        return 0
+    fi
+
+    verdict=$(memory_copy_verdict "$fpath" "$dst" "$dst_hash" "$(memory_old_hash "$fpath")")
+    case "$verdict" in
+        untouched\ *) ;;
+        *)
+            printf -v src_q '%q' "$src"
+            printf -v dst_q '%q' "$dst"
+            echo "  ⚠ $relative_path — НЕ обновлён: ${verdict#keep }. Сам он не обновится. Сверьте: diff $src_q $dst_q. Если ваших правок там нет, примите версию шаблона (прежняя копия останется рядом): $(saving_cp_command "$src" "$dst")"
+            GOVSCRIPT_KEPT+=("$relative_path")
+            return 1
+            ;;
+    esac
+
+    if ! backup_governance_script_before_overwrite "$dst"; then
+        echo "  ⚠ $relative_path — НЕ обновлён: не удалось сохранить прежнюю версию, замена отменена; поправьте права или освободите место и повторите update.sh"
+        GOVSCRIPT_KEPT+=("$relative_path")
+        return 1
+    fi
+    if ! atomic_copy_executable "$src" "$dst"; then
+        echo "  ⚠ $relative_path — НЕ обновлён: копирование не удалось (прежняя версия сохранена в $GOVSCRIPT_BACKUP_FILE); повторите update.sh"
+        GOVSCRIPT_KEPT+=("$relative_path")
+        return 1
+    fi
+    echo "  ⟲ $relative_path → $governance_repo — обновлён (не менялся: ${verdict#untouched }; если в клоне шаблона была ваша правка, она в прежней версии); прежняя версия: $GOVSCRIPT_BACKUP_FILE"
+    GOVSCRIPT_REPLACED+=("$relative_path")
+    remember_memory_deployed "$fpath" "$src_hash"
+    return 0
+}
+
+# report_governance_script_policy_summary — same shape as report_memory_policy_summary, its
+# own lines so a kept/replaced governance script never reads as a kept/replaced "файл памяти".
+report_governance_script_policy_summary() {
+    local f replaced="" kept=""
+    for f in ${GOVSCRIPT_REPLACED[@]+"${GOVSCRIPT_REPLACED[@]}"}; do replaced="${replaced:+$replaced, }$f"; done
+    for f in ${GOVSCRIPT_KEPT[@]+"${GOVSCRIPT_KEPT[@]}"}; do kept="${kept:+$kept, }$f"; done
+    if [ -n "$replaced" ]; then
+        echo "  ⚠ Заменено скриптов governance-репо: ${#GOVSCRIPT_REPLACED[@]} ($replaced); прежние версии сохранены в $GOVSCRIPT_BACKUP_RUN"
+    fi
+    if [ -n "$kept" ]; then
+        echo "  ⚠ Не обновлено скриптов governance-репо: ${#GOVSCRIPT_KEPT[@]} ($kept); почему и что сделать — в строке каждого файла выше"
+    fi
+    return 0
+}
+
 # is_user_owned_memory DST — the deployed copy declares owner: user. Only author_mode's report reads
 # it (report_author_user_memory); the update itself never does.
 is_user_owned_memory() {
@@ -1195,26 +1344,79 @@ apply_settings_merge_if_requested() {
 # next to the real file and report the differences. The real settings.json is
 # intentionally left untouched (bug-2026-07-11 clobber guard stays in force);
 # auto-apply is a separate flag-gated stage B.
-report_settings_merge_preview() {
-    local src="$1" dst="$2"
+#
+# Split into build + print (issue #1089) so report_settings_merge_drift can
+# inspect the counts before deciding whether to warn at all, without running
+# the merger script twice in the common (quiet) case.
+#
+# preview_path is an explicit parameter, not a hardcoded workspace path
+# (cold review, Fable): the merger ALWAYS writes its merged candidate to
+# whatever path it's given (settings-merge-preview.py:217-228, unconditional
+# atomic write) -- a caller that only wants to know whether there's drift,
+# without actually offering a candidate file to the pilot, must pass a
+# throwaway path, never the real $WORKSPACE_DIR/.claude/settings.merged.preview.json.
+# The first version of this function hardcoded that real path here, so the
+# probe call in report_settings_merge_drift left a stray file behind on
+# every quiet run and silently wrote one during --check too, contradicting
+# its own "предпросмотр не записан" message.
+build_settings_merge_report() {
+    local src="$1" dst="$2" preview_path="$3"
     local merger="$SCRIPT_DIR/.claude/scripts/settings-merge-preview.py"
-    py_available && [ -f "$merger" ] || return 0
-    local preview="$WORKSPACE_DIR/.claude/settings.merged.preview.json"
+    py_available && [ -f "$merger" ] || return 1
     local report_file="$TMPDIR_UPDATE/settings-merge-report.json"
-    if ! "$PY_BIN" "$merger" "$src" "$dst" "$preview" > "$report_file" 2>/dev/null; then
-        echo "    ⚠ предпросмотр слияния не построен (битый JSON в одном из файлов)"
-        return 0
-    fi
+    "$PY_BIN" "$merger" "$src" "$dst" "$preview_path" > "$report_file" 2>/dev/null || return 1
+    printf '%s\n' "$report_file"
+}
+
+print_settings_merge_report() {
+    local report_file="$1"
     "$PY_BIN" - "$report_file" <<'PY' 2>/dev/null || true
 import json, sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     r = json.load(handle)
 print(f"    → предпросмотр слияния: {r['preview']}")
 print(f"    + из шаблона: ключей {r['keys_added_from_template']}, hook-записей {r['hooks_added_from_template']}, permissions {r['permissions_added_from_template']}")
+if r.get("hooks_only_in_workspace"):
+    print(f"    ℹ️  в вашей копии есть {r['hooks_only_in_workspace']} hook-записей, которых сейчас нет в шаблоне (может быть обычной личной настройкой)")
 if r["conflicts"]:
     print(f"    ⚠ конфликты (оставлено ваше значение): {', '.join(r['conflicts'])}")
 PY
+}
+
+report_settings_merge_preview() {
+    local src="$1" dst="$2"
+    local report_file
+    report_file=$(build_settings_merge_report "$src" "$dst" \
+        "$WORKSPACE_DIR/.claude/settings.merged.preview.json") || {
+        echo "    ⚠ предпросмотр слияния не построен (битый JSON в одном из файлов)"
+        return 0
+    }
+    print_settings_merge_report "$report_file"
     return 0
+}
+
+# True (exit 0) only when the merge would add nothing from the template,
+# leave no conflicting existing value, and the workspace has no hook entry
+# the template no longer mentions -- i.e. workspace and template agree on
+# content even though the raw bytes/array order differ (issue #1089). The
+# hooks_only_in_workspace check (cold review, Fable) is the one case the
+# earlier byte-for-byte `cmp -s` caught by accident and this content-aware
+# check otherwise missed: template drops a hook, workspace still has it.
+settings_merge_report_is_quiet() {
+    local report_file="$1"
+    "$PY_BIN" - "$report_file" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as handle:
+    r = json.load(handle)
+quiet = (
+    r["keys_added_from_template"] == 0
+    and r["hooks_added_from_template"] == 0
+    and r["permissions_added_from_template"] == 0
+    and r.get("hooks_only_in_workspace", 0) == 0
+    and not r["conflicts"]
+)
+sys.exit(0 if quiet else 1)
+PY
 }
 
 # The settings merge warning must compare the template with the workspace, not
@@ -1228,11 +1430,34 @@ report_settings_merge_drift() {
     [ -f "$src" ] && [ -f "$dst" ] || return 0
     cmp -s "$src" "$dst" && return 0
 
+    # issue #1089: a byte-for-byte mismatch can still be the same set of
+    # hooks/permissions in a different array order. Probe the merge into a
+    # throwaway file first -- NEVER the real workspace preview path (cold
+    # review, Fable: the merger writes unconditionally, so building the
+    # report with the real path here would create/overwrite that file on
+    # every run, including a quiet one and a --check one, regardless of
+    # whether anything is actually shown to the pilot). When the merger
+    # agrees there is nothing to report, skip the warning silently -- same
+    # as the cmp -s match above. A merger failure does NOT count as quiet
+    # (that would hide real drift behind a parse error); it falls through
+    # to the existing warn path below.
+    local probe_file quiet=false
+    if probe_file=$(build_settings_merge_report "$src" "$dst" \
+        "$TMPDIR_UPDATE/settings-merge-probe.json"); then
+        settings_merge_report_is_quiet "$probe_file" && quiet=true
+    fi
+    $quiet && return 0
+
     echo "  ⚠ .claude/settings.json — платформа обновила hooks/permissions, workspace-копия НЕ тронута (несёт пользовательские хуки)."
     if $CHECK_ONLY; then
         echo "    Режим --check: предпросмотр не записан. Запустите update.sh без --check, чтобы получить безопасный план слияния."
         return 0
     fi
+    # Real preview, real path -- only reached when there is something to
+    # show and we are actually allowed to write it. A second merger run
+    # (the probe above already ran once) is the price of keeping the
+    # throwaway probe from ever touching the workspace; this path is the
+    # rare one (real drift), not the common one (quiet).
     report_settings_merge_preview "$src" "$dst"
 }
 
@@ -2354,18 +2579,6 @@ backfill_governance_seed_script() {
     fi
 }
 
-backfill_derived_snapshot_updater() {
-    backfill_governance_seed_script "scripts/update-derived-snapshot.py"
-}
-
-backfill_day_open_fault_reader() {
-    backfill_governance_seed_script "scripts/day-open-llm-fill.py"
-}
-
-backfill_executor_catalog_generator() {
-    backfill_governance_seed_script "scripts/generate-executor-catalog.py"
-}
-
 # ds-publish.sh (issue #941): strategist.sh publishes its commits through
 # $governance/scripts/ds-publish.sh, which the template never shipped. Delivered only
 # when the governance repo has no such file: an existing one is not ours to replace
@@ -2465,12 +2678,13 @@ run_post_apply_backfills_or_die() {
         echo "  ⚠ install-iwe-paths.sh завершился с ошибкой (exit $install_paths_status). Запустите вручную: bash $SCRIPT_DIR/setup/install-iwe-paths.sh --workspace $WORKSPACE_DIR --governance $EFFECTIVE_GOVERNANCE_REPO"
     fi
 
-    echo ""
-    echo "Day Open fault reader (upgrade backfill)..."
-    if ! backfill_day_open_fault_reader; then
-        echo "  ОШИБКА: governance Day Open reader не обновлён; обновление оставлено незавершённым." >&2
-        return 1
-    fi
+    # scripts/day-open-llm-fill.py is no longer backfilled here (WP-485 Ф17,
+    # 2026-10-05): the Day Open pipeline runs it from $IWE_SCRIPTS (the template's
+    # own copy, confirmed on a live installation -- ~/.iwe-paths resolves
+    # IWE_SCRIPTS to "$IWE_TEMPLATE/scripts" unconditionally), so a governance-repo
+    # copy is never executed. Delivering it there only risked silently replacing a
+    # pilot's own committed, more-advanced version with an older seed -- the
+    # mechanism behind the reported user incident.
 
     echo ""
     echo "Agent fault profile (safe update hardening)..."
@@ -2490,19 +2704,14 @@ run_post_apply_backfills_or_die() {
         return 1
     fi
 
+    # WP-485 Ф17 (2026-10-05): content-based policy (same classifier as memory/*),
+    # never aborts the run -- a file it cannot safely replace is reported, not a
+    # reason to leave the rest of update.sh undelivered.
     echo ""
-    echo "Derived snapshot updater (upgrade backfill)..."
-    if ! backfill_derived_snapshot_updater; then
-        echo "  ОШИБКА: governance snapshot updater не обновлён; обновление оставлено незавершённым." >&2
-        return 1
-    fi
-
-    echo ""
-    echo "Executor catalog generator (upgrade backfill)..."
-    if ! backfill_executor_catalog_generator; then
-        echo "  ОШИБКА: generator executor catalog не обновлён; обновление оставлено незавершённым." >&2
-        return 1
-    fi
+    echo "Governance-скрипты (upgrade backfill)..."
+    apply_governance_script_policy "scripts/update-derived-snapshot.py" || true
+    apply_governance_script_policy "scripts/generate-executor-catalog.py" || true
+    report_governance_script_policy_summary
 
     echo ""
     echo "Публикатор коммитов ds-publish.sh (upgrade backfill)..."
@@ -2850,14 +3059,14 @@ print_extra_write_targets() {
     echo "  • local core.hooksPath в git-репозиториях с .githooks под $WORKSPACE_DIR"
     echo "  • $governance_dir/scripts/install-hooks.sh — установщик platform hooks"
     echo "  • $governance_dir/.githooks/pre-commit и pre-push — platform hooks"
-    echo "  • $governance_dir/scripts/day-open-llm-fill.py — platform reader профиля ошибок для Day Open"
     echo "  • $governance_dir/scripts/update-derived-snapshot.py — обновлятор derived snapshot"
     echo "  • $governance_dir/scripts/generate-executor-catalog.py — генератор каталога исполнителей"
     echo "  • $governance_dir/scripts/executor-catalog.yaml — каталог исполнителей"
     echo "  • $governance_dir/scripts/ds-publish.sh — публикатор коммитов ночных ролей (кладётся только если файла нет, существующий не трогается)"
     echo "  • $governance_dir/exocortex/agent-fault-profile/ — только миграция/права существующей приватной БД; отсутствующий профиль не создаётся"
+    echo "    scripts/day-open-llm-fill.py больше не доставляется сюда (WP-485 Ф17) — Day Open исполняет копию шаблона через \$IWE_SCRIPTS."
     echo "    Symlink-пути блокируют backfill. Отличающиеся installer/hooks сохраняются в .git/hook-backups/ и заменяются."
-    echo "    Локально изменённые Day Open reader/snapshot updater/executor-catalog generator блокируют обновление; executor-catalog.yaml — генерируемый файл и заменяется при смысловом расхождении."
+    echo "    Snapshot updater/executor-catalog generator: решение по содержимому (как memory/*), не по git-статусу — локальная правка не блокирует остальное обновление, только эти файлы; executor-catalog.yaml — генерируемый файл и заменяется при смысловом расхождении."
     echo "  Расхождение рабочей копии с шаблоном чинится независимо от списков выше."
     echo ""
 }

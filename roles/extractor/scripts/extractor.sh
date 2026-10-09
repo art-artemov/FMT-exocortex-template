@@ -218,7 +218,7 @@ load_claude_subscription_token() {
 # A subscription token must reach the vendor API directly. ENV_FILE may carry a
 # proxy (ANTHROPIC_BASE_URL) and load_env sources it AFTER any wrapper already
 # dropped it, so the client sent the token to the proxy: 401 "Invalid or expired
-# token" (tsekh-1, 2026-09-21). That proxy also drops the `tools` array, so it
+# token" (a pilot's remote host, 2026-09-21). That proxy also drops the `tools` array, so it
 # cannot serve headless tool-use at all. Auth policy: a connected subscription
 # wins over proxy/API-key env; IWE_EXTRACTOR_USE_API_ENV=1 opts out for a
 # deliberate custom gateway and then withholds the subscription token from it.

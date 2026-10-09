@@ -746,9 +746,11 @@ fi
 echo "[3/6] Installing memory..."
 CLAUDE_MEMORY_DIR="$HOME/.claude/projects/$CLAUDE_PROJECT_SLUG/memory"
 if $DRY_RUN; then
-    MEM_COUNT=$(ls "$TEMPLATE_DIR/memory/"*.md 2>/dev/null | wc -l | tr -d ' ')
-    YAML_COUNT=$(ls "$TEMPLATE_DIR/memory/"*.yaml "$TEMPLATE_DIR/memory/"*.yml 2>/dev/null | wc -l | tr -d ' ')
-    echo "  [DRY RUN] Would copy $MEM_COUNT .md + $YAML_COUNT .yaml/.yml memory files → $CLAUDE_MEMORY_DIR/"
+    # Recursive find, not a top-level glob: memory/ has nested paths (memory/reference/agent-core.md)
+    # that a "$TEMPLATE_DIR/memory/"*.md glob never matches (issue #1105).
+    MEM_COUNT=$(find "$TEMPLATE_DIR/memory" -type f -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+    YAML_COUNT=$(find "$TEMPLATE_DIR/memory" -type f \( -name "*.yaml" -o -name "*.yml" \) 2>/dev/null | wc -l | tr -d ' ')
+    echo "  [DRY RUN] Would copy $MEM_COUNT .md + $YAML_COUNT .yaml/.yml memory files (recursively) → $CLAUDE_MEMORY_DIR/"
     if [ ! -e "$WORKSPACE_DIR/memory" ]; then
         echo "  [DRY RUN] Would create symlink: $WORKSPACE_DIR/memory → $CLAUDE_MEMORY_DIR"
     else
@@ -756,20 +758,22 @@ if $DRY_RUN; then
     fi
 else
     mkdir -p "$CLAUDE_MEMORY_DIR"
-    cp "$TEMPLATE_DIR/memory/"*.md "$CLAUDE_MEMORY_DIR/"
-    # Deliver yaml/yml configs (e.g. day-rhythm-config.yaml) alongside .md files
-    for f in "$TEMPLATE_DIR/memory/"*.yaml "$TEMPLATE_DIR/memory/"*.yml; do
-        [ -f "$f" ] && cp "$f" "$CLAUDE_MEMORY_DIR/"
-    done
-    echo "  Copied to $CLAUDE_MEMORY_DIR"
+    # issue #1105: recurse into memory/** instead of globbing only the top level, so nested
+    # files (memory/reference/agent-core.md) are delivered on a fresh install too — mirrors
+    # update.sh's relative-path delivery (issue #287/#294), which keeps nesting via
+    # "${fpath#memory/}" rather than basename, both in repair_pass() and in Step 6 propagation.
     # issues #965/#967: record what was installed, so update.sh can later prove a copy nobody
     # changed untouched and refresh it. A record that cannot be written only costs that proof.
     MEMORY_RECORD_FAILED=false
-    for f in "$TEMPLATE_DIR/memory/"*.md "$TEMPLATE_DIR/memory/"*.yaml "$TEMPLATE_DIR/memory/"*.yml; do
-        [ -f "$f" ] || continue
-        memory_record_put "$WORKSPACE_DIR/.memory-deployed.tsv" "memory/$(basename "$f")" \
-            "$(hash_file "$CLAUDE_MEMORY_DIR/$(basename "$f")")" || MEMORY_RECORD_FAILED=true
-    done
+    while IFS= read -r -d '' f; do
+        rel="${f#"$TEMPLATE_DIR"/memory/}"
+        dst="$CLAUDE_MEMORY_DIR/$rel"
+        mkdir -p "$(dirname "$dst")"
+        cp "$f" "$dst"
+        memory_record_put "$WORKSPACE_DIR/.memory-deployed.tsv" "memory/$rel" \
+            "$(hash_file "$dst")" || MEMORY_RECORD_FAILED=true
+    done < <(find "$TEMPLATE_DIR/memory" -type f \( -name "*.md" -o -name "*.yaml" -o -name "*.yml" \) -print0 2>/dev/null)
+    echo "  Copied to $CLAUDE_MEMORY_DIR"
     if $MEMORY_RECORD_FAILED; then
         echo "  ВНИМАНИЕ: не удалось записать $WORKSPACE_DIR/.memory-deployed.tsv; update.sh будет отличать нетронутые файлы памяти от изменённых по другим признакам." >&2
     fi
@@ -1489,7 +1493,7 @@ else
     echo ""
     echo "Verify installation:"
     echo "  ✓ CLAUDE.md:   $WORKSPACE_DIR/CLAUDE.md"
-    echo "  ✓ Memory:      $CLAUDE_MEMORY_DIR/ ($(ls "$CLAUDE_MEMORY_DIR"/*.md 2>/dev/null | wc -l | tr -d ' ') files)"
+    echo "  ✓ Memory:      $CLAUDE_MEMORY_DIR/ ($(find "$CLAUDE_MEMORY_DIR" -type f -name "*.md" 2>/dev/null | wc -l | tr -d ' ') files)"
     echo "  ✓ Symlink:     $WORKSPACE_DIR/memory → $CLAUDE_MEMORY_DIR"
     echo "  ✓ $GOVERNANCE_REPO: $MY_STRATEGY_DIR/"
     echo "  ✓ Template:    $TEMPLATE_DIR/"

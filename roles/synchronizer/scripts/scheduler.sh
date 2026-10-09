@@ -244,7 +244,7 @@ mark_interval() {
 # "Every N hours" tasks are gated on the time since the previous dispatch START
 # (mark_interval stores NOW), and the timer fires every N hours too. A dispatch may
 # start a few seconds earlier than the previous one did: 15:00:52 -> 18:00:51 is
-# 10799 s < 10800 and the extractor lost a whole interval (tsekh-1, 21.09.2026).
+# 10799 s < 10800 and the extractor lost a whole interval (a pilot's remote host, 21.09.2026).
 # The slack absorbs that jitter; it is far below any interval, so a manual dispatch
 # still holds the next timer tick off.
 INTERVAL_SLACK_SECONDS=300

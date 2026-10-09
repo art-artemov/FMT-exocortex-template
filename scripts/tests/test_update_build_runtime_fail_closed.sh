@@ -231,14 +231,43 @@ mkdir -p \
     "$SCRIPT_DIR/seed/strategy/.githooks" \
     "$SCRIPT_DIR/scripts/agent-fault" \
     "$SCRIPT_DIR/scripts" \
+    "$SCRIPT_DIR/.claude/scripts" \
     "$WORKSPACE_DIR/.claude/skills/smoke-catalog" \
     "$WORKSPACE_DIR/custom-governance/scripts"
+cp "$ROOT/.claude/scripts/classify-workspace-copy.sh" \
+    "$SCRIPT_DIR/.claude/scripts/classify-workspace-copy.sh"
+chmod +x "$SCRIPT_DIR/.claude/scripts/classify-workspace-copy.sh"
 cp "$ROOT/seed/strategy/scripts/install-hooks.sh" \
     "$SCRIPT_DIR/seed/strategy/scripts/install-hooks.sh"
 cp "$ROOT/seed/strategy/.githooks/pre-commit" \
     "$SCRIPT_DIR/seed/strategy/.githooks/pre-commit"
 cp "$ROOT/seed/strategy/.githooks/pre-push" \
     "$SCRIPT_DIR/seed/strategy/.githooks/pre-push"
+cat > "$SCRIPT_DIR/seed/strategy/scripts/update-derived-snapshot.py" <<'OLDSNAP'
+#!/usr/bin/env python3
+# Synthetic pre-WP-485 release fixture for update.sh governance-script
+# content-policy tests -- not real production code. Exists only so
+# $SCRIPT_DIR's own git history has a real prior commit at this path,
+# letting classify-workspace-copy.sh recognize the governance fixture's
+# matching bytes below as "a known old release" instead of "unknown
+# no-history".
+import pathlib
+
+IWE_ROOT = pathlib.Path.home() / "IWE"
+GOVERNANCE = IWE_ROOT / "DS-strategy"
+SNAPSHOT_PATH = GOVERNANCE / "inbox/WP-425/cache/derived_snapshot.json"
+
+
+def main() -> int:
+    print("old snapshot fixture")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+OLDSNAP
+git -C "$SCRIPT_DIR" add -- seed/strategy/scripts/update-derived-snapshot.py
+git -C "$SCRIPT_DIR" commit -q -m "fixture: old update-derived-snapshot.py release"
 cp "$ROOT/seed/strategy/scripts/update-derived-snapshot.py" \
     "$SCRIPT_DIR/seed/strategy/scripts/update-derived-snapshot.py"
 cp "$ROOT/seed/strategy/scripts/day-open-llm-fill.py" \
@@ -289,8 +318,37 @@ printf 'GOVERNANCE_REPO=custom-governance\n' > "$WORKSPACE_DIR/.exocortex.env"
 
 GOVERNANCE="$WORKSPACE_DIR/custom-governance"
 printf '#!/bin/bash\necho old installer\n' > "$GOVERNANCE/scripts/install-hooks.sh"
-printf '#!/usr/bin/env python3\nprint("old snapshot")\n' \
-    > "$GOVERNANCE/scripts/update-derived-snapshot.py"
+# WP-485 F17: this governance fixture must be byte-identical to the OLD
+# commit just made in $SCRIPT_DIR above -- classify-workspace-copy.sh
+# recognizes a governance copy as "a known old release" only by matching
+# its bytes against a commit that actually exists in $SCRIPT_DIR's own
+# git history, never against the outer repo's real history (which this
+# fixture does not carry). A synthetic one-liner with no matching commit
+# is "unknown, keep it" under the new content-based policy -- defeating
+# this fixture's own intent to test the upgrade path.
+cat > "$GOVERNANCE/scripts/update-derived-snapshot.py" <<'OLDSNAP'
+#!/usr/bin/env python3
+# Synthetic pre-WP-485 release fixture for update.sh governance-script
+# content-policy tests -- not real production code. Exists only so
+# $SCRIPT_DIR's own git history has a real prior commit at this path,
+# letting classify-workspace-copy.sh recognize the governance fixture's
+# matching bytes below as "a known old release" instead of "unknown
+# no-history".
+import pathlib
+
+IWE_ROOT = pathlib.Path.home() / "IWE"
+GOVERNANCE = IWE_ROOT / "DS-strategy"
+SNAPSHOT_PATH = GOVERNANCE / "inbox/WP-425/cache/derived_snapshot.json"
+
+
+def main() -> int:
+    print("old snapshot fixture")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+OLDSNAP
 cp "$ROOT/seed/strategy/REPO-TYPE.md" "$GOVERNANCE/REPO-TYPE.md"
 cat > "$GOVERNANCE/scripts/day-open-pipeline.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -371,10 +429,16 @@ if [ -f "$SCRIPT_DIR/.update-incomplete" ]; then
 else
     pass "D2: marker removed only after all post-backfills succeeded"
 fi
+# WP-485 F17: day-open-llm-fill.py is confirmed platform-owned (executed
+# only from $IWE_SCRIPTS, the template copy -- never the governance-repo
+# copy backfill wrote here) and was intentionally dropped from this
+# backfill entirely, so update.sh no longer creates or touches a
+# governance-side copy at all. Asserting it still appears here would be
+# testing the exact behaviour this fix deliberately removed, not a
+# regression -- confirmed by reading how this scenario's own governance
+# fixture never creates the file in the first place.
 if cmp -s "$SCRIPT_DIR/seed/strategy/scripts/update-derived-snapshot.py" \
       "$GOVERNANCE/scripts/update-derived-snapshot.py" && \
-   cmp -s "$SCRIPT_DIR/seed/strategy/scripts/day-open-llm-fill.py" \
-      "$GOVERNANCE/scripts/day-open-llm-fill.py" && \
    cmp -s "$SCRIPT_DIR/seed/strategy/scripts/iwe_checklist_memory.py" \
       "$GOVERNANCE/scripts/iwe_checklist_memory.py" && \
    cmp -s "$SCRIPT_DIR/seed/strategy/scripts/sync_feedback_to_memory.py" \

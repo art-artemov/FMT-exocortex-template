@@ -64,7 +64,7 @@ load_secrets() {
   # 2026-08-05 running --probe ahead of a scheduled test run).
   source_env_if_present "$HOME/.iwe/.proxy-env"
   # WP-484 F64 (06.08): TELEGRAM_* live in ~/.secrets/tg-bots (canonical source per
-  # lib/telegram.sh) — none of the three files above carry them on tsekh-1, so every
+  # lib/telegram.sh) — none of the three files above carry them on the remote server, so every
   # tg_notify on the server (incl. the "День открыт" digest and all aborts) was a
   # silent no-op since the migration. Same fix as day-open-pipeline-watchdog.sh.
   source_env_if_present "$HOME/.secrets/tg-bots"
@@ -207,7 +207,7 @@ echo "  snapshot refresh pid=$SNAPSHOT_PID (background, non-blocking)"
 . "$SCRIPT_HOME/lib/telegram.sh"
 
 # --- Helper: portable single-field read from a Y-m-d date string ---
-# BSD `date -j` (macOS) vs GNU `date -d` (Linux/tsekh-1) -- third use of this
+# BSD `date -j` (macOS) vs GNU `date -d` (Linux/remote server) -- third use of this
 # exact shape (P2: YDAY_DOW below was the second, inlined before this existed).
 portable_date_field() {
   local input="$1" fmt="$2"
@@ -269,7 +269,7 @@ load_secrets
 # Checks by file presence in git history, not commit message prefix —
 # so both automated ("feat(dayplan):") and manual ("day-open:") commits are detected.
 # WP-484 (2026-07-14): fetch origin first. Day Open now runs independently from
-# both the pilot's Mac (01:00) and the always-on tsekh-1 server (scheduler
+# both the pilot's Mac (01:00) and the always-on remote server (scheduler
 # catch-up, 04:00-22:00) as a deliberate primary+backup pair — a local-only git
 # log missed a same-day commit the other side had already pushed, so whichever
 # ran second redid the whole scaffold+LLM-fill for nothing.
@@ -393,7 +393,7 @@ PROXY_PORT="${PROXY_PORT:-18765}"
 PROXY_PID=""
 # WP-484 Ф48b (04.08): a remote gateway is the normal target. This pipeline runs
 # on either machine of the dual-machine pair (see note below) -- a Mac-local
-# address is simply wrong on tsekh-1, and was the root cause of the
+# address is simply wrong on the remote server, and was the root cause of the
 # 30.07/02.08/04.08 stale-credential recurrences on the Mac. Local-only
 # branches below (spawn-if-missing, kill-on-port self-heal) only make sense
 # for an actual localhost target, so they're gated on PROXY_IS_LOCAL.
@@ -714,7 +714,7 @@ fi
 # ============================================
 # 1.3. Input freshness self-heal (WP-484 Ф90, 2026-08-12): priorities.yaml and
 # WP-REGISTRY.md are read straight off local disk by LLM Fill below. On a
-# shared checkout (tsekh-1) a live agent session can hold the tree's sync
+# shared checkout (remote server) a live agent session can hold the tree's sync
 # semaphore for hours after finishing its own work (found live: 11h46m past
 # report.md completion) — the periodic sync timer correctly refuses to touch
 # the tree while that semaphore stands, so these two files silently go stale
@@ -799,10 +799,10 @@ echo "  Proxy OK"
 # opened). Same request contract as day-open-llm-fill.py: no "model" field, the
 # proxy routes by verification_class.
 # WP-484 Ф50b (04.08): LLM_PROXY_SECRET was never actually provisioned anywhere
-# this pipeline runs -- confirmed live from tsekh-1. What IS already provisioned
+# this pipeline runs -- confirmed live from the remote server. What IS already provisioned
 # and already authenticates against this same gateway: PROXY_SHARED_SECRET
 # (root-only /etc/iwe/env, used by iwe-llm-health/iwe-overnight-auditor) and
-# ANTHROPIC_API_KEY (~/.iwe/.proxy-env, tseren-readable -- the one this pipeline's
+# ANTHROPIC_API_KEY (~/.iwe/.proxy-env, readable by the pilot's own account -- the one this pipeline's
 # actual execution context can see). Falls back through what's really there
 # instead of requiring a secret nobody would ever provision under this exact name.
 LLM_PROXY_SECRET="${LLM_PROXY_SECRET:-${PROXY_SHARED_SECRET:-${ANTHROPIC_API_KEY:-}}}"
@@ -834,7 +834,7 @@ if [ "$AUTH_CODE" != "200" ]; then
     # Remote gateway (WP-484 Ф48b, 04.08): no local process to kill -- Railway
     # supervises its own restarts (railway.toml restartPolicyType=ON_FAILURE).
     # A 401 here almost always means LLM_PROXY_SECRET is unset/wrong on this
-    # host (confirmed missing on tsekh-1 at cutover time), not a crashed
+    # host (confirmed missing on the remote server at cutover time), not a crashed
     # process -- one short wait only covers a mid-deploy blip on Railway's side.
     echo "  Authorized probe failed (HTTP $AUTH_CODE) on remote gateway — short wait and retry once"
     sleep 5
@@ -967,7 +967,7 @@ mkdir -p "$(dirname "$DAY_OPEN_LOG")"
 # here must not block the DayPlan, same principle as the ${IWE_GOVERNANCE_REPO:-DS-strategy} git
 # pull below. Found live 04.09 (WP-417 peer-session
 # 2026-09-04-09-wp417-panel-verify-close): the repo was never cloned on
-# tsekh-1 at all, so the tile silently showed "not calculated" every day.
+# the remote server at all, so the tile silently showed "not calculated" every day.
 # PD_DASHBOARD_CLONE_URL is per-installation (e.g. a read-only deploy-key SSH
 # alias) -- unset means this reader wasn't provisioned, skip quietly, same as
 # any other unconfigured optional integration in this pipeline.
@@ -1171,7 +1171,7 @@ else
 # Sync with remote to avoid non-fast-forward push (race with other agents)
 # WP-484 (2026-07-19): route through git-dirty-guard.sh first — a bare pull --rebase
 # aborts the whole pipeline on the routine dirty tree sync-strategy-files.sh leaves on
-# tsekh-1 (see git-dirty-guard.sh header). The guard either self-heals a stale mirror
+# the remote server (see git-dirty-guard.sh header). The guard either self-heals a stale mirror
 # or confirms real uncommitted work is present; a plain pull is only safe after that.
 #
 # NON-FATAL as of 2026-07-26 (WP-484, root-caused the 04:35 26.07 ledger-render
