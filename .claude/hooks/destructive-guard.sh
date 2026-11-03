@@ -40,12 +40,12 @@ matches() {
   esac
 }
 
-# Bypass: только из реального шелла пилота (тот же контракт, что secret-leak-block.sh —
-# хук читает свой процессный env, не текст команды, агент не может выставить это сам себе).
-# Строгое сравнение с "1" (не -n) — та же несогласованность в secret-leak-block.sh
-# (там -n) допустима для существующего кода, но не стоит копировать её в новый
-# (пир-ревью Codex, WP-544 Ф1, 20.08): -n пропустил бы CC_ALLOW_DESTRUCTIVE_INPUT=0 как bypass.
-# Первым делом, до разбора входа: обход пилота должен работать и при сломанном jq.
+# Bypass: only from the pilot's real shell (the same contract as secret-leak-block.sh —
+# the hook reads its own process env, not the command text, so the agent cannot set it for itself).
+# Strict comparison with "1" (not -n) — the same inconsistency in secret-leak-block.sh
+# (there it is -n) is acceptable for existing code, but should not be copied into a new one
+# (Codex peer review, WP-544 Phase 1, 20.08): -n would let CC_ALLOW_DESTRUCTIVE_INPUT=0 through as a bypass.
+# First thing, before parsing the input: the pilot's bypass must work even with a broken jq.
 [ "${CC_ALLOW_DESTRUCTIVE_INPUT:-}" = "1" ] && exit 0
 
 # Portable timeout (same helper as rule-engine.sh:_safe_timeout — kept local,
@@ -448,8 +448,10 @@ SEGMENTER_PL='
   sub words {
     my ($text) = @_;
     my (@out, $word, $quote) = ();
+    my $started = 0;
     for (my $i = 0; $i < length($text); $i++) {
       my $char = substr($text, $i, 1);
+      $started = 1 if defined $quote || $char !~ /\s/;
       if (defined $quote) {
         if ($char eq "\\" && $quote eq "ansi" && $i + 1 < length($text)) {
           # Decode what bash decodes inside dollar-single-quote: the flag -rf can be written -r\x66.
@@ -497,17 +499,54 @@ SEGMENTER_PL='
       } elsif ($char eq "\\" && $i + 1 < length($text)) {
         $word .= substr($text, ++$i, 1);
       } elsif ($char =~ /\s/) {
-        push @out, $word if length $word;
+        push @out, $word // q{} if $started;
         $word = q{};
+        $started = 0;
       } else {
         $word .= $char;
       }
     }
-    push @out, $word if length $word;
+    push @out, $word // q{} if $started;
     return @out;
   }
 
-  sub segments {
+  sub expand_literals {
+    my ($text, $values) = @_;
+    my ($out, $quote) = (q{}, undef);
+    for (my $i = 0; $i < length($text); $i++) {
+      my $char = substr($text, $i, 1);
+      if (!defined $quote && $char eq q{$} && substr($text, $i + 1, 1) eq chr(39)) {
+        $out .= $char . chr(39);
+        $quote = "ansi";
+        $i++;
+        next;
+      }
+      if ($char eq chr(92) && (!defined $quote || $quote ne chr(39)) && $i + 1 < length($text)) {
+        $out .= $char . substr($text, ++$i, 1);
+        next;
+      }
+      if ($char eq chr(39) && (!defined $quote || $quote eq chr(39) || $quote eq "ansi")) {
+        $quote = defined $quote ? undef : $char;
+      } elsif ($char eq q{"} && (!defined $quote || $quote eq q{"})) {
+        $quote = defined $quote ? undef : $char;
+      } elsif ($char eq q{$} && (!defined $quote || ($quote ne chr(39) && $quote ne "ansi"))) {
+        pos($text) = $i;
+        if ($text =~ /\G\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/gc) {
+          my $name = defined $1 ? $1 : $2;
+          my $end = pos($text);
+          if (exists $values->{$name}) {
+            $out .= $values->{$name};
+            $i = $end - 1;
+            next;
+          }
+        }
+      }
+      $out .= $char;
+    }
+    return $out;
+  }
+
+  sub lex_segments {
     my ($text) = @_;
     my (@out, $segment, $quote) = ((), q{}, undef);
     my $n = length($text);
@@ -543,6 +582,15 @@ SEGMENTER_PL='
         # that swallows the next lines (and a command hidden behind them).
         my $end = index($text, "\n", $i);
         $i = ($end < 0 ? $n : $end) - 1;
+      } elsif ($char eq q{$} && $next eq chr(123)) {
+        pos($text) = $i;
+        if ($text =~ /\G\$\{[A-Za-z_][A-Za-z0-9_]*\}/gc) {
+          my $end = pos($text);
+          $segment .= substr($text, $i, $end - $i);
+          $i = $end - 1;
+        } else {
+          $segment .= $char;
+        }
       } elsif ($char eq chr(123) && $next eq chr(125)) {
         # `{}` — the placeholder of `find -exec` / `xargs -I {}`, not a brace group.
         $segment .= $char . $next;
@@ -561,16 +609,57 @@ SEGMENTER_PL='
         # later line of a multi-line call was glued onto the first command
         # of the call — how a `source` dot two lines below a `git add <path>`
         # was read as `git add .` (WP-545).
-        push @out, $segment;
+        my $operator = $char;
+        if (($char eq q{|} || $char eq q{&}) && $next eq $char) {
+          $operator .= $next;
+          $i++;
+        }
+        push @out, [$segment, $operator];
         $segment = q{};
         $escaped_at = -1;
       } else {
         $segment .= $char;
       }
     }
-    push @out, $segment;
+    push @out, [$segment, q{}];
+    my (%values, $previous, $conditional);
+    for my $item (@out) {
+      $item->[0] = expand_literals($item->[0], \%values) if %values;
+      my @tokens = words($item->[0]);
+      $conditional = 1 if @tokens && $tokens[0] =~ /^(?:if|for|while|until|case|select)$/;
+      # A pipeline/background/subshell/function may execute assignments in a
+      # different process or later. Never turn that into a known safe command.
+      $conditional = 1 if $item->[1] =~ /[(){}&|]/;
+      if (@tokens && !grep { !/^[A-Za-z_][A-Za-z0-9_]*=/ } @tokens) {
+        for my $token (@tokens) {
+          my ($name, $value) = split(/=/, $token, 2);
+          # Only literal words, without substitutions or shell metacharacters.
+          unless ($value =~ m{^[A-Za-z0-9_./-]+$}) {
+            # Computed values remain outside literal-name resolution. Do not
+            # turn ordinary provider/path variables into new blanket blocks.
+            if ($conditional && exists $values{$name}) { $values{$name} = "IWE_UNCERTAIN_LITERAL"; }
+            else { delete $values{$name}; }
+            next;
+          }
+          if ($conditional || ($previous // q{}) =~ /^(?:&&|\|\|)$/) {
+            $value = "IWE_UNCERTAIN_LITERAL" if !exists $values{$name} || $values{$name} ne $value;
+          }
+          $values{$name} = $value;
+        }
+      } elsif (@tokens && $tokens[0] eq "unset") {
+        unless (grep { /^-/ && !/^(?:-v|--)$/ } @tokens[1 .. $#tokens]) {
+          for my $name (grep { /^[A-Za-z_][A-Za-z0-9_]*$/ } @tokens[1 .. $#tokens]) {
+            if ($conditional && exists $values{$name}) { $values{$name} = "IWE_UNCERTAIN_LITERAL"; }
+            else { delete $values{$name}; }
+          }
+        }
+      }
+      $previous = $item->[1];
+    }
     return @out;
   }
+
+  sub segments { return map { $_->[0] } lex_segments($_[0]); }
 
   # Basename of a command word: /bin/rm, /usr/bin/rm, C:\Git\usr\bin\rm.exe all name `rm`.
   # macOS and Windows can resolve /BIN/RM or GIT to the same executable; normalise
@@ -689,9 +778,96 @@ SEGMENTER_PL='
     return @indices;
   }
 
+  sub shell_reads_stdin {
+    my @args = @_;
+    my $stdin_script = 0;
+    for (my $i = 0; $i < @args; $i++) {
+      next if is_redirection($args[$i], 0);
+      if (is_redirection($args[$i], 1)) { $i++; next; }
+      if ($args[$i] =~ /^(?:[-+]o|[-+]O|--rcfile|--init-file)$/) { $i++; next; }
+      if ($args[$i] =~ /^([-+])([A-Za-z]+)$/) {
+        my ($sign, $flags) = ($1, $2);
+        for (my $j = 0; $j < length($flags); $j++) {
+          my $flag = substr($flags, $j, 1);
+          return 0 if $flag eq "c" && $sign eq "-";
+          $stdin_script = $sign eq "-" if $flag eq "s";
+          if ($flag eq "o" || $flag eq "O") {
+            $i++ if $j == length($flags) - 1;
+            last;
+          }
+        }
+        next;
+      }
+      return 1 if $args[$i] eq "--" && $stdin_script;
+      if ($args[$i] eq "--") { return $i == $#args; }
+      next if $args[$i] =~ /^-/;
+      return $stdin_script;            # Filename, or positional arguments with -s.
+    }
+    return 1;
+  }
+
+  sub literal_output {
+    my ($base, @args) = @_;
+    die "nonliteral shell input\n" if grep { /[\$`]/ } @args;
+    my %escapes = (n => "\n", t => "\t", r => "\r", chr(92) => chr(92));
+    if ($base eq "echo") {
+      shift @args while @args && $args[0] =~ /^(?:-[neE]+|--)$/;
+      my $output = join(" ", @args);
+      die "unsupported echo escape in shell input\n" if $output =~ /\\/;
+      return $output;
+    }
+    shift @args if @args && $args[0] eq "--";
+    my $format = shift @args // q{};
+    my $probe = $format;
+    $probe =~ s/%%|%s//g;
+    die "unsupported printf format in shell input\n" if $probe =~ /%/ || $format =~ /\\(?![ntr\\])/;
+    $format =~ s/\\([ntr\\])/$escapes{$1}/ge;
+    my $slots = 0;
+    while ($format =~ /%%|(%s)/g) { $slots++ if defined $1; }
+    return sprintf($format) unless $slots;
+    my $output = q{};
+    do {
+      my @group = splice(@args, 0, $slots);
+      push @group, q{} while @group < $slots;
+      $output .= sprintf($format, @group);
+      die "literal shell input exceeds 1 MiB\n" if length($output) > 1048576;
+    } while (@args);
+    return $output;
+  }
+
+  sub piped_scripts {
+    my @lexed = @_;
+    my @scripts;
+    for (my $i = 0; $i + 1 < @lexed; $i++) {
+      next unless $lexed[$i][1] eq q{|};
+      my @producer = words($lexed[$i][0]);
+      my @consumer = words($lexed[$i + 1][0]);
+      my ($source) = command_indices(@producer);
+      my ($sink) = command_indices(@consumer);
+      next unless defined $source && defined $sink;
+      my $base = command_base($producer[$source]);
+      next unless $base =~ /^(?:echo|printf)$/;
+      next unless command_base($consumer[$sink]) =~ /^(?:ba|z|k|da|a)?sh$/;
+      next unless shell_reads_stdin(@consumer[$sink + 1 .. $#consumer]);
+      push @scripts, literal_output($base, @producer[$source + 1 .. $#producer]);
+    }
+    return @scripts;
+  }
+
+  sub inspected_segments {
+    my ($text, $depth) = @_;
+    $depth //= 0;
+    my @lexed = lex_segments($text);
+    my @out = map { $_->[0] } @lexed;
+    if ($depth < 3) {
+      push @out, inspected_segments($_, $depth + 1) for piped_scripts(@lexed);
+    }
+    return @out;
+  }
+
   my $cmd_scan = do { local $/; <STDIN> };
-  my @found = grep { /\S/ } segments($cmd_scan);
   if ($ENV{"MODE"} eq "count") {
+    my @found = grep { /\S/ } segments($cmd_scan);
     # A hit is the pattern standing where a COMMAND name stands: the segment
     # executable, a command carried by find/xargs, or the script argument of a
     # shell interpreter (`bash /path/wrapper.sh`). The same name inside an
@@ -724,7 +900,7 @@ SEGMENTER_PL='
   my %global_option_with_argument = map { $_ => 1 } qw(-C -c --git-dir --work-tree --namespace --super-prefix --config-env);
   # A string handed to a shell (`bash -c "..."`, `eval "..."`) is commands too; it goes back
   # into the queue, a few levels deep.
-  my @queue = map { [$_, 0] } @found;
+  my @queue = map { [$_, 0] } grep { /\S/ } inspected_segments($cmd_scan);
   while (my $item = shift @queue) {
     my ($segment, $depth) = @$item;
     my @tokens = words($segment);
@@ -732,8 +908,9 @@ SEGMENTER_PL='
     for my $index (command_indices(@tokens)) {
       next unless $index <= $#tokens;
       my $base = command_base($tokens[$index]);
+      die "ambiguous literal command\n" if $base eq "iwe_uncertain_literal";
       if ($depth < 3 && $tokens[$index] =~ /\s/) {
-        push @queue, map { [$_, $depth + 1] } grep { /\S/ } segments($tokens[$index]);
+        push @queue, map { [$_, $depth + 1] } grep { /\S/ } inspected_segments($tokens[$index]);
       }
       # Candidate command positions: the executable itself and, after a command that is not
       # known to only print its arguments, every later word (ssh host rm -rf x, docker exec c
@@ -750,7 +927,7 @@ SEGMENTER_PL='
             if ($tokens[$j] =~ /^-[A-Za-z]*c[A-Za-z]*$/ && $j < $#tokens) {
               my $script = $j + 1;
               $script++ if $tokens[$script] eq "--" && $script < $#tokens;
-              push @queue, map { [$_, $depth + 1] } grep { /\S/ } segments($tokens[$script]);
+              push @queue, map { [$_, $depth + 1] } grep { /\S/ } inspected_segments($tokens[$script]);
               last;
             }
             if ($tokens[$j] =~ /^-[oO]$/ && $j < $#tokens) { $j++; next; }
@@ -759,10 +936,10 @@ SEGMENTER_PL='
         } elsif ($cand == $index && $cbase =~ /^(?:ssh|su)$/) {
           # ssh host "rm -rf /x": a word with blanks after ssh/su is a command line for the far side.
           for (my $j = $cand + 1; $j <= $#tokens; $j++) {
-            push @queue, map { [$_, $depth + 1] } grep { /\S/ } segments($tokens[$j]) if $tokens[$j] =~ /\s/;
+            push @queue, map { [$_, $depth + 1] } grep { /\S/ } inspected_segments($tokens[$j]) if $tokens[$j] =~ /\s/;
           }
         } elsif ($cbase eq "eval" && $cand < $#tokens) {
-          push @queue, map { [$_, $depth + 1] } grep { /\S/ } segments(join(" ", @tokens[$cand + 1 .. $#tokens]));
+          push @queue, map { [$_, $depth + 1] } grep { /\S/ } inspected_segments(join(" ", @tokens[$cand + 1 .. $#tokens]));
         }
       }
       next unless $cbase eq $name;
@@ -862,8 +1039,11 @@ if [ -n "$PUSH_SEGMENT" ]; then
   if matches "$PUSH_SEGMENT" -E -- '(^|[[:space:]])\+?:[^[:space:]]+'; then
     block "git push с refspec-удалением (:<ref> или +:<ref>) запрещён — удаление удалённой ветки/тега необратимо. Согласуй с владельцем (CLAUDE.md §2)."
   fi
+  if matches "$PUSH_SEGMENT" -E -- '(^|[[:space:]])\+[^[:space:]]+'; then
+    block "git push с принудительным refspec (+<ref>) запрещён. Используй --force-with-lease или согласуй с владельцем (CLAUDE.md §2)."
+  fi
 
-  # git push --mirror — same class again (found in peer review, WP-544 Ф8,
+  # git push --mirror — same class again (found in peer review, WP-544 Phase 8,
   # 04.09): syncs the remote to exactly the local ref set, silently deleting
   # any remote branch/tag that doesn't exist locally. Not named in the
   # original Д28 report but closed alongside it — same failure mode, cheap
@@ -911,7 +1091,7 @@ reset_is_non_destructive() {
 }
 
 # git reset --hard — one $RESET_SEGMENT line per chained `git reset` in the
-# command (WP-544 Ф8, 04.09: git_segment now returns every match, not just
+# command (WP-544 Phase 8, 04.09: git_segment now returns every match, not just
 # the first — a compound `git reset --hard a && git reset --hard b` used to
 # hide the second call from this same check). reset_is_non_destructive()
 # parses token positions for exactly one invocation, so each line is checked
@@ -937,12 +1117,12 @@ if [ -n "$CLEAN_SEGMENT" ]; then
   block "git clean с удалением запрещён (удаляет неотслеживаемые файлы). Согласуй с владельцем."
 fi
 
-# git add -A/--all/-u/--update/bare-dot (I7, WP-458: AR.216 жил только в rule-engine.sh
-# check_git_staged_only(), которая никогда не диспатчилась ни на одно живое событие —
-# реальная защита срабатывала только на commit (install-hooks.sh Check 8), уже после
-# стейджа. Здесь — фактический PreToolUse барьер, до того как чужие файлы попадут в индекс.
-# WP-544 Ф1 Д5, 21.08: перенесено из личной установки, где было с 17.07 — устраняет
-# расхождение версий хука между личной установкой и этим шаблоном.)
+# git add -A/--all/-u/--update/bare-dot (I7, WP-458: AR.216 lived only in rule-engine.sh
+# check_git_staged_only(), which was never dispatched on any live event —
+# real protection fired only on commit (install-hooks.sh Check 8), already after
+# staging. Here is the actual PreToolUse barrier, before foreign files reach the index.
+# WP-544 Phase 1 Д5, 21.08: ported from the personal installation, where it had been since 17.07 — removes
+# the hook version divergence between the personal installation and this template.)
 ADD_SEGMENT=$(git_segment add)
 if [ -n "$ADD_SEGMENT" ]; then
   if matches "$ADD_SEGMENT" -E -- '(^|[[:space:]])(-A|--all|-u|--update)([[:space:]]|$)'; then
@@ -953,14 +1133,14 @@ if [ -n "$ADD_SEGMENT" ]; then
   fi
 fi
 
-# git stash pop/apply возвращает содержимое чужой заначки целиком, без разбора по
-# файлам — слепой pop/apply молча теряет уже закоммиченные/задеплоенные артефакты,
-# если заначка содержит удаления (WP-547, 03.09: именно так был утерян файл уже
-# применённой к проду миграции — агент увидел "deleted: ..." в списке файлов чужого
-# автостэша вперемешку с легитимной работой и вернул всё разом). Non-pop/apply
-# stash-подкоманды (show/list/drop/...) короткозамыкаются на "безопасно" — функция
-# только решает судьбу pop/apply. При неопределённости (не распарсили, не смогли
-# посмотреть содержимое) — тоже "небезопасно", как reset_is_non_destructive.
+# git stash pop/apply returns the contents of someone else's stash wholesale, without sorting by
+# file — a blind pop/apply silently loses already committed/deployed artifacts
+# if the stash contains deletions (WP-547, 03.09: that is exactly how a file of a migration
+# already applied to prod was lost — the agent saw "deleted: ..." in the file list of someone else's
+# autostash mixed with legitimate work and restored everything at once). Non-pop/apply
+# stash subcommands (show/list/drop/...) short-circuit to "safe" — the function
+# only decides the fate of pop/apply. Under uncertainty (could not parse, could not
+# inspect the contents) — also "unsafe", like reset_is_non_destructive.
 stash_pop_apply_is_safe() {
   local segment="$1" repo="${CWD:-$PWD}" ref=""
   set -- $segment
@@ -1008,27 +1188,27 @@ if [ -n "$STASH_SEGMENT" ]; then
   done <<< "$STASH_SEGMENT"
 fi
 
-# rm с одновременным recursive (-r/-R/--recursive) и force (-f/--force), в любом сочетании
-# флагов (слитных или раздельных), включая /bin/rm, /usr/bin/rm, \rm, find -exec rm, xargs rm,
-# обёртки sudo/env/time и строки для sh -c/eval, распознаётся и блокируется (issue #940).
-# Код через stdin оболочки и подстановки внутри кавычек или некавыченного heredoc
-# остаются за границей текстового анализа; см. docs/DESTRUCTIVE-GUARD.md (#1002).
-# Удалять — через .claude/bin/guarded-rm: он при выполнении, когда оболочка уже раскрыла
-# переменные и шаблоны, вычисляет настоящий путь каждой цели и удаляет только внутри корней
-# из .claude/config/guarded-rm-roots.txt.
+# rm with both recursive (-r/-R/--recursive) and force (-f/--force), in any combination
+# of flags (combined or separate), including /bin/rm, /usr/bin/rm, \rm, find -exec rm, xargs rm,
+# sudo/env/time wrappers and strings for sh -c/eval, is recognized and blocked (issue #940).
+# Code via the shell's stdin and substitutions inside quotes or an unquoted heredoc
+# remain beyond the boundary of text analysis; see docs/DESTRUCTIVE-GUARD.md (#1002).
+# Delete via .claude/bin/guarded-rm: at execution time, when the shell has already expanded
+# variables and patterns, it computes the real path of each target and deletes only inside the roots
+# from .claude/config/guarded-rm-roots.txt.
 #
-# Прежнее исключение «/tmp/, /scratchpad/ или .claude/worktrees/ где угодно в тексте вызова»
-# освобождало и удаление вне временных каталогов: `rm -rf /important; ls /tmp/` и
-# `echo /tmp/ > /dev/null && rm -rf "$HOME/project/data"` проходили. Сузить исключение по
-# тексту нельзя: цель удаления зависит от переменных, cd, ссылок и подстановок, известных
-# только при выполнении, поэтому проверка перенесена с текста на выполнение.
+# The former exception "/tmp/, /scratchpad/ or .claude/worktrees/ anywhere in the call text"
+# also exempted deletion outside temporary directories: `rm -rf /important; ls /tmp/` and
+# `echo /tmp/ > /dev/null && rm -rf "$HOME/project/data"` passed. The exception cannot be narrowed by
+# text: the deletion target depends on variables, cd, links and substitutions known
+# only at execution time, so the check was moved from text to execution.
 #
-# Ключи проверяются по исходным токенам: `--` в имени цели не является
-# разделителем ключей. Короткие кластеры (-rf, -vrf) и сокращения GNU
-# --recursive/--force признаются; --verbose/--preserve-root — нет.
+# Flags are checked against the original tokens: `--` in a target name is not
+# a flag separator. Short clusters (-rf, -vrf) and GNU abbreviations
+# --recursive/--force are recognized; --verbose/--preserve-root are not.
 
-# git rm с -r и -f: -f теряет незакоммиченные правки удаляемых файлов (`git rm -r --cached`
-# без -f остаётся разрешённым).
+# git rm with -r and -f: -f loses uncommitted edits of the files being removed (`git rm -r --cached`
+# without -f remains allowed).
 GIT_RM_INVOCATIONS=$(git_segment rm)
 if [ -n "$GIT_RM_INVOCATIONS" ]; then
   block "git rm с -r и -f запрещён — -f теряет незакоммиченные правки. Убери -f или согласуй с владельцем."
@@ -1039,51 +1219,51 @@ if [ -n "$RM_INVOCATIONS" ]; then
   block "rm с -r и -f запрещён — удаление необратимо. Удаляй той же командой через $GUARDED_RM (те же ключи и цели): он при выполнении проверит настоящие пути и удалит только внутри временных каталогов из реестра $WORKSPACE_ROOT/.claude/config/guarded-rm-roots.txt. Разовая необходимость: CC_ALLOW_DESTRUCTIVE_INPUT=1 из реального шелла пилота."
 fi
 
-# SQL-клиенты: DROP/TRUNCATE — необратимая потеря структуры/данных.
+# SQL clients: DROP/TRUNCATE — irreversible loss of structure/data.
 if matches "$CMD_EXEC" -iE '\b(psql|mysql|sqlite3)\b' && matches "$CMD_EXEC" -iE '\b(DROP[[:space:]]+(TABLE|SCHEMA|DATABASE)|TRUNCATE)\b'; then
   block "DROP/TRUNCATE через SQL-клиент запрещён — необратимая потеря данных. Разовая необходимость: CC_ALLOW_DESTRUCTIVE_INPUT=1 из реального шелла пилота."
 fi
 
-# SQL-клиенты: DELETE FROM без WHERE в том же операторе (эвристика: сегмент до ближайшего
-# ';' или конца строки — не защищает от WHERE в другом statement той же команды).
+# SQL clients: DELETE FROM without WHERE in the same statement (heuristic: the segment up to the nearest
+# ';' or end of line — does not protect against a WHERE in another statement of the same command).
 if matches "$CMD_EXEC" -iE '\b(psql|mysql|sqlite3)\b' \
   && matches "$CMD_EXEC" -iE 'DELETE[[:space:]]+FROM' \
   && ! matches "$CMD_EXEC" -iE 'DELETE[[:space:]]+FROM[^;]*[[:space:]]WHERE([[:space:]]|$)'; then
   block "DELETE FROM без WHERE через SQL-клиент запрещён — удалит всю таблицу. Разовая необходимость: CC_ALLOW_DESTRUCTIVE_INPUT=1 из реального шелла пилота."
 fi
 
-# удаление репозитория на GitHub — необратимо.
+# deleting a repository on GitHub is irreversible.
 if matches "$CMD_EXEC" -E '\bgh[[:space:]]+repo[[:space:]]+delete\b'; then
   block "gh repo delete запрещён — необратимо. Разовая необходимость: CC_ALLOW_DESTRUCTIVE_INPUT=1 из реального шелла пилота."
 fi
 
-# gh repo deploy-key add с правом записи (-w/--allow-write) — расширяет ACL
-# репозитория на внешнем сервисе без второго слоя проверки (WP-544, пир-сессия
-# 2026-09-04-16-wp544-permission-type-auto-approve, Claude + Kimi). По умолчанию
-# (без флага) ключ read-only — эта ветка не трогает `gh repo deploy-key add`
-# без -w/--allow-write, тот случай остаётся обычным interactive-approve.
-# Тот же residual, что у push --delete выше: whole-command grep, не
-# git_segment-изолированный per-invocation — variable-obfuscation не ловит.
+# gh repo deploy-key add with write access (-w/--allow-write) — widens the repository ACL
+# on an external service without a second layer of checking (WP-544, peer
+# session 2026-09-04-16-wp544-permission-type-auto-approve, Claude + Kimi). By default
+# (without the flag) the key is read-only — this branch does not touch `gh repo deploy-key add`
+# without -w/--allow-write, that case stays an ordinary interactive approve.
+# The same residual as push --delete above: a whole-command grep, not
+# git_segment-isolated per-invocation — it does not catch variable obfuscation.
 if matches "$CMD_EXEC" -E '\bgh[[:space:]]+repo[[:space:]]+deploy-key[[:space:]]+add\b' \
   && matches "$CMD_EXEC" -E -- '(^|[[:space:]"'"'"'])(-w|--allow-write)([[:space:]"'"'"'=]|$)'; then
   block "gh repo deploy-key add с -w/--allow-write запрещён — добавляет ключ с правом записи в репозиторий (необратимое расширение доступа). Разовая необходимость: CC_ALLOW_DESTRUCTIVE_INPUT=1 из реального шелла пилота."
 fi
 
-# iwe-commit-isolated.sh обязан быть единственной командой в Bash-вызове.
-# Разрешающее правило в settings.json матчит по префиксу пути к этому скрипту
-# с завершающим `:*` — без такого хвоста правило не переиспользуешь (разные
-# WP, разные пути worktree на каждый вызов), но с ним оно так же охотно
-# матчит и `&& что-угодно-ещё`, потому что permission-matcher — текстовый
-# префикс, не парсер shell-грамматики (WP-544, пир-сессия
+# iwe-commit-isolated.sh must be the only command in a Bash call.
+# The allow rule in settings.json matches by the path prefix of this script
+# with a trailing `:*` — without such a tail the rule cannot be reused (different
+# WPs, different worktree paths on every call), but with it the rule just as readily
+# matches `&& anything-else`, because the permission matcher is a text
+# prefix, not a shell-grammar parser (WP-544, peer session
 # 2026-09-04-16-wp544-permission-type-auto-approve, Claude + Kimi).
 #
-# Проверка повторяет условие, при котором это правило вообще срабатывает:
-# вызов НАЧИНАЕТСЯ с пути к обёртке. Прежний вариант считал попаданием любое
-# упоминание имени в тексте сегмента, поэтому `find ... -name
-# iwe-commit-isolated.sh | head` блокировался как «обёртка плюс лишние
-# команды» — имя в аргументе чужой команды не запускает обёртку и не матчит
-# разрешающее правило (WP-545, 06.09: третий случай того же типа в этом
-# файле, найден живьём этим же хуком).
+# The check repeats the condition under which that rule fires at all:
+# the call STARTS with the path to the wrapper. The previous variant counted any
+# mention of the name in the segment text as a hit, so `find ... -name
+# iwe-commit-isolated.sh | head` was blocked as "wrapper plus extra
+# commands" — a name in the argument of someone else's command does not launch the wrapper and does not match
+# the allow rule (WP-545, 06.09: the third case of the same kind in this
+# file, found live by this very hook).
 ISOLATED_COMMIT_ANALYSIS=$(shell_segment_stats "iwe-commit-isolated\.sh")
 ISOLATED_COMMIT_TOTAL_SEGMENTS=$(echo "$ISOLATED_COMMIT_ANALYSIS" | awk '{print $1}')
 ISOLATED_COMMIT_WRAPPER_HITS=$(echo "$ISOLATED_COMMIT_ANALYSIS" | awk '{print $2}')

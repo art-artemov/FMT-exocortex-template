@@ -36,9 +36,13 @@ description: "Справочник FPF паттернов применимых �
 FPF — не один файл, а ядро + комплекты доменных фреймворков (DPF). Состав соответствует `fpf_version` из frontmatter:
 
 - **FPF Core** — `FPF-Spec.md`, части Part A–G (структура ниже)
-- **Foundational Thinking DPF Suite** — `Foundational Thinking DPF Suite/`: 5 фундаментальных DPF (математическая практика, математическое моделирование, физическое, вычислительное и нотационное мышление) + `README.md` и `FOUNDATIONAL-THINKING-DPF-SUITE-REFERENCE.md`
-- **Engineering DPF Suite** — `Engineering DPF Suite/`: 27 доменных фреймворков (системная инженерия, стратегирование, инженерия методов, развитие способностей человека и др.) + `README.md` и `ENGINEERING-DPF-SUITE-REFERENCE.md`
-- **Narrativization DPF** — `Narrativization-and-Narrative-Studies-Principles-Framework.md` (нарративизация)
+- Наборы DPF лежат в подпапке `FPF/DPFs/`, не в корне — на сегодня четыре:
+  - **Foundational Thinking DPF Suite** — `DPFs/Foundational Thinking DPF Suite/`: фундаментальные DPF (математическая практика, математическое моделирование, физическое, вычислительное и нотационное мышление) + `README.md` и `FOUNDATIONAL-THINKING-DPF-SUITE-REFERENCE.md`
+  - **Engineering DPF Suite** — `DPFs/Engineering DPF Suite/`: доменные фреймворки инженерии (системная инженерия и др.) + `README.md` и `ENGINEERING-DPF-SUITE-REFERENCE.md`
+  - **Management DPF Suite** — `DPFs/Management DPF Suite/`: доменные фреймворки управления и стратегирования + `README.md`
+  - **Human Capability Engineering DPF Suite** — `DPFs/Human Capability Engineering DPF Suite/`: развитие способностей человека, включая `HCD.*` (Human Capability Development) + `README.md`
+- **Narrativization DPF** — `DPFs/Narrativization-and-Narrative-Studies-Principles-Framework.md` (нарративизация)
+- Состав наборов меняется (автор переносит и добавляет их) — полный и актуальный список → `FPF/DPFs/README.md`, не этот файл
 
 ### Точки входа в репозитории FPF
 
@@ -51,7 +55,7 @@ FPF — не один файл, а ядро + комплекты доменны�
 Ищи по ID паттерна по всему репозиторию, не только по Core:
 
 ```bash
-rg -n 'HCD\.1' {{HOME_DIR}}/IWE/FPF        # паттерн из Engineering DPF Suite
+rg -n 'HCD\.1' {{HOME_DIR}}/IWE/FPF        # паттерн из Human Capability Engineering DPF Suite
 rg -n 'A\.7' {{HOME_DIR}}/IWE/FPF/FPF-Spec.md  # паттерн Core
 ```
 
@@ -154,7 +158,7 @@ rg -n 'A\.7' {{HOME_DIR}}/IWE/FPF/FPF-Spec.md  # паттерн Core
 |------------|----------------------|-----------------|
 | Holon | Компонент с определённой границей (часть и целое) | A.1 — декомпозиция систем |
 | Bounded Context (A.1.1) | Контекст с чётким scope: свой язык, свои правила | DDD, микросервисы |
-| F-G-R (Fact/Guess/Rumor) | Факт / предположение / слух — уровень доверия к данным | B.3 — оценка решений |
+| F-G-R (Formality / ClaimScope / Reliability) | Формальность, охват утверждения, надёжность — по каким осям оценивается обоснованность утверждения | C.2, C.2.2, C.2.3; применяется в B.3 |
 | Role ≠ Method ≠ Work (A.7) | Кто делает ≠ как делает ≠ конкретное выполнение | Проектирование процессов |
 | Role Assignment (A.2.1) | Система в роли: `система#роль:контекст` — функциональное участие системы; роль сама не работает | Pack-онтология ролей, distinctions.md HD #26 |
 | Service-word restoration (A.6.P §4.11a) | «Сервис» не задаёт один FPF-референт: восстановить обещание, роль/назначение, метод, работу, носитель, состояние, свидетельство или прямое отношение | DP сервисы MAP.002 vs точные FPF-объекты и отношения |

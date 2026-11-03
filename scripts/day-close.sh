@@ -1,28 +1,28 @@
 #!/bin/bash
 # routing: helper  skill=day-close  called-by=haiku
 # see DP.SC.159, DP.ROLE.059
-# day-close.sh — Автоматические шаги Day Close (backup + reindex + linear sync + sessions)
+# day-close.sh — Automatic Day Close steps (backup + reindex + linear sync + sessions)
 #
-# Вызывается Claude из протокола Day Close (protocol-close.md § День, шаг 4).
-# Объединяет четыре механических операции в одну команду.
+# Called by Claude from the Day Close protocol (protocol-close.md § Day, step 4).
+# Combines four mechanical operations into one command.
 #
-# Использование:
-#   day-close.sh                # все четыре шага
-#   day-close.sh --backup       # только backup
-#   day-close.sh --reindex      # только reindex
-#   day-close.sh --linear       # только linear sync
-#   day-close.sh --sessions     # только консолидация сессий дня (DAP1-B, WP-7)
+# Usage:
+#   day-close.sh                # all four steps
+#   day-close.sh --backup       # backup only
+#   day-close.sh --reindex      # reindex only
+#   day-close.sh --linear       # linear sync only
+#   day-close.sh --sessions     # day's session consolidation only (DAP1-B, WP-7)
 #
-# Конфигурация: Пути заданы через переменные ниже — настроить при установке.
+# Configuration: Paths are set via the variables below — configure at installation.
 
 set -euo pipefail
 
-# === КОНФИГУРАЦИЯ (настроить при установке) ===
+# === CONFIGURATION (configure at installation) ===
 # Load unified environment: WORKSPACE_DIR, IWE_ROOT, IWE_SCRIPTS, etc.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/../.claude/lib/iwe-env-bootstrap.sh" || exit 1
-# issue #545: iwe_sessions_dir (резолвер корня журналов по контракту писателя)
+# issue #545: iwe_sessions_dir (resolver of the journals root per the writer's contract)
 source "$SCRIPT_DIR/lib/common.sh" || {
   echo "FATAL: lib/common.sh not found next to $0 — промотированная копия устарела, обновите её вместе с шаблоном" >&2
   exit 1
@@ -58,9 +58,26 @@ iwe_claude_project_slug() {
 # regardless of workspace location. Override via IWE_MEMORY_SRC if needed.
 WORKSPACE_SLUG=$(iwe_claude_project_slug "$WORKSPACE_DIR")
 MEMORY_SRC="${IWE_MEMORY_SRC:-$HOME/.claude/projects/${WORKSPACE_SLUG}/memory}"
+# issue #1401: the backup reads the same memory the agents write. Agents and
+# .claude/hooks/memory-exocortex-sync.sh go through the $WORKSPACE_DIR/memory
+# link (CLAUDE.md §4); when the slug guess points at a different, stale
+# project folder, the backup used to copy that folder's old files over the
+# fresh mirror. The link wins, as in the hook; a disagreement is reported.
+MEMORY_SRC_MISMATCH=""
+if [ -z "${IWE_MEMORY_SRC:-}" ] && [ -d "$WORKSPACE_DIR/memory" ]; then
+  _link_memory=$(cd -P -- "$WORKSPACE_DIR/memory" 2>/dev/null && pwd -P) || _link_memory=""
+  _slug_memory=$(cd -P -- "$MEMORY_SRC" 2>/dev/null && pwd -P) || _slug_memory=""
+  if [ -n "$_link_memory" ]; then
+    if [ -n "$_slug_memory" ] && [ "$_slug_memory" != "$_link_memory" ]; then
+      MEMORY_SRC_MISMATCH="$_slug_memory"
+    fi
+    MEMORY_SRC="$_link_memory"
+  fi
+  unset _link_memory _slug_memory
+fi
 EXOCORTEX_DST="$DS_STRATEGY/exocortex"
-# MCP reindex — опциональный компонент (WP-187 iwe-knowledge Gateway заменяет локальный knowledge-mcp).
-# Переопределить путь можно через env IWE_SELECTIVE_REINDEX.
+# MCP reindex — an optional component (WP-187 iwe-knowledge Gateway replaces the local knowledge-mcp).
+# The path can be overridden via env IWE_SELECTIVE_REINDEX.
 # do_reindex() exit code for "some branches indexed, some failed" (see do_reindex).
 readonly RC_REINDEX_PARTIAL=3
 # A step that cannot run (missing script/dir/interpreter) is a SKIP, not an
@@ -69,10 +86,10 @@ readonly RC_STEP_SKIPPED=90
 SELECTIVE_REINDEX="${IWE_SELECTIVE_REINDEX:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/selective-reindex.sh}"
 SOURCES_JSON="${IWE_SOURCES_JSON:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/sources.json}"
 SOURCES_PERSONAL_JSON="${IWE_SOURCES_PERSONAL_JSON:-$WORKSPACE_DIR/DS-MCP/knowledge-mcp/scripts/sources-personal.json}"
-# issue #463: linear_sync_path и защита day-rhythm-config.yaml ниже читаются через
-# python3+yaml с fallback на пустую строку — без pyyaml это не падает, а тихо
-# возвращает пустую строку, неотличимую от «поля нет в конфиге». Один явный
-# warning здесь вместо голого ModuleNotFoundError на каждом отдельном вызове.
+# issue #463: linear_sync_path and the day-rhythm-config.yaml guard below are read via
+# python3+yaml with a fallback to an empty string — without pyyaml this does not fail but quietly
+# returns an empty string, indistinguishable from "the field is not in the config". One explicit
+# warning here instead of a bare ModuleNotFoundError on every individual call.
 #
 # Evgenii Red Team review 2026-08-19 (defect #5 class): resolve python3+PyYAML
 # ONCE via the F6 shared resolver (scripts/lib/find-python3.sh, #453/#463),
@@ -101,7 +118,7 @@ BACKUP_MANIFEST_NAME=".day-close-backup-manifest.json"
 BACKUP_QUARANTINE_NAME=".day-close-backup-incomplete"
 readonly RC_BACKUP_WARNING=4
 BACKUP_WARNING=false
-# Linear sync: путь читается из params.yaml (ключ linear_sync_path)
+# Linear sync: the path is read from params.yaml (key linear_sync_path)
 PARAMS_YAML="$WORKSPACE_DIR/params.yaml"
 LINEAR_SYNC=""
 if [ -n "$RESOLVED_PYTHON3" ] && [ -f "$PARAMS_YAML" ]; then
@@ -111,9 +128,9 @@ if [ -n "$RESOLVED_PYTHON3" ] && [ -f "$PARAMS_YAML" ]; then
   fi
 fi
 LOG_FILE="${IWE_DAY_CLOSE_LOG:-$HOME/logs/day-close.log}"
-# === /КОНФИГУРАЦИЯ ===
+# === /CONFIGURATION ===
 
-# Цвета
+# Colors
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
@@ -1689,9 +1706,14 @@ resolve_memory_src_fallback() {
   return 1
 }
 
-# --- Шаг 1: Backup memory/ + CLAUDE.md → exocortex/ ---
+# --- Step 1: Backup memory/ + CLAUDE.md → exocortex/ ---
+# do_backup [TARGET] — copies into TARGET (default: the canon's exocortex/). The
+# helpers below read EXOCORTEX_DST, so the local shadows the global for them too.
+# A frozen canon is never written: main() routes that case to do_backup_frozen
+# (issue #1279), which calls this function with a snapshot directory as TARGET.
 do_backup() {
-  log "Шаг 1/3: Backup memory/ → exocortex/"
+  local EXOCORTEX_DST="${1:-$EXOCORTEX_DST}"
+  log "Шаг 1/3: Backup memory/ → $EXOCORTEX_DST/"
 
   if [ ! -d "$MEMORY_SRC" ]; then
     # issue #536 regression test asserts an explicit IWE_MEMORY_SRC override
@@ -1709,6 +1731,11 @@ do_backup() {
       warn "Memory source not found: $MEMORY_SRC (no unambiguous fallback either) — backup skipped"
       return "$RC_STEP_SKIPPED"
     fi
+  fi
+
+  if [ -n "$MEMORY_SRC_MISMATCH" ]; then
+    warn "  memory source: беру $MEMORY_SRC (ссылка memory/ рабочей установки), а не $MEMORY_SRC_MISMATCH (папка по имени проекта) — они разошлись, проверьте, какая из них устарела (issue #1401)"
+    BACKUP_WARNING=true
   fi
 
   mkdir -p "$EXOCORTEX_DST"
@@ -1776,8 +1803,8 @@ do_backup() {
   # destination list. No YAML parser means preserve rather than guess.
   backup_day_rhythm_config || return 1
 
-  # issue #217: обратная подстановка $HOME -> {{HOME_DIR}} делает бэкап ОС-агностичным
-  # (симметрично прямой подстановке в setup.sh и restore-from-exocortex.sh).
+  # issue #217: reverse substitution $HOME -> {{HOME_DIR}} makes the backup OS-agnostic
+  # (symmetric to the forward substitution in setup.sh and restore-from-exocortex.sh).
   if [ -f "$WORKSPACE_DIR/CLAUDE.md" ]; then
     atomic_instruction_backup \
       "$WORKSPACE_DIR/CLAUDE.md" "$EXOCORTEX_DST/CLAUDE.md" "CLAUDE.md" || return 1
@@ -1796,9 +1823,61 @@ do_backup() {
   fi
 }
 
-# iwe_repo_dirs — печатает поддиректории с .git, дедуплицированные по реальному
-# физическому пути (repo-symlink алиас иначе считается отдельным репозиторием
-# наравне с оригиналом — двойной reindex одного источника, найдено 2026-07-17).
+# issue #1279: the same freeze condition as session-guard.sh FROZEN_CANONICAL_PATHS
+# and .claude/hooks/memory-exocortex-sync.sh (duplicated, KEEP IN SYNC): frozen by
+# default, IWE_FROZEN_CANONICAL_PATH="" disables it, another path freezes that one.
+# A run holding --canonical-owner (IWE_CANONICAL_OWNER, set by strategist.sh) may
+# write the canon directly.
+exocortex_canon_frozen() {
+  [ -z "${IWE_CANONICAL_OWNER:-}" ] || return 1
+  if [ -n "${IWE_FROZEN_CANONICAL_PATH+x}" ] && [ -z "$IWE_FROZEN_CANONICAL_PATH" ]; then
+    return 1
+  fi
+  local frozen="${IWE_FROZEN_CANONICAL_PATH:-$DS_STRATEGY}" frozen_real canon_real
+  frozen_real=$(cd "$frozen" 2>/dev/null && pwd -P) || return 1
+  canon_real=$(cd "$DS_STRATEGY" 2>/dev/null && pwd -P) || return 1
+  [ "$frozen_real" = "$canon_real" ]
+}
+
+# Frozen canon: a durable snapshot is taken synchronously (local, fast) and the
+# publish through an isolated worktree + ds-publish.sh runs in the background
+# (scripts/exocortex-publish.sh). The previous attempt's outcome is surfaced
+# here, so a failing publish is never hidden behind a green step.
+do_backup_frozen() {
+  local publisher="$SCRIPT_DIR/exocortex-publish.sh" rc=0 last=""
+  log "Шаг 1/3: Backup memory/ → снимок ($GOVERNANCE_REPO заморожен, канон не пишется)"
+  if [ ! -f "$publisher" ]; then
+    err "  exocortex-publish.sh не найден рядом с day-close.sh — бэкап памяти не выполнен"
+    return 1
+  fi
+  bash "$publisher" snapshot || rc=$?
+  case "$rc" in
+    0) ;;
+    "$RC_STEP_SKIPPED") return "$RC_STEP_SKIPPED" ;;
+    *) err "  снимок памяти не сохранён (код $rc)"; return 1 ;;
+  esac
+  local prev_rc=0
+  last=$(bash "$publisher" status 2>/dev/null) || prev_rc=$?
+  if bash "$publisher" publish --background >/dev/null 2>&1; then
+    log "  снимок памяти сохранён, публикация запущена в фоне (или поставлена в очередь)"
+  else
+    warn "  снимок памяти сохранён, но фоновую публикацию запустить не удалось — повтор при следующем запуске"
+    BACKUP_WARNING=true
+  fi
+  if [ "$prev_rc" -eq 3 ]; then
+    warn "  ⚠ $last"
+    BACKUP_WARNING=true
+  elif [ -n "$last" ]; then
+    log "  предыдущая попытка: $last"
+  fi
+  if $BACKUP_WARNING; then
+    return "$RC_BACKUP_WARNING"
+  fi
+}
+
+# iwe_repo_dirs — prints subdirectories with .git, deduplicated by real
+# physical path (a repo-symlink alias would otherwise count as a separate repository
+# alongside the original — a double reindex of one source, found 2026-07-17).
 iwe_repo_dirs() {
   local repo real seen=""
   for repo in "$@"; do
@@ -1812,7 +1891,7 @@ iwe_repo_dirs() {
   done
 }
 
-# --- Шаг 2: Knowledge-MCP reindex ---
+# --- Step 2: Knowledge-MCP reindex ---
 do_reindex() {
   log "Шаг 2/3: Knowledge-MCP reindex"
 
@@ -1826,8 +1905,8 @@ do_reindex() {
     return "$RC_STEP_SKIPPED"
   fi
 
-  # Маппинг dir→source+config из L2 (sources.json) и L4 (sources-personal.json)
-  # Python резолвит path→git-root, чтобы связать dirname репо с source-именем.
+  # Mapping dir→source+config from L2 (sources.json) and L4 (sources-personal.json)
+  # Python resolves path→git-root to link the repo dirname with the source name.
   local dir_map
   dir_map=$("$RESOLVED_PYTHON3" - "$SOURCES_JSON" "$SOURCES_PERSONAL_JSON" << 'PYEOF'
 import sys, json, os
@@ -1844,7 +1923,7 @@ for config_path in sys.argv[1:]:
 PYEOF
   ) || { warn "  Mapping build failed — пропуск reindex"; return 0; }
 
-  # Определяем, какие Pack/DS были изменены сегодня
+  # Determine which Pack/DS were changed today
   local l2_sources="" l4_sources=""
   while IFS= read -r repo; do
     local repo_name
@@ -1880,7 +1959,7 @@ PYEOF
   # stalled on a failed L4 while L2 had already indexed 3078/2116 docs).
   local l2_rc=0 l4_rc=0 ran=0 failed=0
 
-  # Вызов 1: L2 источники (sources.json — дефолт selective-reindex)
+  # Call 1: L2 sources (sources.json — the selective-reindex default)
   if [ -n "$l2_sources" ]; then
     log "  L2 источники:$l2_sources"
     ran=$((ran + 1))
@@ -1892,7 +1971,7 @@ PYEOF
     fi
   fi
 
-  # Вызов 2: L4 источники (sources-personal.json через SOURCES_CONFIG)
+  # Call 2: L4 sources (sources-personal.json via SOURCES_CONFIG)
   if [ -n "$l4_sources" ]; then
     log "  L4 источники:$l4_sources"
     ran=$((ran + 1))
@@ -1914,7 +1993,7 @@ PYEOF
   fi
 }
 
-# --- Шаг 3: Linear sync ---
+# --- Step 3: Linear sync ---
 do_linear() {
   log "Шаг 3/3: Linear sync"
 
@@ -1926,7 +2005,7 @@ do_linear() {
   "$LINEAR_SYNC"
 }
 
-# --- Шаг 4: Консолидация сессий дня (DAP1-B, WP-7) ---
+# --- Step 4: Consolidation of the day's sessions (DAP1-B, WP-7) ---
 do_session_consolidation() {
   log "Шаг 4/4: Консолидация сессий дня"
 
@@ -1939,8 +2018,8 @@ do_session_consolidation() {
   today=$(date +%Y-%m-%d)
   local month_dir
   month_dir=$(date +%Y-%m)
-  # issue #545: корень журналов — тем же контрактом, что писатель
-  # (session-guard.sh): MC-sessions после миграции, legacy иначе.
+  # issue #545: journals root — by the same contract as the writer
+  # (session-guard.sh): MC-sessions after migration, legacy otherwise.
   local sessions_base
   if ! sessions_base=$(iwe_sessions_dir); then
     warn "  IWE_SESSIONS_ROOT=${IWE_SESSIONS_ROOT:-} недоступен — консолидация читает legacy-путь"
@@ -1954,78 +2033,114 @@ do_session_consolidation() {
     return "$RC_STEP_SKIPPED"
   fi
 
-  # Сканируем meta.yaml для сессий сегодняшнего дня
-  local entries=()
-  while IFS= read -r meta; do
-    local session_dir
-    session_dir=$(dirname "$meta")
-    local session_id
-    session_id=$(basename "$session_dir")
+  # session-guard writes ordinary sessions as flat Markdown ORZ files. Peer
+  # sessions additionally have meta.yaml under YYYY-MM/DD/SESSION_ID. Read both
+  # formats once and let a valid meta.yaml replace its matching flat ORZ row.
+  local entries
+  if ! entries=$("$RESOLVED_PYTHON3" - "$sessions_root" "$today" <<'PY'
+from pathlib import Path
+import re
+import sys
 
-    # Читаем task_id и task_description из meta.yaml (python для YAML)
-    local task_id task_desc start_time
-    task_id=$("$RESOLVED_PYTHON3" -c "
-import sys, yaml
-with open('$meta') as f:
-    d = yaml.safe_load(f)
-print(d.get('task_id', '') or '')
-" 2>/dev/null || echo "")
-    task_desc=$("$RESOLVED_PYTHON3" -c "
-import sys, yaml
-with open('$meta') as f:
-    d = yaml.safe_load(f)
-desc = d.get('task_description', '') or ''
-print(desc[:80] + ('...' if len(desc) > 80 else ''))
-" 2>/dev/null || echo "")
-    start_time=$("$RESOLVED_PYTHON3" -c "
-import sys, yaml
-with open('$meta') as f:
-    d = yaml.safe_load(f)
-t = str(d.get('start_time', '') or '')
-print(t[11:16] if len(t) >= 16 else '')
-" 2>/dev/null || echo "")
-
-    # Только если task_id не пустой — WP-явная сессия
-    if [ -n "$task_id" ]; then
-      entries+=("| $start_time | $task_id | $task_desc |")
-    fi
-  done < <(find "$sessions_root" -maxdepth 2 -name "meta.yaml" 2>/dev/null \
-    | while IFS= read -r f; do
-        # Проверяем дату в meta.yaml
-        date_val=$("$RESOLVED_PYTHON3" -c "
 import yaml
-with open('$f') as fh:
-    d = yaml.safe_load(fh)
-print(str(d.get('date','') or ''))
-" 2>/dev/null || echo "")
-        if [ "$date_val" = "$today" ]; then
-          echo "$f"
-        fi
-      done | sort)
 
-  mkdir -p "$(dirname "$output_file")"
+root = Path(sys.argv[1])
+today = sys.argv[2]
+day = today[-2:]
+by_session = {}
 
-  if [ ${#entries[@]} -eq 0 ]; then
+
+def read_yaml(path, content):
+    try:
+        data = yaml.safe_load(content) or {}
+    except (OSError, yaml.YAMLError) as exc:
+        print(f"WARN: cannot parse session {path}: {exc}", file=sys.stderr)
+        return None
+    if not isinstance(data, dict):
+        print(f"WARN: session data is not a mapping: {path}", file=sys.stderr)
+        return None
+    return data
+
+
+def add_session(session_id, data, description):
+    if str(data.get("date", "")) != today:
+        return
+    wp = str(data.get("task_id") or data.get("wp") or "")
+    if not re.fullmatch(r"WP-[1-9][0-9]*", wp):
+        return
+    start = str(data.get("start_time") or "")
+    time = start[11:16] if len(start) >= 16 else "—"
+    description = re.sub(r"\s+", " ", str(description or "")).replace("|", r"\|")
+    if len(description) > 80:
+        description = description[:80] + "..."
+    by_session[session_id] = (time, wp, description)
+
+
+for path in sorted(root.glob(f"{today}-*.md")):
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        print(f"WARN: cannot read session {path}: {exc}", file=sys.stderr)
+        continue
+    if not lines or lines[0] != "---":
+        continue
+    try:
+        end = lines.index("---", 1)
+    except ValueError:
+        print(f"WARN: unclosed frontmatter: {path}", file=sys.stderr)
+        continue
+    data = read_yaml(path, "\n".join(lines[1:end]))
+    if data is None:
+        continue
+    title = next((line[2:] for line in lines[end + 1:] if line.startswith("# ")), "")
+    description = title.split(" — ", 1)[-1] if title else ""
+    add_session(str(data.get("session_id") or path.stem), data, description)
+
+# Both legacy YYYY-MM/SESSION_ID/meta.yaml and current YYYY-MM/DD/SESSION_ID/meta.yaml.
+meta_paths = sorted((*root.glob(f"{today}-*/meta.yaml"),
+                     *(root / day).glob(f"{today}-*/meta.yaml")))
+for path in meta_paths:
+    try:
+        data = read_yaml(path, path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"WARN: cannot read session {path}: {exc}", file=sys.stderr)
+        continue
+    if data is None:
+        continue
+    add_session(str(data.get("session_id") or path.parent.name), data,
+                data.get("task_description") or "")
+
+for session_id in sorted(by_session):
+    time, wp, description = by_session[session_id]
+    print(f"| {time} | {wp} | {description} |")
+PY
+  ); then
+    warn "  Консолидация сессий: не удалось прочитать журналы"
+    return 1
+  fi
+
+  if [ -z "$entries" ]; then
     log "  Нет WP-сессий за $today — sessions-today.md не записан"
     return 0
   fi
 
+  mkdir -p "$(dirname "$output_file")"
   {
     echo "<!-- sessions-today: $today — auto-generated by day-close.sh -->"
     echo "## Сессии дня $today"
     echo ""
     echo "| Время | РП | Задача |"
     echo "|-------|----|--------|"
-    for e in "${entries[@]}"; do
-      echo "$e"
-    done
+    printf '%s\n' "$entries"
     echo ""
   } > "$output_file"
 
-  log "  Записано ${#entries[@]} сессий → $(basename "$output_file")"
+  local count
+  count=$(printf '%s\n' "$entries" | wc -l | tr -d ' ')
+  log "  Записано $count сессий → $(basename "$output_file")"
 }
 
-# --- Лог ---
+# --- Log ---
 write_log() {
   local date_str
   date_str=$(date "+%Y-%m-%d %H:%M")
@@ -2035,6 +2150,14 @@ write_log() {
 
 # --- Main ---
 main() {
+  # Internal mode for scripts/exocortex-publish.sh: step 1 only, into the given
+  # snapshot directory instead of the canon; no day-close log line.
+  if [ "${1:-}" = "--exocortex-snapshot" ]; then
+    [ "$#" -eq 2 ] && [ -n "$2" ] || { err "Использование: day-close.sh --exocortex-snapshot DIR"; return 1; }
+    do_backup "$2"
+    return $?
+  fi
+
   local do_all=true
   local run_backup=false
   local run_reindex=false
@@ -2072,7 +2195,11 @@ main() {
 
   if $run_backup; then
     local backup_rc=0
-    do_backup || backup_rc=$?
+    if exocortex_canon_frozen; then
+      do_backup_frozen || backup_rc=$?
+    else
+      do_backup || backup_rc=$?
+    fi
     case "$backup_rc" in
       0)                     backup_status="ok" ;;
       "$RC_BACKUP_WARNING") backup_status="warn" ;;

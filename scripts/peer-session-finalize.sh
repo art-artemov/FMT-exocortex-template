@@ -1,7 +1,7 @@
 #!/bin/bash
-# peer-session-finalize.sh — finalize / interrupt для peer-сессий (DP.SC.154)
-# Замена deprecated peer-conversation.sh --finalize / --interrupt
-# Работает со структурой скиллов: sessions/YYYY-MM/DD/<id>/
+# peer-session-finalize.sh — finalize / interrupt for peer sessions (DP.SC.154)
+# Replacement for the deprecated peer-conversation.sh --finalize / --interrupt
+# Works with the skills structure: sessions/YYYY-MM/DD/<id>/
 #
 # Usage:
 #   bash scripts/peer-session-finalize.sh --finalize <session_id>
@@ -13,13 +13,56 @@
 set -euo pipefail
 
 IWE_DIR="${IWE_DIR:-$HOME/IWE}"
-# Имя governance-репо из окружения: жёстко зашитое ломает файл у пользователя
-# шаблона с другим именем репозитория (validator FMT поймал при доставке 03.08).
+# Governance repo name from the environment: a hard-coded one breaks the file for a template
+# user with a different repository name (the FMT validator caught it on delivery 03.08).
 REPO_DIR="${IWE_DIR}/${IWE_GOVERNANCE_REPO:-DS-strategy}"
 SESSIONS_DIR="${REPO_DIR}/sessions"
 INDEX_FILE="${SESSIONS_DIR}/00-index.md"
+INDEX_LOCK_DIR="${INDEX_FILE}.lock"
+INDEX_LOCK_TIMEOUT="${IWE_INDEX_LOCK_TIMEOUT:-10}"
 
 _now_iso() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# WP-529 ArchGate (option B, 20.10.2026): awk reads $INDEX_FILE, builds
+# $tmpf, then mv replaces the file -- rename is atomic, but the whole sequence
+# "read -> modify -> replace" is not atomic. Two parallel finalize/interrupt calls
+# on the same governance repo (confirmed mechanically by a Kimi+Codex peer
+# session, not by assumption) may both read the same
+# version of the index -- the second mv silently overwrites the first one's edit. The same
+# reclaim-by-pid-liveness scheme as acquire_captures_write_lock()
+# (strategist.sh/extractor.sh, issue #840): with no dependency on flock(1),
+# which may be absent on a fresh macOS without homebrew/util-linux.
+_acquire_index_lock() {
+  local waited=0
+  while true; do
+    if mkdir "$INDEX_LOCK_DIR" 2>/dev/null; then
+      printf '%s\n' "$$" > "$INDEX_LOCK_DIR/pid"
+      return 0
+    fi
+    local owner_pid=""
+    [[ -f "$INDEX_LOCK_DIR/pid" ]] && owner_pid="$(tr -d '[:space:]' < "$INDEX_LOCK_DIR/pid")"
+    # The same asymmetry as in acquire_captures_write_lock(): we take the lock
+    # only if the pid file exists and is non-empty. An empty/missing pid file
+    # means another writer's mkdir has already fired, but its printf pid has not yet
+    # run -- taking the lock here would steal it
+    # from a live holder (TOCTOU), i.e. bring back the same race the lock is supposed to close.
+    if [[ -n "$owner_pid" ]] && { ! [[ "$owner_pid" =~ ^[0-9]+$ ]] || ! kill -0 "$owner_pid" 2>/dev/null; }; then
+      rm -f "$INDEX_LOCK_DIR/pid"
+      rmdir "$INDEX_LOCK_DIR" 2>/dev/null
+      continue
+    fi
+    if (( waited >= INDEX_LOCK_TIMEOUT )); then
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+}
+
+_release_index_lock() {
+  rm -f "$INDEX_LOCK_DIR/pid" 2>/dev/null
+  rmdir "$INDEX_LOCK_DIR" 2>/dev/null || true
+}
 
 _usage() {
   echo "Usage: peer-session-finalize.sh --finalize <session_id>"
@@ -118,11 +161,11 @@ if [[ "$VALIDATE" == true ]]; then
   _require_field "status" "$META"
   _require_field "writer_agent" "$META"
 
-  # bug-2026-07-10 (Day Close, PRODSYNC2-round5-session): агент буквально
-  # написал в meta.yaml незаполненный shell-плейсхолдер вместо реального
-  # времени ("2026-07-10T$(date +%H:%M:%SZ)") — YAML не выполняет команды,
-  # значение попало в файл как есть и молча ломало любой пересчёт
-  # длительности сессии. Ловим любой `$(` в start_time/end_time до записи.
+  # bug-2026-07-10 (Day Close, PRODSYNC2-round5-session): the agent literally
+  # wrote an unfilled shell placeholder into meta.yaml instead of the real
+  # time ("2026-07-10T$(date +%H:%M:%SZ)") — YAML does not execute commands,
+  # the value landed in the file as is and silently broke any recalculation of
+  # session duration. We catch any `$(` in start_time/end_time before writing.
   for field in start_time end_time; do
     val="$(grep -E "^${field}:" "$META" | head -1)"
     if [[ "$val" == *'$('* ]]; then
@@ -131,10 +174,10 @@ if [[ "$VALIDATE" == true ]]; then
     fi
   done
 
-  # bug-2026-07-10: два meta.yaml в этой же папке за 10.07 содержали
-  # start_time позже end_time (ручной ввод времени, не программный) —
-  # portит расчёт мультипликатора дня (Day Close §6). Сравнение строк ISO
-  # 8601 с одинаковым форматом безопасно и без внешних зависимостей.
+  # bug-2026-07-10: two meta.yaml files in this same folder for 10.07 contained
+  # start_time later than end_time (manual time entry, not programmatic) —
+  # spoiling the day multiplier calculation (Day Close §6). Comparing ISO
+  # 8601 strings of the same format is safe and needs no external dependencies.
   start_val="$(grep -E '^start_time:' "$META" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '"'"'"' ')"
   end_val="$(grep -E '^end_time:' "$META" | head -1 | sed 's/^[^:]*:[[:space:]]*//' | tr -d '"'"'"' ')"
   if [[ -n "$start_val" && -n "$end_val" && "$start_val" != *'$('* && "$end_val" != *'$('* ]]; then
@@ -182,23 +225,25 @@ if [[ "$ACTION" == "--interrupt" ]]; then
 
   # Update index: status → interrupted, report → —
   if [[ -f "$INDEX_FILE" ]]; then
-    tmpf="$(mktemp)"
-    awk -v id="$SESSION_ID" '
-      $0 ~ id {
-        gsub(/\| (started|completed|interrupted) \|/, "| interrupted |")
-        gsub(/\| \[?report\.md[^|]*\|/, "| — |")
-        # If no report link column, ensure last column is —
-        if ($0 !~ /\| — \| *$/) { sub(/\| *$/, "| — |") }
-        print
-        next
-      }
-      { print }
-    ' "$INDEX_FILE" > "$tmpf"
     if [[ "$DRY_RUN" == true ]]; then
       echo "[DRY-RUN] Обновлю $INDEX_FILE: статус прерван, report удалён"
-      rm "$tmpf"
-    else
+    elif _acquire_index_lock; then
+      tmpf="$(mktemp)"
+      awk -v id="$SESSION_ID" '
+        $0 ~ id {
+          gsub(/\| (started|completed|interrupted) \|/, "| interrupted |")
+          gsub(/\| \[?report\.md[^|]*\|/, "| — |")
+          # If no report link column, ensure last column is —
+          if ($0 !~ /\| — \| *$/) { sub(/\| *$/, "| — |") }
+          print
+          next
+        }
+        { print }
+      ' "$INDEX_FILE" > "$tmpf"
       mv "$tmpf" "$INDEX_FILE"
+      _release_index_lock
+    else
+      echo "⚠️  Не удалось получить блокировку индекса за ${INDEX_LOCK_TIMEOUT}с — $INDEX_FILE не обновлён (status сессии в meta.yaml уже верный)" >&2
     fi
   fi
 
@@ -398,21 +443,23 @@ PYEOF
 
   # Update index
   if [[ -f "$INDEX_FILE" ]]; then
-    tmpf="$(mktemp)"
-    awk -v id="$SESSION_ID" -v link="[report.md](${MONTH}/${DAY}/${SESSION_ID}/report.md)" '
-      $0 ~ id {
-        gsub(/\| (started|interrupted) \|/, "| completed |")
-        gsub(/\| — \|/, "| " link " |")
-        print
-        next
-      }
-      { print }
-    ' "$INDEX_FILE" > "$tmpf"
     if [[ "$DRY_RUN" == true ]]; then
       echo "[DRY-RUN] Обновлю $INDEX_FILE: статус завершён, report.md добавлен"
-      rm "$tmpf"
-    else
+    elif _acquire_index_lock; then
+      tmpf="$(mktemp)"
+      awk -v id="$SESSION_ID" -v link="[report.md](${MONTH}/${DAY}/${SESSION_ID}/report.md)" '
+        $0 ~ id {
+          gsub(/\| (started|interrupted) \|/, "| completed |")
+          gsub(/\| — \|/, "| " link " |")
+          print
+          next
+        }
+        { print }
+      ' "$INDEX_FILE" > "$tmpf"
       mv "$tmpf" "$INDEX_FILE"
+      _release_index_lock
+    else
+      echo "⚠️  Не удалось получить блокировку индекса за ${INDEX_LOCK_TIMEOUT}с — $INDEX_FILE не обновлён (status сессии в meta.yaml уже верный)" >&2
     fi
   fi
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
+# SNAPSHOT — synced manually via script-promote.sh from FMT-exocortex-template/scripts/. Do not edit here directly.
 # routing: library  deterministic=true
 # lib/common.sh — shared shell helpers for IWE template scripts.
 # Source, don't execute: `source "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"`
 #
-# WP-5 Ubuntu-portability audit (2026-07-22, факт #5): 132 scripts, no shared
+# WP-5 Ubuntu-portability audit (2026-07-22, fact #5): 132 scripts, no shared
 # library — IWE workspace root was resolved 5 different ways (IWE_WORKSPACE/
 # IWE_ROOT/IWE_ROOT_ARG env vars, in varying precedence), governance-repo
 # default duplicated with 4 variable names, and Telegram notification existed
@@ -11,11 +12,11 @@
 # TELEGRAM_BOT_TOKEN directly) — some alert paths silently dropped messages
 # because a caller used a convention no other caller tested. Pilot migration
 # (this file) covers day-open-pipeline.sh + day-open-preflight.sh; the other
-# ~40 call sites are backlog (WP-5 П4), not blind-swept in one pass.
+# ~40 call sites are backlog (WP-5 P4), not blind-swept in one pass.
 
-# iwe_env_get FILE KEY — безопасно читает одно KEY=VALUE без source/eval.
-# Поддерживаются только shell-подобные строки с простым ключом; внешние кавычки
-# снимаются, команды и подстановки никогда не исполняются.
+# iwe_env_get FILE KEY — safely reads a single KEY=VALUE without source/eval.
+# Only shell-like lines with a simple key are supported; outer quotes
+# are stripped, commands and substitutions are never executed.
 iwe_env_get() {
   local file="${1:-}" key="${2:-}" line value
   [ -f "$file" ] || return 1
@@ -64,7 +65,7 @@ iwe_resolve_root() {
 # iwe_sha256 — sha256 of stdin, printed alone (no filename column).
 # GNU-first (sha256sum, coreutils — on every Linux, absent on macOS by
 # default) then shasum -a 256 (macOS default, also present on Linux only if
-# perl's Digest::SHA happens to be installed — WP-5 Ubuntu-audit факт #4:
+# perl's Digest::SHA happens to be installed — WP-5 Ubuntu-audit fact #4:
 # 3 callers used bare `shasum -a 256` with no fallback, so a minimal Ubuntu
 # install without it silently broke dedup/hash checks depending on it).
 # lessons_stat_f_gnu_bsd_fallback_order.md: GNU-first is deliberate — the
@@ -77,8 +78,21 @@ iwe_sha256() {
   fi
 }
 
-# iwe_file_mtime_date FILE — дата YYYY-MM-DD без смешивания stdout двух
-# несовместимых stat-реализаций. GNU и BSD ветки выбираются явно (#300).
+# iwe_md5 — md5 of stdin, printed alone (no filename column). Same GNU-first
+# rationale as iwe_sha256 (issue #1108): md5sum is coreutils (every Linux,
+# absent on macOS by default); BSD `md5` with no file argument reads stdin
+# and already prints just the bare hex digest (verified: no "MD5(-)=" prefix
+# the way `md5 -p`/named-file invocations add one), so it needs no awk/cut.
+iwe_md5() {
+  if command -v md5sum >/dev/null 2>&1; then
+    md5sum | awk '{print $1}'
+  else
+    md5
+  fi
+}
+
+# iwe_file_mtime_date FILE — date YYYY-MM-DD without mixing the stdout of two
+# incompatible stat implementations. GNU and BSD branches are chosen explicitly (#300).
 iwe_file_mtime_date() {
   local file="$1" epoch
   if stat --version >/dev/null 2>&1; then
@@ -95,21 +109,23 @@ iwe_resolve_governance_repo() {
   echo "${1:-${IWE_GOVERNANCE_REPO:-DS-strategy}}"
 }
 
-# iwe_sessions_dir — корень журналов сессий для ЧИТАТЕЛЕЙ (issue #545).
-# Тот же контракт, что у писателя (session-guard.sh resolve_orz_sessions_dir,
-# порт WP-526 Ф2): писатель переключается на MC-sessions после миграции, а
-# читатели, жёстко смотрящие в legacy-путь, теряли перенос со вчера на
-# мигрированной установке — и «не найдено» было неотличимо от «нечего
-# находить».
-#   1. IWE_SESSIONS_ROOT задан явно → он; каталог обязан существовать, иначе
-#      return 1 (явный override — осознанный выбор, молчаливый обход скрыл бы
-#      реальную расконфигурацию; решение о WARN/пропуске — у читателя).
-#   2. Существует $IWE_ROOT/MC-sessions → он (мигрированная установка).
-#   3. Иначе — legacy $IWE_ROOT/<governance-repo>/sessions. Имя репозитория:
-#      GOVERNANCE_REPO (старший override, семантика day-close.sh) >
+# iwe_sessions_dir [GOVERNANCE_WORKTREE] — root of session logs (issues #545, #1256).
+# The same contract as the writer (session-guard.sh resolve_orz_sessions_dir,
+# port of WP-526 Phase 2): the writer switches to MC-sessions after migration, and
+# readers hard-wired to the legacy path lost the carry-over from yesterday on a
+# migrated install — and «not found» was indistinguishable from «nothing to
+# find».
+#   1. IWE_SESSIONS_ROOT is set explicitly → it; the directory must exist, otherwise
+#      return 1 (an explicit override is a deliberate choice, a silent bypass would hide
+#      a real misconfiguration; the WARN/skip decision is the reader's).
+#   2. $IWE_ROOT/MC-sessions exists → it (migrated install).
+#   3. Otherwise — legacy <GOVERNANCE_WORKTREE>/sessions, if the active working
+#      copy is passed as an argument (an absolute path, verified by the caller).
+#      Without an argument $IWE_ROOT/<governance-repo>/sessions is kept. Repository name:
+#      GOVERNANCE_REPO (the senior override, day-close.sh semantics) >
 #      IWE_GOVERNANCE_REPO > DS-strategy.
-# В отличие от писательского резолвера — без side-эффектов: ничего не создаёт
-# и не падает, git-валидность не требует (читателю достаточно файлов).
+# Unlike the writer resolver — without side effects: creates nothing
+# and does not fail, git validity is not required (files are enough for the reader).
 iwe_sessions_dir() {
   local root="${IWE_ROOT:-${IWE_WORKSPACE:-}}"
   if [ -n "${IWE_SESSIONS_ROOT:-}" ]; then
@@ -117,12 +133,16 @@ iwe_sessions_dir() {
     printf '%s\n' "$IWE_SESSIONS_ROOT"
     return 0
   fi
-  # Пустой root (ни IWE_ROOT, ни IWE_WORKSPACE) — та же честная ошибка, что у
-  # сломанного явного override: иначе функция вернула бы путь от корня
-  # файловой системы, прочитанный как валидный.
+  # An empty root (neither IWE_ROOT nor IWE_WORKSPACE) — the same honest error as for a
+  # broken explicit override: otherwise the function would return a path from the filesystem
+  # root, read as valid.
   [ -n "$root" ] || return 1
   if [ -d "$root/MC-sessions" ]; then
     printf '%s\n' "$root/MC-sessions"
+    return 0
+  fi
+  if [ -n "${1:-}" ]; then
+    printf '%s\n' "${1%/}/sessions"
     return 0
   fi
   printf '%s\n' "$root/$(iwe_resolve_governance_repo "${GOVERNANCE_REPO:-}")/sessions"
@@ -132,7 +152,7 @@ iwe_sessions_dir() {
 # extractor) registered AND active with the launcher this OS actually uses?
 # Returns 0 (active) / 1 (not active).
 #
-# WP-5 Ubuntu-audit факт #4: day-open-scaffold.sh checked `launchctl list`
+# WP-5 Ubuntu-audit fact #4: day-open-scaffold.sh checked `launchctl list`
 # unconditionally — on Linux launchctl doesn't exist, so the check silently
 # saw empty output and reported the scheduler as down (🔴) every single day
 # even when the equivalent systemd --user timer was running fine. Two
@@ -278,7 +298,7 @@ tg_notify() {
 # callers keep their own `|| abort "..."` / cleanup-trap flow.
 #
 # Folded in from the formerly-standalone scripts/safe-pull.sh (found with
-# zero callers in the same audit, факт #5) rather than deleted: this exact
+# zero callers in the same audit, fact #5) rather than deleted: this exact
 # failure mode is a live, open risk this pilot's own sessions hit twice on
 # 2026-07-23 (see feedback_parallel_agents_shared_workdir_git_race.md), and
 # several callers were still doing a naive `git pull --rebase`.
@@ -419,6 +439,35 @@ iwe_calendar_source() {
   esac
 }
 
+# iwe_timezone [PARAMS_FILE] — the install's IANA time zone (issue #1410):
+# the `timezone:` key of params.yaml, e.g. Asia/Vladivostok. A missing key or
+# file prints nothing, meaning "use the host's system zone" (/etc/localtime) —
+# callers set TZ only when this prints a value. A value with no zoneinfo file
+# behind it warns on stderr and also prints nothing: glibc silently treats an
+# unknown TZ as UTC, which is worse than the system zone.
+iwe_timezone() {
+  local file="${1:-}" value
+  [ -f "$file" ] || return 0
+  value=$(grep -E '^timezone:' "$file" 2>/dev/null | head -1 \
+    | sed -E 's/^timezone:[[:space:]]*//; s/[[:space:]]+#.*$//; s/[[:space:]]+$//; s/^["'"'"']//; s/["'"'"']$//')
+  [ -n "$value" ] || return 0
+  local zdir found_db=false
+  for zdir in ${TZDIR:+"$TZDIR"} /usr/share/zoneinfo /etc/zoneinfo /var/db/timezone/zoneinfo /usr/lib/zoneinfo; do
+    [ -d "$zdir" ] || continue
+    found_db=true
+    if [ -f "$zdir/$value" ]; then
+      echo "$value"
+      return 0
+    fi
+  done
+  # No zoneinfo database at all (e.g. Git Bash): trust the value as given.
+  if [ "$found_db" = false ]; then
+    echo "$value"
+    return 0
+  fi
+  echo "WARN: params.yaml: timezone «${value}» не найден в базе часовых поясов, использую системный" >&2
+}
+
 # iwe_heading_style [PARAMS_FILE] — DayPlan/WeekPlan section heading style
 # (issue #496): details (default) uses <details><summary> per formatting.md
 # (collapsible in GitHub/VS Code); markdown uses `## ` headings instead
@@ -435,7 +484,7 @@ iwe_heading_style() {
     ''|details) echo details ;;
     markdown) echo "$value" ;;
     *)
-      # ${value} not $value before the closing guillemet: bash's parameter-
+      # `${value}` not `$value` before the closing guillemet: bash's parameter-
       # name scanner can swallow the first byte of a following multibyte UTF-8
       # character as part of the variable name (found running this function
       # under `set -u`: "value<replacement-char>: unbound variable" — the same
@@ -492,4 +541,45 @@ iwe_scheduler_model() {
     return 1
   fi
   printf '%s\n' "$value"
+}
+
+# iwe_timeout DURATION CMD [ARGS...] — portable `timeout`. Delegates to the
+# real timeout(1) when present (GNU coreutils on every Linux, Homebrew
+# coreutils on macOS); falls back to a perl polyfill when it's missing
+# (stock macOS with no Homebrew — issue #1006, re-found for a 4th call site
+# by #1108). Centralized here instead of a 4th inline copy-paste — three
+# scripts (roles/extractor/scripts/extractor.sh, scripts/active-wp-sweep.sh,
+# roles/strategist/scripts/strategist.sh) each still carry their own inline
+# copy of the #1006 fix predating this helper; left as-is (migrating them is
+# out of scope for #1108) but any new caller should use this instead of a
+# 5th copy. Same exit-code contract as GNU timeout: 124 on an actual
+# timeout, otherwise the child's own exit status (128+signal if the child
+# was killed by a signal, matching how the shell itself reports that case).
+iwe_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$@"
+    return $?
+  fi
+  local duration="$1"; shift
+  perl -e '
+      my $timeout = shift @ARGV;
+      my $timed_out = 0;
+      my $pid = fork();
+      if ($pid == 0) { exec @ARGV; die "exec failed: $!"; }
+      eval {
+          local $SIG{ALRM} = sub { $timed_out = 1; die "timeout\n"; };
+          alarm $timeout;
+          waitpid($pid, 0);
+          alarm 0;
+      };
+      if ($timed_out) {
+          kill "TERM", $pid;
+          select(undef, undef, undef, 0.5);
+          kill "KILL", $pid;
+          waitpid($pid, 0);
+          exit 124;
+      }
+      # A child ended by a signal reports 128+signal, like the shell does.
+      exit(($? & 127) ? 128 + ($? & 127) : ($? >> 8));
+  ' "$duration" "$@"
 }

@@ -1,28 +1,35 @@
 #!/bin/bash
-# notify.sh — единый dispatch уведомлений экзокортекса
+# notify.sh — single dispatch of exocortex notifications
 #
-# Использование:
-#   notify.sh <agent> <scenario>
+# Usage:
+#   notify.sh [--require-delivery] <agent> <scenario>
 #
-# Примеры:
+# --require-delivery: exit 0 ONLY if Telegram confirmed delivery. Without the flag
+# behavior is as before (no token or a not-ok response - exit 0, text only in stdout),
+# so the caller cannot tell from the exit code whether the message arrived. Codes with the flag:
+#   3 - TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID not configured
+#   4 - Telegram did not confirm sending
+#   5 - message is empty, nothing to send
+#
+# Examples:
 #   notify.sh strategist day-plan
 #   notify.sh extractor inbox-check
 #
-# Шаблоны: templates/<agent>.sh
+# Templates: templates/<agent>.sh
 
 set -e
 
-# #169: эмодзи (🚦🔴🟡🟢⚫) из DayPlan ломают python3 (json.dumps/html.escape) при локали C/POSIX
-# — UnicodeEncodeError: surrogates not allowed. Форсим UTF-8 для всех python3 в процессе,
-# включая sourced-шаблон (escape_html, urllib.quote).
+# #169: emoji (🚦🔴🟡🟢⚫) from the DayPlan break python3 (json.dumps/html.escape) under the C/POSIX locale
+# — UnicodeEncodeError: surrogates not allowed. Force UTF-8 for all python3 in the process,
+# including the sourced template (escape_html, urllib.quote).
 export PYTHONUTF8=1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# #169: scheduler.sh зовёт notify.sh из FMT (read-only), а FMT-шаблоны держат неразрешённые
-# {{WORKSPACE_DIR}}/{{GOVERNANCE_REPO}} → путь к DayPlan не резолвится, сообщение пустое.
-# Берём шаблоны из .iwe-runtime, куда build-runtime.sh подставил реальные пути
-# (runtime-overlay.yaml: templates/*.sh в списке substituted). Якорь: IWE_RUNTIME → IWE_WORKSPACE → $HOME/IWE.
+# #169: scheduler.sh calls notify.sh from FMT (read-only), and FMT templates hold unresolved
+# {{WORKSPACE_DIR}}/{{GOVERNANCE_REPO}} -> the path to the DayPlan is not resolved, the message is empty.
+# Take templates from .iwe-runtime, where build-runtime.sh substituted the real paths
+# (runtime-overlay.yaml: templates/*.sh in the substituted list). Anchor: IWE_RUNTIME -> IWE_WORKSPACE -> $HOME/IWE.
 RUNTIME_TEMPLATES="${IWE_RUNTIME:-${IWE_WORKSPACE:-$HOME/IWE}/.iwe-runtime}/roles/synchronizer/scripts/templates"
 if [ -z "${TEMPLATES_DIR:-}" ]; then
     if [ -d "$RUNTIME_TEMPLATES" ]; then
@@ -34,24 +41,31 @@ if [ -z "${TEMPLATES_DIR:-}" ]; then
 fi
 ENV_FILE="$HOME/.config/aist/env"
 
+REQUIRE_DELIVERY=0
+if [ "${1:-}" = "--require-delivery" ]; then
+    REQUIRE_DELIVERY=1
+    shift
+fi
+
 AVAILABLE=$(ls "$TEMPLATES_DIR"/*.sh 2>/dev/null | xargs -I{} basename {} .sh | tr '\n' '|' | sed 's/|$//')
 AGENT="${1:?Ошибка: укажи агента (${AVAILABLE:-нет шаблонов})}"
 SCENARIO="${2:?Ошибка: укажи сценарий}"
 
-# Загрузка env
+# Load env
 if [ -f "$ENV_FILE" ]; then
     set -a
     source "$ENV_FILE"
     set +a
 fi
 
-# Проверка env vars
+# Check env vars
 if [ -z "${TELEGRAM_BOT_TOKEN:-}" ] || [ -z "${TELEGRAM_CHAT_ID:-}" ]; then
     echo "SKIP: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set (configure ~/.config/aist/env)"
+    [ "$REQUIRE_DELIVERY" -eq 1 ] && exit 3
     exit 0
 fi
 
-# Отправка в Telegram
+# Send to Telegram
 send_telegram() {
     local text="$1"
     local buttons="${2:-[]}"
@@ -90,10 +104,12 @@ send_telegram() {
     else
         echo "Telegram send FAILED: $AGENT/$SCENARIO"
         echo "Response: $response"
+        [ "$REQUIRE_DELIVERY" -eq 1 ] && return 4
     fi
+    return 0
 }
 
-# Загружаем шаблон агента
+# Load the agent template
 TEMPLATE="$TEMPLATES_DIR/$AGENT.sh"
 if [ ! -f "$TEMPLATE" ]; then
     echo "ERROR: Template not found: $TEMPLATE" >&2
@@ -106,7 +122,17 @@ MESSAGE=$(build_message "$SCENARIO")
 BUTTONS=$(build_buttons "$SCENARIO" 2>/dev/null || echo "[]")
 
 if [ -n "$MESSAGE" ]; then
-    send_telegram "$MESSAGE" "$BUTTONS"
+    # Without the flag send_telegram stays a plain command, so `set -e` behaves as it
+    # always did (a curl failure ends the script with curl's code). With the flag the
+    # `||` is deliberate: the failure must reach the exit code as 4, not as curl's code.
+    if [ "$REQUIRE_DELIVERY" -eq 1 ]; then
+        send_telegram "$MESSAGE" "$BUTTONS" || exit $?
+    else
+        send_telegram "$MESSAGE" "$BUTTONS"
+    fi
 else
     echo "Empty message for $AGENT/$SCENARIO, skip"
+    if [ "$REQUIRE_DELIVERY" -eq 1 ]; then
+        exit 5
+    fi
 fi

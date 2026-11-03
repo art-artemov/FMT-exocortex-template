@@ -1,25 +1,28 @@
 #!/usr/bin/env bash
 # routing: utility  deterministic=true
 # see DP.SC.159, DP.ROLE.059
-# iwe-backup-run.sh — регулярный зашифрованный бэкап источников по расписанию
+# iwe-backup-run.sh — regular scheduled encrypted backup of the sources
 #
-# WP-7 Ф237в, 2026-10-16 (пир-сессия 2026-10-16-18-iwe-template-backup).
+# WP-7 Phase 237в, 2026-10-16 (peer-session 2026-10-16-18-iwe-template-backup).
 #
-# ОБЕЩАНИЕ: снять снимок всех источников из iwe-backup-sources.yaml (tier0 +
-# tier1 всегда; tier2 — при --with-optional) в то же зашифрованное хранилище,
-# что использует iwe-backup-protect.sh (общий репозиторий = дедупликация
-# между регулярными и защитными снимками), затем применить политику хранения
-# (согласована пир-сессией: 7 дневных / 4 недельных / 6 месячных для тега
-# `scheduled`; тег `protect` не трогается этим скриптом вовсе).
+# PROMISE: take a snapshot of all sources from iwe-backup-sources.yaml (tier0 +
+# tier1 always; tier2 — with --with-optional) into the same encrypted store
+# used by iwe-backup-protect.sh (a shared repository = deduplication
+# between regular and protective snapshots), then apply the retention policy
+# (agreed by the peer session: 7 daily / 4 weekly / 6 monthly for the tag
+# `scheduled`; the `protect` tag is not touched by this script at all).
 #
-# Расписание — вне этого скрипта (launchd plist, см. templates/iwe-backup-run.plist).
+# The schedule lives outside this script: the daily run is done by the Synchronizer
+# role's scheduler (roles/synchronizer/scripts/scheduler.sh) via scripts/iwe-backup.sh,
+# restic has no separate schedule file. Without the installed role — manual only.
+# Engine choice (tar/restic) and the backup contract are in scripts/iwe-backup.sh.
 #
 # USAGE:
 #   iwe-backup-run.sh [--with-optional]
 #
 # EXIT CODES:
-#   0 — снимок снят и подтверждён (ротация могла частично не удаться — см. stderr)
-#   1 — снимок не удался/не подтверждён
+#   0 — snapshot taken and confirmed (rotation may have partially failed — see stderr)
+#   1 — snapshot failed/not confirmed
 
 set -euo pipefail
 
@@ -57,13 +60,14 @@ if [ ! -f "$SOURCES_FILE" ]; then
     exit 1
 fi
 
-# Тот же разбор, что в iwe-backup-check.sh (раздел 4) — печатает только
-# существующие пути, т.к. restic backup отказывает на несуществующем пути.
-PATHS_TSV=$(HOME="$HOME" SOURCES_FILE="$SOURCES_FILE" SOURCES_OVERRIDE="$SOURCES_OVERRIDE" WITH_OPTIONAL="$WITH_OPTIONAL" python3 <<'PYEOF'
+# The same parsing as in iwe-backup-check.sh (section 4) — prints only
+# existing paths, since restic backup refuses on a nonexistent path.
+PATHS_TSV=$(HOME="$HOME" WORKSPACE_ROOT="$IWE_ROOT" SOURCES_FILE="$SOURCES_FILE" SOURCES_OVERRIDE="$SOURCES_OVERRIDE" WITH_OPTIONAL="$WITH_OPTIONAL" python3 <<'PYEOF'
 import os
 import yaml
 
 home = os.environ["HOME"]
+workspace = os.environ["WORKSPACE_ROOT"]
 with_optional = os.environ["WITH_OPTIONAL"] == "1"
 
 
@@ -86,12 +90,20 @@ tiers = ["tier0_unique", "tier1_scheduled"]
 if with_optional:
     tiers.append("tier2_optional")
 
-for tier in tiers:
-    entries = list(defaults.get(tier, [])) + list(override.get(tier, []))
-    for entry in entries:
-        path = entry.get("path", "").replace("${HOME}", home)
-        if os.path.exists(path):
-            print(path)
+# Same merge as iwe-backup-check.sh: an override entry with the same path
+# replaces the default one; `tierX:` with an empty value is an empty list.
+sources = {}
+for layer in (defaults, override):
+    for tier in tiers:
+        for entry in layer.get(tier) or []:
+            raw_path = entry.get("path") or ""
+            if not raw_path:
+                continue
+            path = raw_path.replace("${HOME}", home).replace("${WORKSPACE_DIR}", workspace)
+            sources[os.path.realpath(path)] = path
+for path in sources.values():
+    if os.path.exists(path):
+        print(path)
 PYEOF
 ) || PATHS_TSV=""
 
@@ -100,7 +112,13 @@ if [ -z "$PATHS_TSV" ]; then
     exit 1
 fi
 
-mapfile -t PATHS <<< "$PATHS_TSV"
+# bash 3.2 (macOS /bin/bash) has no mapfile
+PATHS=()
+while IFS= read -r source_path; do
+    if [ -n "$source_path" ]; then
+        PATHS+=("$source_path")
+    fi
+done <<< "$PATHS_TSV"
 
 PROTECT_DIR="$HOME/.iwe-backup"
 REPO_DIR="$PROTECT_DIR/protect-repo"
@@ -115,6 +133,37 @@ if [ ! -s "$KEY_FILE" ]; then
     mv "$KEY_TMP" "$KEY_FILE"
     echo "ℹ️  [backup-run] создан новый ключ шифрования защитного хранилища: $KEY_FILE" >&2
     echo "    Сохраните резервную копию этого файла отдельно — его потеря делает все будущие снимки нечитаемыми." >&2
+fi
+
+# A key readable by other users, owned by someone else or replaced by a symlink makes
+# the encrypted store only as safe as that file. Stop BEFORE restic touches it; the
+# content of the key is never printed.
+key_file_unsafe() {  # prints the reason and returns 0 when the key file must not be used
+    local f="$1" mode owner
+    if [ -L "$f" ]; then
+        echo "файл ключа - символьная ссылка"
+        return 0
+    fi
+    if [ "$(uname -s)" = Darwin ]; then
+        read -r mode owner < <(stat -f '%Lp %u' "$f")
+    else
+        read -r mode owner < <(stat -c '%a %u' "$f")
+    fi
+    if [ "$owner" != "$(id -u)" ]; then
+        echo "владелец файла ключа - другой пользователь"
+        return 0
+    fi
+    if [ "${mode: -2}" != "00" ]; then
+        echo "файл ключа доступен другим пользователям (права $mode)"
+        return 0
+    fi
+    return 1
+}
+
+if KEY_PROBLEM="$(key_file_unsafe "$KEY_FILE")"; then
+    echo "❌ [backup-run] небезопасный файл ключа: $KEY_PROBLEM — снимок не снят." >&2
+    echo "    Исправить: chmod 600 \"$KEY_FILE\" (владелец - вы, не ссылка). Содержимое ключа не показывается." >&2
+    exit 1
 fi
 
 export RESTIC_REPOSITORY="$REPO_DIR"
@@ -166,10 +215,10 @@ fi
 
 echo "✅ [backup-run] снимок $SNAPSHOT_ID подтверждён" >&2
 
-# Ротация — только по тегу `scheduled`: снимки protect (тег `protect`)
-# этим вызовом не затрагиваются (другая политика хранения, Ф237б).
-# Отказ ротации не отменяет уже успешный снимок — сообщить и выйти 0:
-# политика хранения это гигиена места, не гарантия сохранности данных.
+# Rotation — only by the `scheduled` tag: protect snapshots (the `protect` tag)
+# are not affected by this call (a different retention policy, Phase 237б).
+# A rotation failure does not cancel an already successful snapshot — report and exit 0:
+# the retention policy is storage hygiene, not a data-safety guarantee.
 FORGET_LOG="$(mktemp)" || FORGET_LOG="/dev/null"
 if ! restic forget --tag scheduled --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune >"$FORGET_LOG" 2>&1; then
     echo "⚠️  [backup-run] ротация (forget --prune) не удалась — снимок всё равно подтверждён, место не освобождено" >&2

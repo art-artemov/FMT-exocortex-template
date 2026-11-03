@@ -1,22 +1,22 @@
 #!/bin/bash
-# scheduler.sh — центральный диспетчер роли Synchronizer
+# scheduler.sh — central dispatcher of the Synchronizer role
 #
-# Lifecycle: `roles/synchronizer/install.sh` активирует этот скрипт через
-# launchd (macOS), systemd --user (Linux) или cron fallback. Роль опциональна:
-# без её установки скрипт остаётся доступен только для ручного запуска
+# Lifecycle: `roles/synchronizer/install.sh` activates this script via
+# launchd (macOS), systemd --user (Linux) or a cron fallback. The role is optional:
+# without its installation the script stays available only for manual runs
 # (`scheduler.sh dispatch|status`).
 #
-# Состояние: ~/.local/state/exocortex/ (маркеры запуска)
+# State: ~/.local/state/exocortex/ (run markers)
 #
-# Использование:
-#   scheduler.sh dispatch    — проверить расписание и запустить что нужно
-#   scheduler.sh status      — показать состояние всех агентов
+# Usage:
+#   scheduler.sh dispatch    — check the schedule and run what is needed
+#   scheduler.sh status      — show the state of all agents
 
 set -euo pipefail
 
-# Предотвращаем сон пока скрипт работает
-# macOS: caffeinate -diu (idle+display+user, работает на батарее; -s НЕ используем — игнорируется при OBC→BATT)
-# Linux: systemd-inhibit (если доступен)
+# Prevent sleep while the script is running
+# macOS: caffeinate -diu (idle+display+user, works on battery; we do NOT use -s — it is ignored on AC→BATT)
+# Linux: systemd-inhibit (if available)
 if [[ "$(uname)" == "Darwin" ]]; then
     caffeinate -diu -w $$ &
 elif command -v systemd-inhibit &>/dev/null; then
@@ -31,20 +31,20 @@ STATE_DIR="$HOME/.local/state/exocortex"
 LOG_DIR="$HOME/logs/synchronizer"
 LOG_FILE="$LOG_DIR/scheduler-$(date +%Y-%m-%d).log"
 
-# WP-273 R5 fix (Round 5 Евгения): substituted runners в .iwe-runtime/, но
-# role.yaml — read-only метаданные (не substituted, нет плейсхолдеров) — должны
-# браться из FMT через $IWE_TEMPLATE. notify.sh — также read-only.
-# WP-273 0.29.4 R6.1 fix (issue #271): runtime-резолв вместо build-time {{IWE_RUNTIME}} — как в notify.sh.
+# WP-273 R5 fix (Evgeny's Round 5): substituted runners are in .iwe-runtime/, but
+# role.yaml is read-only metadata (not substituted, no placeholders) — must
+# come from FMT via $IWE_TEMPLATE. notify.sh is also read-only.
+# WP-273 0.29.4 R6.1 fix (issue #271): runtime resolve instead of build-time {{IWE_RUNTIME}} — as in notify.sh.
 ROLES_DIR_RUNTIME="${IWE_RUNTIME:-${IWE_WORKSPACE:-$HOME/IWE}/.iwe-runtime}/roles"
 ROLES_DIR_TEMPLATE="${IWE_TEMPLATE:-$HOME/IWE/FMT-exocortex-template}/roles"
-# WP-273 0.29.3: silent degradation guard. Если IWE_TEMPLATE пуста — env неполная.
+# WP-273 0.29.3: silent degradation guard. If IWE_TEMPLATE is empty — the env is incomplete.
 if [ -z "${IWE_TEMPLATE:-}" ]; then
     echo "[$(date '+%H:%M:%S')] WARN: \$IWE_TEMPLATE не задана, scheduler использует fallback $HOME/IWE/FMT-exocortex-template. source ~/.zshenv?" >&2
 fi
-ROLES_DIR="$ROLES_DIR_RUNTIME"  # backward-compat alias для downstream-логики
-# notify.sh — read-only, не substituted (берётся из FMT, не из .iwe-runtime).
-# Поэтому notify.sh САМ резолвит шаблоны из .iwe-runtime (см. #169): иначе его
-# $SCRIPT_DIR/templates указывает на FMT-копии с неразрешёнными {{WORKSPACE_DIR}}.
+ROLES_DIR="$ROLES_DIR_RUNTIME"  # backward-compat alias for downstream logic
+# notify.sh is read-only, not substituted (taken from FMT, not from .iwe-runtime).
+# Therefore notify.sh ITSELF resolves templates from .iwe-runtime (see #169): otherwise its
+# $SCRIPT_DIR/templates points to FMT copies with unresolved {{WORKSPACE_DIR}}.
 if [ -n "${IWE_TEMPLATE:-}" ] && [ -f "$IWE_TEMPLATE/roles/synchronizer/scripts/notify.sh" ]; then
     NOTIFY_SH="$IWE_TEMPLATE/roles/synchronizer/scripts/notify.sh"
 elif [ -f "$HOME/IWE/FMT-exocortex-template/roles/synchronizer/scripts/notify.sh" ]; then
@@ -53,12 +53,12 @@ else
     NOTIFY_SH="$SCRIPT_DIR/notify.sh"  # legacy fallback
 fi
 
-# Таймаут на задачи (сек): предотвращает блокировку dispatch зависшей задачей
-TASK_TIMEOUT_SHORT=300    # 5 мин — bash-скрипты (code-scan, dt-collect, reindex)
-TASK_TIMEOUT_LONG=1800    # 30 мин — Claude CLI (strategist, scout, extractor)
+# Task timeout (sec): prevents dispatch from being blocked by a hung task
+TASK_TIMEOUT_SHORT=300    # 5 min — bash scripts (code-scan, dt-collect, reindex)
+TASK_TIMEOUT_LONG=1800    # 30 min — Claude CLI (strategist, scout, extractor)
 
-# Role runner discovery: role.yaml — read-only из FMT (template), runner — substituted из runtime.
-# WP-273 R5: разделили location'ы — yaml из template, runner из runtime.
+# Role runner discovery: role.yaml is read-only from FMT (template), the runner is substituted from runtime.
+# WP-273 R5: locations were split — yaml from the template, runner from runtime.
 get_role_runner() {
     local role="$1"
     local yaml="$ROLES_DIR_TEMPLATE/$role/role.yaml"
@@ -67,14 +67,14 @@ get_role_runner() {
         runner=$(grep '^runner:' "$yaml" | sed 's/runner: *//' | tr -d '"' | tr -d "'")
         [ -n "$runner" ] && echo "$ROLES_DIR_RUNTIME/$role/$runner" && return
     fi
-    # Fallback: convention-based path (substituted runner в runtime)
+    # Fallback: convention-based path (substituted runner in runtime)
     echo "$ROLES_DIR_RUNTIME/$role/scripts/$role.sh"
 }
 
 STRATEGIST_SH="$(get_role_runner strategist)"
 EXTRACTOR_SH="$(get_role_runner extractor)"
 
-# Текущее время
+# Current time
 HOUR=$(date +%H)
 DOW=$(date +%u)   # 1=Mon, 7=Sun
 DATE=$(date +%Y-%m-%d)
@@ -83,7 +83,7 @@ NOW=$(date +%s)
 
 mkdir -p "$STATE_DIR" "$LOG_DIR"
 
-# macOS не имеет GNU timeout — используем perl fallback
+# macOS has no GNU timeout — use a perl fallback
 if ! command -v timeout &>/dev/null; then
     timeout() {
         local duration="$1"; shift
@@ -156,7 +156,7 @@ run_strategist_scenario() {
     return "$rc"
 }
 
-# === Управление состоянием ===
+# === State management ===
 
 ran_today() {
     [ -f "$STATE_DIR/$1-$DATE" ]
@@ -254,18 +254,81 @@ interval_reached() {
     [ "$1" -ge $(( $2 - INTERVAL_SLACK_SECONDS )) ]
 }
 
-# === Очистка старых маркеров (>7 дней) ===
+# === Backup and install capabilities (WP-7 Phase 267, stage 2) ===
+
+# Platform scripts live outside the role directory: IWE_SCRIPTS comes from the scheduler
+# unit (launchd plist / systemd service); the template checkout is the fallback.
+PLATFORM_SCRIPTS="${IWE_SCRIPTS:-${IWE_TEMPLATE:-$HOME/IWE/FMT-exocortex-template}/scripts}"
+
+# Daily backup through the one entry point (scripts/iwe-backup.sh picks the engine from
+# the backup contract in params.yaml). The ATTEMPT is stamped first, so a hang or a
+# failure is retried after the interval and never every 10 minutes. The daily "done"
+# marker is set only when the entry point reported success (a confirmed snapshot) or
+# had nothing to do (switched off / undecided); an invalid contract is also marked done
+# so it does not retry all day - the warning is in the log and in audit section 8.
+run_backup_task() {
+    local rc=0
+    mark_interval "synchronizer-backup"
+    # A missing entry point means the template update did not finish: that is not a failed
+    # backup, so it must not look like one. The DayPlan scheduler row reads this log:
+    # WARN:/ALARM: lines make it red and SKIP: lines make it "deferred", so this is a plain line.
+    if [ ! -f "$PLATFORM_SCRIPTS/iwe-backup.sh" ]; then
+        log "backup: iwe-backup.sh is not in $PLATFORM_SCRIPTS (template update incomplete), nothing to run; next try after the 3h interval"
+        return 0
+    fi
+    timeout "$TASK_TIMEOUT_LONG" bash "$PLATFORM_SCRIPTS/iwe-backup.sh" >> "$LOG_FILE" 2>&1 || rc=$?
+    case "$rc" in
+        0)
+            mark_done "synchronizer-backup"
+            log "backup: finished (a confirmed snapshot, or switched off / undecided - see the output above)"
+            ;;
+        2)
+            mark_done "synchronizer-backup"
+            log "WARN: backup contract is invalid (rc=2): fix backup_engine in params.yaml; no retry today"
+            ;;
+        124)
+            # A timed-out run holds the shared dispatch lock for the whole limit; repeating it
+            # every 3 hours would block the other roles again and again. Not retried today.
+            mark_done "synchronizer-backup"
+            log "WARN: backup timed out after ${TASK_TIMEOUT_LONG}s; no retry today (check the size of the IWE directory)"
+            ;;
+        *)
+            log "WARN: backup failed (rc=$rc; next try after the 3h interval)"
+            ;;
+    esac
+}
+
+# Once a day: did something that worked disappear? One Telegram message per regression,
+# repeated only after the thing came back and went away again. A failed delivery leaves
+# the regression pending and the check is retried after the 3h interval, not on every
+# dispatch (a broken token would otherwise cost a network call every 10 minutes).
+run_capability_regress_task() {
+    local rc=0
+    mark_interval "synchronizer-cap-regress"
+    if [ ! -f "$PLATFORM_SCRIPTS/iwe-capabilities.sh" ]; then
+        log "capability regress check: iwe-capabilities.sh is not in $PLATFORM_SCRIPTS (template update incomplete), nothing to run; next try after the 3h interval"
+        return 0
+    fi
+    timeout "$TASK_TIMEOUT_SHORT" bash "$PLATFORM_SCRIPTS/iwe-capabilities.sh" regress --notify >> "$LOG_FILE" 2>&1 || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        mark_done "synchronizer-cap-regress"
+    else
+        log "WARN: capability regress check did not finish (rc=$rc; will retry next dispatch)"
+    fi
+}
+
+# === Cleanup of old markers (>7 days) ===
 
 cleanup_state() {
     find "$STATE_DIR" -name "*-202*" -mtime +7 -delete 2>/dev/null || true
 }
 
-# === Диспетчер ===
+# === Dispatcher ===
 
 dispatch() {
-    # WP-273 0.29.4 R6.5: self-reentrancy guard. Если предыдущий dispatch ещё работает
-    # (Claude CLI 30 мин), launchd может запустить следующий — двойной morning strategist.
-    # Используем flock на $STATE_DIR/scheduler.lock (non-blocking: новый dispatch выходит сразу).
+    # WP-273 0.29.4 R6.5: self-reentrancy guard. If the previous dispatch is still running
+    # (Claude CLI 30 min), launchd may start the next one — a double morning strategist.
+    # Use flock on $STATE_DIR/scheduler.lock (non-blocking: the new dispatch exits immediately).
     if command -v flock >/dev/null 2>&1; then
         exec 8>"$STATE_DIR/scheduler.lock"
         if ! flock -n 8; then
@@ -274,7 +337,7 @@ dispatch() {
         fi
     fi
 
-    # WP-273 0.29.4 R6.3: shared lock на runtime swap — ждём если build-runtime в процессе.
+    # WP-273 0.29.4 R6.3: shared lock on runtime swap — wait if build-runtime is in progress.
     if command -v flock >/dev/null 2>&1 && [ -f "${IWE_WORKSPACE:-$HOME/IWE}/.iwe-runtime.lock" ]; then
         exec 7>"${IWE_WORKSPACE:-$HOME/IWE}/.iwe-runtime.lock"
         flock -s -w 5 7 2>/dev/null || log "WARN: runtime lock contended >5s — proceeding (read paths могут быть устаревшими)"
@@ -283,7 +346,7 @@ dispatch() {
     log "dispatch started (hour=$HOUR, dow=$DOW)"
     local ran=0
 
-    # --- AC sleep check (macOS): на зарядке Mac не должен засыпать ---
+    # --- AC sleep check (macOS): on charge the Mac must not sleep ---
     if [[ "$(uname)" == "Darwin" ]] && ! ran_today "pmset-check"; then
         local ac_sleep
         ac_sleep=$(pmset -g custom 2>/dev/null | sed -n '/AC Power/,/Battery Power/p' | grep '^ sleep' | awk '{print $2}')
@@ -293,7 +356,7 @@ dispatch() {
         mark_done "pmset-check"
     fi
 
-    # --- Стратег: week-review (Пн, до morning) ---
+    # --- Strategist: week-review (Mon, before morning) ---
     if [ "$DOW" = "1" ] && ! ran_this_week "strategist-week-review"; then
         if week_review_recovered_today; then
             mark_done_week "strategist-week-review"
@@ -309,7 +372,7 @@ dispatch() {
         ran=1
     fi
 
-    # --- Стратег: morning (04:00-21:59) ---
+    # --- Strategist: morning (04:00-21:59) ---
     if (( 10#$HOUR >= 4 && 10#$HOUR < 22 )) && ! ran_today "strategist-morning"; then
         log "→ strategist morning (catch-up: hour=$HOUR)"
         if run_strategist_scenario "morning"; then
@@ -318,7 +381,7 @@ dispatch() {
         ran=1
     fi
 
-    # --- Стратег: note-review — no scheduled runs (template owner's decision, July 2026) ---
+    # --- Strategist: note-review — no scheduled runs (template owner's decision, July 2026) ---
     # Notes are reviewed ONLY by hand, in a live session with the pilot (e.g. the Day Open
     # "Разбор заметок" section). The nightly run kept stripping bold and archiving notes without
     # a pilot decision, so BOTH scheduler paths are gone: the evening run (22:00+) and the
@@ -326,7 +389,7 @@ dispatch() {
     # still works, but it has no chat: it only marks notes and writes proposals, the model archives
     # nothing (only the cleanup safety net may archive a note whose bold the pilot already removed).
 
-    # --- Синхронизатор: code-scan (ежедневно) ---
+    # --- Synchronizer: code-scan (daily) ---
     if ! ran_today "synchronizer-code-scan"; then
         log "→ synchronizer code-scan (hour=$HOUR)"
         if timeout "$TASK_TIMEOUT_SHORT" "$SCRIPT_DIR/code-scan.sh" >> "$LOG_FILE" 2>&1; then
@@ -337,9 +400,9 @@ dispatch() {
         ran=1
     fi
 
-    # --- Синхронизатор: dt-collect (после code-scan) ---
-    # AUTHOR-ONLY: требует NEON_URL + DT_USER_ID в ~/.config/aist/env (секреты автора
-    # шаблона). Пользовательский путь — через event-gateway, фаза в WP-253 роадмапе.
+    # --- Synchronizer: dt-collect (after code-scan) ---
+    # AUTHOR-ONLY: requires NEON_URL + DT_USER_ID in ~/.config/aist/env (secrets of the template
+    # author). The user path is via event-gateway, phase in the WP-253 roadmap.
     if ! ran_today "synchronizer-dt-collect"; then
         if [ -f "$HOME/.config/aist/env" ] && grep -qE '^NEON_URL=' "$HOME/.config/aist/env" \
            && grep -qE '^DT_USER_ID=' "$HOME/.config/aist/env"; then
@@ -351,10 +414,10 @@ dispatch() {
             fi
             ran=1
         fi
-        # Если env отсутствует — молча пропускаем (author-only, у пользователей нет секретов).
+        # If env is missing — skip silently (author-only, users have no secrets).
     fi
 
-    # --- Синхронизатор: daily-report (после code-scan и strategist morning) ---
+    # --- Synchronizer: daily-report (after code-scan and strategist morning) ---
     if ! ran_today "synchronizer-daily-report"; then
         if ran_today "strategist-morning" || (( 10#$HOUR >= 6 )); then
             log "→ synchronizer daily-report (hour=$HOUR)"
@@ -367,17 +430,41 @@ dispatch() {
         fi
     fi
 
-    # --- Экстрактор: inbox-check (каждые 3ч, 07-23) ---
+    # --- Extractor: inbox-check (every 3h, 07-23) ---
     if (( 10#$HOUR >= 7 && 10#$HOUR <= 23 )); then
         local elapsed
         elapsed=$(last_run_seconds_ago "extractor-inbox-check")
         if interval_reached "$elapsed" 10800; then
             log "→ extractor inbox-check (${elapsed}s since last)"
-            if timeout "$TASK_TIMEOUT_LONG" "$EXTRACTOR_SH" inbox-check >> "$LOG_FILE" 2>&1; then
-                mark_interval "extractor-inbox-check"
-            else
-                log "WARN: extractor inbox-check failed (will retry next dispatch)"
+            # A failed run is stamped too: every run is a full AI pass, so retrying on
+            # each 10-min dispatch turned one persistent post-AI failure into an
+            # unbounded loop burning the subscription (issue #1348).
+            mark_interval "extractor-inbox-check"
+            if ! timeout "$TASK_TIMEOUT_LONG" "$EXTRACTOR_SH" inbox-check >> "$LOG_FILE" 2>&1; then
+                log "WARN: extractor inbox-check failed (next try after the 3h interval)"
             fi
+            ran=1
+        fi
+    fi
+
+    # --- Backup: once a day, not earlier than 06:00; retry after a failure no more than once per 3 hours ---
+    if (( 10#$HOUR >= 6 )) && ! ran_today "synchronizer-backup"; then
+        local backup_elapsed
+        backup_elapsed=$(last_run_seconds_ago "synchronizer-backup")
+        if interval_reached "$backup_elapsed" 10800; then
+            log "→ backup (${backup_elapsed}s since the last attempt)"
+            run_backup_task
+            ran=1
+        fi
+    fi
+
+    # --- Install capabilities: regression check, once a day (after the backup) ---
+    if ! ran_today "synchronizer-cap-regress"; then
+        local regress_elapsed
+        regress_elapsed=$(last_run_seconds_ago "synchronizer-cap-regress")
+        if interval_reached "$regress_elapsed" 10800; then
+            log "→ capability regress check (${regress_elapsed}s since the last attempt)"
+            run_capability_regress_task
             ran=1
         fi
     fi
@@ -390,7 +477,7 @@ dispatch() {
     log "dispatch completed"
 }
 
-# === Статус ===
+# === Status ===
 
 show_status() {
     echo "=== Exocortex Scheduler Status ==="

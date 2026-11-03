@@ -37,12 +37,36 @@ YOOKASSA_PYTEST_SHAPE_RE = re.compile(r"test_[a-z0-9]+(?:_[a-z0-9]+){4,}\Z")
 # NAME, a guarantee no other context here has -- see WP-7 backlog for the
 # broader fix considered and not adopted (unverified key-format assumption).
 YOOKASSA_SOURCE_TEST_SHAPE_RE = re.compile(r"test_[a-z0-9]+(?:_[a-z0-9]+){3,}\Z")
+# issue #1411 (item 2): the context list above kept missing real template
+# lines (a JSON path to a four-segment test script, a `name()` call, an
+# escaped `\.sh` in a regex) and blocked the update commit itself. A real
+# YooKassa secret is `test_`/`live_` plus a random base64url string: it has
+# uppercase letters and no word structure. A tail of four or more short
+# lowercase underscore-joined words, at least three of them with a letter,
+# is an identifier in any context. A dense single blob (`test_` + digits)
+# or anything with an uppercase letter or hyphen still redacts.
+YOOKASSA_WORD_SEGMENT_RE = re.compile(r"[a-z0-9]{1,20}")
+YOOKASSA_IDENTIFIER_MIN_SEGMENTS = 4
+YOOKASSA_IDENTIFIER_MIN_WORDS = 3
+
+
+def is_lowercase_word_identifier(value):
+    # A trailing underscore is a name wrapped across comment lines.
+    segments = value[len("test_"):].rstrip("_").split("_")
+    if len(segments) < YOOKASSA_IDENTIFIER_MIN_SEGMENTS:
+        return False
+    if not all(YOOKASSA_WORD_SEGMENT_RE.fullmatch(segment) for segment in segments):
+        return False
+    words = sum(1 for segment in segments if re.search(r"[a-z]", segment))
+    return words >= YOOKASSA_IDENTIFIER_MIN_WORDS
 
 
 def redact_yookassa(match):
     value = match.group(0)
     if not value.startswith("test_"):
         return "[REDACTED-YOOKASSA-KEY]"
+    if is_lowercase_word_identifier(value):
+        return value
     before = match.string[max(0, match.start() - 160):match.start()]
     after = match.string[match.end():match.end() + 32]
     source_definition = (
@@ -174,9 +198,9 @@ MCP_TOOL_NAME = re.compile(r"mcp__[A-Za-z0-9_.-]+__[A-Za-z0-9_.-]+\Z")
 # store in cleartext, independent of any recognizable value shape - a
 # shape-based PATTERNS/ASSIGNMENT_PATTERNS scan cannot catch what it has never
 # seen before (app-specific tokens, arbitrary passwords), so this class is
-# blocked by command identity instead (WP-482 Ф7, agent_fault ids 43/49).
+# blocked by command identity instead (WP-482 Phase 7, agent_fault ids 43/49).
 BULK_ENV_DUMP_EXECUTABLES = frozenset(("env", "printenv"))
-# Опции env, которые забирают следующее слово себе.
+# env options that take the next word for themselves.
 ENV_OPTIONS_WITH_ARGUMENT = frozenset(("-u", "--unset", "-C", "--chdir", "-S", "--split-string"))
 RAILWAY_SECRET_LIST_SUBCOMMANDS = frozenset(("variables", "variable"))
 
@@ -1035,9 +1059,9 @@ def strip_structural_keywords(segment):
 REDIRECT_TOKENS = frozenset(
     ("<", "<<", "<<<", "<>", ">", ">>", ">|", "<&", ">&", "&>")
 )
-# Начало перенаправления в одном токене: необязательный номер дескриптора или
-# амперсанд, затем оператор. Покрывает и слитную цель (">out.txt", "2>&1"), где
-# REDIRECT_TOKENS не совпадает с токеном целиком.
+# The start of a redirection in a single token: an optional descriptor number or
+# an ampersand, then the operator. Also covers a fused target (">out.txt", "2>&1"), where
+# REDIRECT_TOKENS does not match the token as a whole.
 REDIRECT_PREFIX_RE = re.compile(r"\A(?:[0-9]+|&)?(?:>>|>\||>&|<<<|<<|<>|<&|>|<)")
 SHELL_TOOLS = frozenset(("bash", "sh", "zsh", "dash", "ksh"))
 COMMAND_WRAPPERS = frozenset(("command", "builtin", "exec", "nohup"))
@@ -1073,11 +1097,11 @@ def executable_index(segment):
     index = 0
     while index < len(segment):
         token = segment[index]
-        # Точное совпадение с REDIRECT_TOKENS не видело номер дескриптора,
-        # который токенайзер отделяет в свой токен: в "2>&1 cat ~/.ssh/id_rsa"
-        # исполняемым объявлялась цифра, и разбор команды на этом кончался --
-        # мимо проходило и чтение секретного файла, и дамп окружения
-        # (холодное ревью 06.09).
+        # An exact match against REDIRECT_TOKENS did not see the descriptor number,
+        # which the tokenizer splits into its own token: in "2>&1 cat ~/.ssh/id_rsa"
+        # the digit was declared the executable, and the command parsing ended there --
+        # both reading the secret file and dumping the environment slipped through
+        # (cold review 06.09).
         span = redirection_span(segment, index)
         if span:
             index += span
@@ -1391,9 +1415,9 @@ def env_wrapped_command_offset(arguments):
         argument = arguments[index]
         span = redirection_span(arguments, index)
         if span:
-            # Перенаправление не обёрнутая команда: `env > out.txt` печатает всё
-            # окружение ровно так же, как голый `env`, и раньше проходило мимо
-            # проверки, потому что ">" считался началом команды (ревью 06.09).
+            # A redirection is not a wrapped command: `env > out.txt` prints the whole
+            # environment exactly like a bare `env`, and used to slip past
+            # the check because ">" was considered the start of a command (review 06.09).
             index += span
         elif ASSIGNMENT.fullmatch(argument):
             index += 1
@@ -1452,9 +1476,9 @@ def analyze_shell_variant(command, depth=0, inherited_variables=None):
         if loop_words and any(
             value_has_sensitive_path(word) for word in loop_words
         ):
-            # `for f in ~/.config/aist/env; do cat "$f"; done` - привязка к
-            # переменной цикла моделью не отслеживается, поэтому чувствительный
-            # путь в самом списке слов считается обращением к файлу.
+            # `for f in ~/.config/aist/env; do cat "$f"; done` - the binding to the
+            # loop variable is not tracked by the model, so a sensitive
+            # path in the word list itself is counted as a file access.
             direct_read = True
         if not segment:
             return
@@ -1696,7 +1720,7 @@ def analyze_bash(raw):
             # The literal-value scan already ran and needs no shell model at
             # all (see the comment above it) -- that stays the primary
             # defense. secret-leak-block.sh already surfaces a visible
-            # "разобрано не полностью" notice whenever shell_model != complete,
+            # "not fully parsed" notice whenever shell_model != complete,
             # so silently answering "unknown" here for the path/upload
             # heuristic is not a silent degradation for the user.
             scaffold_tokens = None
@@ -1843,10 +1867,11 @@ def self_test():
         "private-key": "-----BEGIN PRIVATE KEY-----",
         "bearer": "Bearer " + "Q" * 28,
         "yookassa-dense": "test_" + "9" * 32,
-        "yookassa-bare-pytest-shape-no-context": "test_alpha_bravo_charlie_delta_echo",
-        # issue #896: a digit-leading segment (an issue number) must
-        # still redact bare with no protecting context around it.
-        "yookassa-digit-segment-bare-no-context": "test_issue_463_foo_bar_baz_qux_quux",
+        # issue #1411: a base64url-shaped key (mixed case, no word
+        # structure) and a lowercase blob too few segments to be words.
+        "yookassa-mixed-case-key": "test_Fh8hUAVVBGUGbjmlzba6TB0iyUbos_lueTHE-axOwM0",
+        "yookassa-lowercase-two-segment-blob": "test_q8w2e7r1t6y3u9i4o0p5a2s8d7f1g6h3_j9k4l0",
+        "yookassa-uppercase-segment": "test_issue_1411_foo_bar_bazQuxQuuxCorgeGrault",
         # issue #1220 follow-up (cold-review subagent, 2026-10-13): the new
         # source_definition floor is 4+ segments, not lower -- a 3-segment
         # name in a def-line must still redact. Without this the floor could
@@ -1875,6 +1900,13 @@ def self_test():
         "# scripts/tests/test_alpha_bravo_charlie_delta_echo.sh",
         "--exclude=test_alpha_bravo_charlie_delta_echo.sh",
         "# see test_alpha_bravo_charlie_delta_echo for the fixture",
+        # issue #1411: lowercase word identifiers are not keys in any
+        # context (previously bare-no-context positives, #896).
+        "test_alpha_bravo_charlie_delta_echo",
+        "test_issue_463_foo_bar_baz_qux_quux",
+        '"path": "scripts/tests/test_critical_alert_disabled_tracker.sh",',
+        "    test_yaml_need_without_schema_version_raises()",
+        "^scripts/tests/test_issue_463_setup_reuses_resolved_python3\\\\.sh$",
     )
     for name, value in positives.items():
         ids, count, _details = scan(value)
@@ -1994,8 +2026,8 @@ def self_test():
         "F=.env; (F=safe); cat $F",
         "F=.env; env F=safe true; cat $F",
         "export F=.env; cat $F",
-        # Перенаправление с номером дескриптора перед командой снимало и эту
-        # проверку: исполняемым становилась цифра (холодное ревью 06.09).
+        # A redirection with a descriptor number before the command also removed this
+        # check: the digit became the executable (cold review 06.09).
         "2>&1 cat config.env",
         "2> /dev/null cat .proxy-env",
     )
@@ -2015,8 +2047,8 @@ def self_test():
         "railway variables --service example-service --kv",
         "railway variable list",
         "bash -c \"env\"",
-        # Перенаправление вместо конвейера: тот же дамп, и это первый обходной
-        # путь, который приходит в голову после отказа (холодное ревью 06.09).
+        # A redirection instead of a pipeline: the same dump, and this is the first workaround
+        # that comes to mind after a refusal (cold review 06.09).
         "env > out.txt",
         "env >> out.txt",
         "env >/tmp/x",
@@ -2028,8 +2060,8 @@ def self_test():
         "printenv 2>&1",
         "printenv 1> /tmp/x",
         "railway variables 2>&1",
-        # Перенаправление ПЕРЕД командой, включая номер дескриптора: раньше
-        # исполняемым объявлялась цифра и разбор кончался, не дойдя до команды.
+        # A redirection BEFORE the command, including the descriptor number: previously
+        # the digit was declared the executable and the parsing ended before reaching the command.
         "> out.txt env",
         "2>&1 env",
         "2> /dev/null env",
@@ -2050,7 +2082,7 @@ def self_test():
         "railway deploy",
         "railway run --service example-service -- python3 script.py",
         "printf %s \"env | sort\"",
-        # Перенаправление у чужой команды остаётся обычным перенаправлением.
+        # A redirection on someone else's command remains an ordinary redirection.
         "sort file.txt > out.txt",
         "cat a.txt 2>&1",
         "env FOO=bar somecommand > out.txt",

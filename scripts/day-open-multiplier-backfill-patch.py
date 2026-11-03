@@ -78,23 +78,22 @@ def parse_args():
     p.add_argument("--source-absent-days", type=int, default=SOURCE_ABSENT_DAYS_DEFAULT)
     p.add_argument("--source-absent-opens", type=int, default=SOURCE_ABSENT_OPENS_DEFAULT)
     # --date comes from the pipeline's own `date +%Y-%m-%d` (host-local calendar
-    # day, whatever tz that host runs), while --tz below only anchors the grace-
-    # period midnight boundary -- if a host's system tz ever drifts materially
-    # from Europe/Nicosia this pair can disagree by more than the DST-only slip
-    # day-open-r23-series-patch.py accepts for its own peak-window check (cold
-    # review Ф117: known limitation, not fixed here -- pass --tz explicitly if
-    # that host's date command needs it).
-    p.add_argument("--tz", default="Europe/Nicosia", help="Local timezone for the midnight/grace check")
+    # day), and --tz anchors the grace-period midnight boundary. The pipeline
+    # passes --tz only when params.yaml sets `timezone:` (issue #1410); without
+    # it both sides use the host system zone, so they agree by construction.
+    p.add_argument("--tz", default="", help="IANA zone for the midnight/grace check; empty = host system zone")
     return p.parse_args()
 
 
 def local_tz(name):
+    if not name:
+        return datetime.now().astimezone().tzinfo
     if ZoneInfo is not None:
         try:
             return ZoneInfo(name)
         except Exception as exc:
-            print(f"multiplier-backfill: zoneinfo unavailable ({exc}), fixed UTC+3 fallback", file=sys.stderr)
-    return timezone(timedelta(hours=3))
+            print(f"multiplier-backfill: zone {name!r} unavailable ({exc}), host system zone used", file=sys.stderr)
+    return datetime.now().astimezone().tzinfo
 
 
 def ledger_day_path(root, date_str):
@@ -303,7 +302,7 @@ def main():
     if events is None:
         # Counts as a failed attempt (not silently skipped) so a corrupt ledger
         # doesn't understate a genuine source_absent streak in
-        # classify_source_absence()'s window scan (cold review Ф117 Medium).
+        # classify_source_absence()'s window scan (cold review Phase 117 Medium).
         append_attempt(args.ledger_append, args.ledger_root, today, target, "wakatime_unavailable", "corrupt-ledger")
         patch_dayplan(args.dayplan, finding_lines("wakatime_unavailable", "ledger повреждён"))
         return 0

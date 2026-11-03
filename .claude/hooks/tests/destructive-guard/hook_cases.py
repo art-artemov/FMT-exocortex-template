@@ -53,6 +53,7 @@ CASES = [
     ('обычная команда', 'ls -la', 0, None),
     ('git add конкретных путей', 'git add a.txt b.txt', 0, None),
     ('git push --force-with-lease', 'git push --force-with-lease origin main', 0, None),
+    ('#1010: literal printf feeds shell stdin', "printf '%s\\n' 'rm -rf /important' | sh", 2, '.claude/bin/guarded-rm'),
     ('git clean -n', 'git clean -n', 0, None),
     ('пустая команда: нечего разбирать, вход отклоняется', '', 2, None),
     ('второй git add -A', 'git add one; git add -A', 2, 'git add -A'),
@@ -511,7 +512,7 @@ def main():
     check(code == 2, f"CC_ALLOW_DESTRUCTIVE_INPUT=0 is not a bypass -> {code}")
 
     # --- the guide tells the truth (WP-7): a pass-through below that the hook really has is named
-    # under «Вне гарантии»; the bypass is described as covering the whole process, not one command ---
+    # under "Outside the guarantee"; the bypass is described as covering the whole process, not one command ---
     doc_path = pathlib.Path(hook).resolve().parents[2] / "docs" / "DESTRUCTIVE-GUARD.md"
     if doc_path.is_file():
         doc = doc_path.read_text(encoding="utf-8")
@@ -523,7 +524,6 @@ def main():
         # Known limits remain observable until an executable detector replaces them (#1002).
         for command, named in (("bash <<< 'rm -rf /important'", "`bash <<<`"),
                                ("sh -s <<< 'rm -rf /important'", "`sh -s <<<`"),
-                               ("printf '%s\\n' 'rm -rf /important' | sh", "`| sh`"),
                                ('echo "$(rm -rf /important)"', "`$(...)`"),
                                ('echo "`rm -rf /important`"', "обратных кавычках"),
                                ('cat <<EOF\n$(rm -rf /important)\nEOF', "`cat <<EOF`"),

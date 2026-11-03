@@ -1,7 +1,7 @@
 name: Notify Security Changelog
 
-# WP-7 Ф62 п.4: срочная доставка новых [security]-строк CHANGELOG.
-# Отдельный workflow не смешивает push-маршрут с ежедневным дайджестом.
+# WP-7 Phase 62 item 4: urgent delivery of new [security] lines of CHANGELOG.
+# A separate workflow does not mix the push route with the daily digest.
 
 on:
   push:
@@ -14,7 +14,7 @@ jobs:
   notify-security:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
 

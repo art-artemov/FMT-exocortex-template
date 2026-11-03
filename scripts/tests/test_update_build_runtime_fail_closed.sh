@@ -29,9 +29,12 @@ mkdir -p "$TEST_ROOT" "$FAKE_HOME"
 
 # --- Fixture: fake upstream (served by the curl shim) ---
 UPSTREAM="$TEST_ROOT/upstream"
-mkdir -p "$UPSTREAM/scripts"
+mkdir -p "$UPSTREAM/scripts" "$UPSTREAM/setup/lib"
 printf '# Template CLAUDE.md\n' > "$UPSTREAM/CLAUDE.md"
 printf '#!/bin/bash\necho v2\n' > "$UPSTREAM/scripts/dummy-new.sh"
+# WP-529 Phase 245: Step 5 writes via the executor setup/lib/apply-op.sh — the fixture
+# manifest delivers it, as the real generator does.
+cp "$ROOT/setup/lib/apply-op.sh" "$UPSTREAM/setup/lib/apply-op.sh"
 python3 - "$UPSTREAM" <<'PY'
 import hashlib, json, sys
 from pathlib import Path
@@ -41,7 +44,7 @@ def entry(path):
 manifest = {
     "schema_version": 2,
     "version": "0.99.0-brt-test",
-    "files": [entry("CLAUDE.md"), entry("scripts/dummy-new.sh")],
+    "files": [entry("CLAUDE.md"), entry("scripts/dummy-new.sh"), entry("setup/lib/apply-op.sh")],
     "deprecated_files": [],
 }
 (root / "update-manifest.json").write_text(json.dumps(manifest))
@@ -56,6 +59,10 @@ cp "$ROOT/scripts/lib/common.sh" "$SCRIPT_DIR/scripts/lib/common.sh"
 chmod +x "$SCRIPT_DIR/update.sh"
 cp "$UPSTREAM/CLAUDE.md" "$SCRIPT_DIR/CLAUDE.md"
 cp "$SCRIPT_DIR/CLAUDE.md" "$SCRIPT_DIR/.claude.md.base"
+# The executor is also part of the installation: restore runs ("everything is current") do not
+# download it — update.sh takes a copy from the clone.
+mkdir -p "$SCRIPT_DIR/setup/lib"
+cp "$ROOT/setup/lib/apply-op.sh" "$SCRIPT_DIR/setup/lib/apply-op.sh"
 
 WORKSPACE_DIR="$TEST_ROOT/repo"
 cp "$SCRIPT_DIR/CLAUDE.md" "$WORKSPACE_DIR/CLAUDE.md"
@@ -569,9 +576,12 @@ PATH="$SHIM_DIR:$PATH" HOME="$FAKE_HOME" IWE_UPDATE_CHANNEL=main \
     bash "$SCRIPT_DIR/update.sh" --check > "$TEST_ROOT/out-f0.log" 2>&1
 RC_F0=$?
 set -e
-if [ "$RC_F0" -eq 0 ] && [ ! -e "$WORKSPACE_DIR/.exocortex.env" ] && \
+# WP-529 F244: --check reports the missing env as the real run would (exit 3,
+# "ВЕРДИКТ: нельзя ставить"), and still writes nothing.
+if [ "$RC_F0" -eq 3 ] && grep -Fxq 'ВЕРДИКТ: нельзя ставить' "$TEST_ROOT/out-f0.log" && \
+   [ ! -e "$WORKSPACE_DIR/.exocortex.env" ] && \
    [ "$F_UPDATER_BEFORE" = "$(shasum -a 256 "$SCRIPT_DIR/update.sh" | cut -d' ' -f1)" ]; then
-    pass "F0: --check stays read-only without env even when remote updater differs"
+    pass "F0: --check refuses without env and stays read-only even when remote updater differs"
 else
     fail "F0: --check rc=$RC_F0 created env or replaced updater"
 fi
